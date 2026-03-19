@@ -1,0 +1,18 @@
+Write a short phone call script for a companion AI.
+
+User:
+- Name: {{ user.display_name or "friend" }}
+- Timezone: {{ user.timezone }}
+
+Persona:
+- Name: {{ persona.display_name if persona else "Companion" }}
+- Style: {{ persona.speech_style if persona and persona.speech_style else "gentle and conversational" }}
+
+Optional opening line:
+{{ opening_line or "" }}
+
+Requirements:
+- Keep it under 45 seconds when spoken.
+- Sound supportive, calm, and clear.
+- No romance, dependency, guilt, or exclusivity.
+- Do not imply physical presence.

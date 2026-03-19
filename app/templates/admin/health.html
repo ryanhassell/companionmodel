@@ -1,0 +1,23 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header"><div><h1>Health</h1><p class="subtle">Runtime scheduler status and recent maintenance jobs.</p></div></div>
+<section class="stats">
+  <div class="stat"><strong>Scheduler Running</strong><div>{{ "yes" if scheduler_running else "no" }}</div></div>
+</section>
+<section class="card">
+  <h2>Recent Jobs</h2>
+  <table>
+    <thead><tr><th>Job</th><th>Status</th><th>Started</th><th>Finished</th></tr></thead>
+    <tbody>
+      {% for job in jobs %}
+      <tr>
+        <td>{{ job.job_name }}</td>
+        <td>{{ job.status.value }}</td>
+        <td>{{ job.started_at or "—" }}</td>
+        <td>{{ job.finished_at or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

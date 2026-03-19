@@ -1,0 +1,35 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header"><div><h1>Prompt Templates</h1><p class="subtle">Versioned prompt bodies editable from the admin UI.</p></div></div>
+<div class="grid two">
+  <section class="card">
+    <h2>Create New Prompt Version</h2>
+    <form method="post" action="/admin/prompts" class="grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Name<input type="text" name="name" required></label>
+      <label>Channel<input type="text" name="channel" value="sms"></label>
+      <label>Description<textarea name="description"></textarea></label>
+      <label>Variables (comma separated)<input type="text" name="variables_json"></label>
+      <label>Body<textarea name="body" required></textarea></label>
+      <label><input type="checkbox" name="locked"> Locked</label>
+      <button type="submit">Save Prompt Version</button>
+    </form>
+  </section>
+  <section class="card">
+    <h2>Current Prompt Versions</h2>
+    <table>
+      <thead><tr><th>Name</th><th>Version</th><th>Active</th><th>Source</th></tr></thead>
+      <tbody>
+        {% for prompt in prompts %}
+        <tr>
+          <td>{{ prompt.name }}</td>
+          <td>{{ prompt.version }}</td>
+          <td>{{ "yes" if prompt.is_active else "no" }}</td>
+          <td>{{ prompt.source }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>
+{% endblock %}

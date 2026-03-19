@@ -1,0 +1,41 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header"><div><h1>Vector Search</h1><p class="subtle">Inspect semantic retrieval hits and scores.</p></div></div>
+<section class="card">
+  <form method="get" action="/admin/vector-search" class="grid">
+    <label>User
+      <select name="user_id" required>
+        <option value="">Select a user</option>
+        {% for user in users %}
+        <option value="{{ user.id }}" {% if request.query_params.get("user_id") == user.id|string %}selected{% endif %}>{{ user.phone_number }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Persona
+      <select name="persona_id">
+        <option value="">Any / none</option>
+        {% for persona in personas %}
+        <option value="{{ persona.id }}" {% if request.query_params.get("persona_id") == persona.id|string %}selected{% endif %}>{{ persona.display_name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Query<textarea name="query">{{ query or "" }}</textarea></label>
+    <button type="submit">Run Search</button>
+  </form>
+</section>
+<section class="card">
+  <h2>Results</h2>
+  <table>
+    <thead><tr><th>Score</th><th>Explanation</th><th>Content</th></tr></thead>
+    <tbody>
+      {% for result in results %}
+      <tr>
+        <td>{{ "%.3f"|format(result.score) }}</td>
+        <td>{{ result.explanation }}</td>
+        <td>{{ result.memory.content }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

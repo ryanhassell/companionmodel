@@ -1,0 +1,71 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "companion-pi"
+version = "0.1.0"
+description = "Production-minded SMS/MMS companion platform for Raspberry Pi orchestration."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [
+  { name = "Codex" }
+]
+dependencies = [
+  "alembic>=1.15.1",
+  "aiosqlite>=0.21.0",
+  "apscheduler>=3.10.4",
+  "asyncpg>=0.30.0",
+  "fastapi>=0.115.6",
+  "greenlet>=3.1.1",
+  "httpx>=0.28.1",
+  "itsdangerous>=2.2.0",
+  "jinja2>=3.1.5",
+  "orjson>=3.10.15",
+  "passlib[bcrypt]>=1.7.4",
+  "pgvector>=0.3.6",
+  "psycopg[binary]>=3.2.5",
+  "pydantic>=2.10.6",
+  "pydantic-settings>=2.7.1",
+  "python-multipart>=0.0.20",
+  "PyYAML>=6.0.2",
+  "SQLAlchemy>=2.0.38",
+  "structlog>=25.1.0",
+  "tenacity>=9.0.0",
+  "uvicorn[standard]>=0.34.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "freezegun>=1.5.1",
+  "pytest>=8.3.5",
+  "pytest-asyncio>=0.25.3",
+  "pytest-cov>=6.0.0",
+  "respx>=0.22.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N"]
+
+[dependency-groups]
+dev = [
+  "freezegun>=1.5.1",
+  "pytest>=8.3.5",
+  "pytest-asyncio>=0.25.3",
+  "pytest-cov>=6.0.0",
+  "respx>=0.22.0",
+  "ruff>=0.11.0",
+]

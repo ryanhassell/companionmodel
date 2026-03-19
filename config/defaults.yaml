@@ -1,0 +1,111 @@
+app:
+  name: Companion Pi
+  env: development
+  base_url: http://localhost:8000
+  public_webhook_base_url: http://localhost:8000
+  secret_key: dev-insecure-change-me
+  media_root: var/media
+  log_path: var/log/companion.log
+  prompt_template_root: app/prompts
+  timezone: America/New_York
+  trust_proxy_headers: true
+
+database:
+  pool_size: 5
+  max_overflow: 5
+  echo: false
+
+twilio:
+  validate_signatures: true
+  api_timeout_seconds: 15
+  max_retries: 3
+
+openai:
+  base_url: https://api.openai.com/v1
+  api_timeout_seconds: 30
+  max_retries: 3
+  chat_model: gpt-5.4-mini
+  embedding_model: text-embedding-3-small
+  image_model: gpt-image-1
+  speech_model: gpt-4o-mini-tts
+  reasoning_effort: low
+  temperature: 0.8
+  max_output_tokens: 220
+  memory_max_output_tokens: 600
+  proactive_max_output_tokens: 160
+  image_size: 1024x1024
+
+scheduling:
+  proactive_scan_seconds: 120
+  memory_consolidation_minutes: 30
+  retry_failed_sends_minutes: 5
+  stale_followup_minutes: 15
+  cleanup_hours: 24
+  embed_pending_minutes: 10
+
+safety:
+  daily_message_cap: 60
+  daily_image_cap: 3
+  daily_call_cap: 1
+  cooldown_minutes: 8
+  obsessive_window_minutes: 20
+  obsessive_message_threshold: 10
+  quiet_hours_start: "21:30"
+  quiet_hours_end: "08:30"
+  proactive_min_gap_minutes: 120
+  proactive_max_gap_minutes: 360
+  proactive_probability: 0.7
+  distress_patterns:
+    - "i want to die"
+    - "i don't want to live"
+    - "hurt myself"
+    - "kill myself"
+    - "self harm"
+  blocked_patterns:
+    - "i'm all you need"
+    - "don't leave me"
+    - "you only need me"
+    - "i'll be sad if you talk to someone else"
+  prohibited_topics:
+    - romance
+    - sex
+    - exclusivity
+    - physical meetups
+  deescalation_templates:
+    - "I care about you, and I also want to keep things steady. Let's slow down for a bit and come back to this gently."
+    - "I'm here to talk, and I want to keep our chats comfortable and balanced. We can pause and pick this up a little later."
+  distress_fallback:
+    - "I’m really sorry you’re hurting. You deserve immediate support from a real person nearby. If you might act on these feelings, call or text 988 right now in the U.S. or contact local emergency services."
+
+messaging:
+  max_message_length: 480
+  target_reply_length: short
+  emoji_tendency: low
+  duplicate_similarity_threshold: 0.9
+  max_recent_context_messages: 18
+  proactive_image_probability: 0.2
+
+memory:
+  top_k: 8
+  similarity_threshold: 0.2
+  max_facts_per_extraction: 6
+  consolidation_batch_size: 20
+  summary_target_messages: 40
+  embedding_dimensions: 1536
+
+voice:
+  enabled: false
+  max_duration_seconds: 300
+  default_voice: coral
+  default_tts_mode: twilio_say
+
+admin:
+  session_cookie_name: companion_admin_session
+  session_max_age_seconds: 86400
+  csrf_protection_enabled: true
+  secure_cookies: false
+  bootstrap_username:
+  bootstrap_password:
+
+alerting:
+  webhook_url:

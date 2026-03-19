@@ -1,0 +1,49 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header">
+  <div><h1>Users</h1><p class="subtle">Phone-based user profiles, schedule overrides, and safety tuning.</p></div>
+</div>
+<div class="grid two">
+  <section class="card">
+    <h2>Create or Update User</h2>
+    <form method="post" action="/admin/users" class="grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="user_id">
+      <label>Display Name<input type="text" name="display_name"></label>
+      <label>Phone Number<input type="text" name="phone_number" required></label>
+      <label>Timezone<input type="text" name="timezone" value="America/New_York"></label>
+      <label>Preferred Persona
+        <select name="preferred_persona_id">
+          <option value="">Automatic active persona</option>
+          {% for persona in personas %}
+          <option value="{{ persona.id }}">{{ persona.display_name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Notes<textarea name="notes"></textarea></label>
+      <label>Profile JSON<textarea name="profile_json">{}</textarea></label>
+      <label>Schedule Overrides JSON<textarea name="schedule_overrides">{}</textarea></label>
+      <label>Safety Overrides JSON<textarea name="safety_overrides">{}</textarea></label>
+      <label><input type="checkbox" name="is_enabled" checked> User enabled</label>
+      <button type="submit">Save User</button>
+    </form>
+  </section>
+  <section class="card">
+    <h2>Current Users</h2>
+    <table>
+      <thead><tr><th>Name</th><th>Phone</th><th>Timezone</th><th>Enabled</th><th>Last Inbound</th></tr></thead>
+      <tbody>
+        {% for user in users %}
+        <tr>
+          <td>{{ user.display_name or "—" }}</td>
+          <td>{{ user.phone_number }}</td>
+          <td>{{ user.timezone }}</td>
+          <td>{{ "yes" if user.is_enabled else "no" }}</td>
+          <td>{{ user.last_inbound_at or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>
+{% endblock %}

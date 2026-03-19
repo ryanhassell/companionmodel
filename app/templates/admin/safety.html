@@ -1,0 +1,20 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header"><div><h1>Safety Events</h1><p class="subtle">Distress flags, outbound policy blocks, and escalation logs.</p></div></div>
+<section class="card">
+  <table>
+    <thead><tr><th>Time</th><th>Severity</th><th>Type</th><th>User</th><th>Details</th></tr></thead>
+    <tbody>
+      {% for event in events %}
+      <tr>
+        <td>{{ event.created_at }}</td>
+        <td>{{ event.severity.value }}</td>
+        <td>{{ event.event_type }}</td>
+        <td>{{ event.user_id }}</td>
+        <td><pre>{{ event.details_json | tojson(indent=2) }}</pre></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

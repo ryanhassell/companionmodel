@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ title or "Companion Pi Admin" }}</title>
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <h1 class="brand">Companion Pi</h1>
+        <p class="subtle">Warm companion operations with explicit guardrails.</p>
+        <nav class="nav">
+          <a href="/admin" class="{{ 'active' if active_nav == 'overview' else '' }}">Overview</a>
+          <a href="/admin/users" class="{{ 'active' if active_nav == 'users' else '' }}">Users</a>
+          <a href="/admin/personas" class="{{ 'active' if active_nav == 'personas' else '' }}">Personas</a>
+          <a href="/admin/conversations" class="{{ 'active' if active_nav == 'conversations' else '' }}">Conversations</a>
+          <a href="/admin/messages" class="{{ 'active' if active_nav == 'messages' else '' }}">Messages</a>
+          <a href="/admin/memory" class="{{ 'active' if active_nav == 'memory' else '' }}">Memory</a>
+          <a href="/admin/vector-search" class="{{ 'active' if active_nav == 'vector-search' else '' }}">Vector Search</a>
+          <a href="/admin/schedules" class="{{ 'active' if active_nav == 'schedules' else '' }}">Schedules</a>
+          <a href="/admin/prompts" class="{{ 'active' if active_nav == 'prompts' else '' }}">Prompts</a>
+          <a href="/admin/safety-events" class="{{ 'active' if active_nav == 'safety' else '' }}">Safety</a>
+          <a href="/admin/delivery-failures" class="{{ 'active' if active_nav == 'deliveries' else '' }}">Deliveries</a>
+          <a href="/admin/media" class="{{ 'active' if active_nav == 'media' else '' }}">Media</a>
+          <a href="/admin/test-tools" class="{{ 'active' if active_nav == 'test-tools' else '' }}">Test Tools</a>
+          <a href="/admin/calls" class="{{ 'active' if active_nav == 'calls' else '' }}">Calls</a>
+          <a href="/admin/health" class="{{ 'active' if active_nav == 'health' else '' }}">Health</a>
+          <a href="/admin/settings" class="{{ 'active' if active_nav == 'settings' else '' }}">Settings</a>
+          <a href="/admin/logs" class="{{ 'active' if active_nav == 'logs' else '' }}">Logs</a>
+        </nav>
+        <p class="subtle">Signed in as {{ admin_user.username }}</p>
+        <form method="post" action="/logout" class="inline-form">
+          <button class="secondary" type="submit">Log Out</button>
+        </form>
+      </aside>
+      <main class="content">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+  </body>
+</html>

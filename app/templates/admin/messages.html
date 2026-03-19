@@ -1,0 +1,20 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header"><div><h1>Messages</h1><p class="subtle">Inbound and outbound SMS/MMS history.</p></div></div>
+<section class="card">
+  <table>
+    <thead><tr><th>Time</th><th>Direction</th><th>Status</th><th>User</th><th>Body</th></tr></thead>
+    <tbody>
+      {% for message in messages %}
+      <tr>
+        <td>{{ message.created_at }}</td>
+        <td>{{ message.direction.value }}</td>
+        <td>{{ message.status.value }}</td>
+        <td>{{ message.user_id }}</td>
+        <td>{{ message.body or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

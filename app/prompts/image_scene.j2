@@ -1,0 +1,21 @@
+Create a consistent character image prompt for an AI companion persona.
+
+Persona display name: {{ persona.display_name }}
+Appearance:
+{{ persona.image_appearance or "Kind, approachable, clearly stylized companion portrait." }}
+
+Visual bible:
+{{ persona.visual_bible | tojson(indent=2) }}
+
+Scene idea:
+{{ scene_hint }}
+
+Requirements:
+- Keep the same character identity and overall look as prior images.
+- Non-romantic, non-sexual, wholesome tone only.
+- No physical intimacy cues.
+- No unsafe, manipulative, or misleading real-world claims embedded in the scene.
+- Fit an MMS-friendly single image.
+
+Negative prompt / avoid:
+{{ negative_prompt or "sexualized pose, lingerie, kissing, bedroom seduction, exclusivity symbolism, threatening imagery" }}
