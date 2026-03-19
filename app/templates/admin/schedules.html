@@ -1,0 +1,52 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header"><div><h1>Schedules</h1><p class="subtle">Quiet hours, proactive windows, follow-up timing, and call windows.</p></div></div>
+<div class="grid two">
+  <section class="card">
+    <h2>Add Schedule Rule</h2>
+    <form method="post" action="/admin/schedules" class="grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Name<input type="text" name="name" required></label>
+      <label>Rule Type
+        <select name="rule_type">
+          {% for rule_type in rule_types %}
+          <option value="{{ rule_type.value }}">{{ rule_type.value }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>User
+        <select name="user_id"><option value="">Global</option>{% for user in users %}<option value="{{ user.id }}">{{ user.phone_number }}</option>{% endfor %}</select>
+      </label>
+      <label>Persona
+        <select name="persona_id"><option value="">Global</option>{% for persona in personas %}<option value="{{ persona.id }}">{{ persona.display_name }}</option>{% endfor %}</select>
+      </label>
+      <label>Weekday (0=Mon)<input type="number" name="weekday" min="0" max="6"></label>
+      <label>Start Time<input type="text" name="start_time" placeholder="09:00"></label>
+      <label>End Time<input type="text" name="end_time" placeholder="18:00"></label>
+      <label>Min Gap Minutes<input type="number" name="min_gap_minutes"></label>
+      <label>Max Gap Minutes<input type="number" name="max_gap_minutes"></label>
+      <label>Probability<input type="number" name="probability" min="0" max="1" step="0.1"></label>
+      <label>Config JSON<textarea name="config_json">{}</textarea></label>
+      <label><input type="checkbox" name="enabled" checked> Enabled</label>
+      <button type="submit">Save Rule</button>
+    </form>
+  </section>
+  <section class="card">
+    <h2>Current Rules</h2>
+    <table>
+      <thead><tr><th>Name</th><th>Type</th><th>Weekday</th><th>Window</th><th>Scope</th></tr></thead>
+      <tbody>
+        {% for rule in rules %}
+        <tr>
+          <td>{{ rule.name }}</td>
+          <td>{{ rule.rule_type.value }}</td>
+          <td>{{ rule.weekday if rule.weekday is not none else "—" }}</td>
+          <td>{{ rule.start_time or "—" }} to {{ rule.end_time or "—" }}</td>
+          <td>{{ rule.user_id or rule.persona_id or "global" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>
+{% endblock %}

@@ -1,0 +1,19 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header"><div><h1>Calls</h1><p class="subtle">Voice call history and generated scripts.</p></div></div>
+<section class="card">
+  <table>
+    <thead><tr><th>Time</th><th>Status</th><th>To</th><th>Script</th></tr></thead>
+    <tbody>
+      {% for call in calls %}
+      <tr>
+        <td>{{ call.created_at }}</td>
+        <td>{{ call.status.value }}</td>
+        <td>{{ call.to_number }}</td>
+        <td>{{ call.script or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

@@ -1,0 +1,43 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header"><div><h1>Media</h1><p class="subtle">Generated companion images, prompts, and attachment history.</p></div></div>
+<div class="grid two">
+  <section class="card">
+    <h2>Generate One-Off Image</h2>
+    <form method="post" action="/admin/media" class="grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>User
+        <select name="user_id"><option value="">None</option>{% for user in users %}<option value="{{ user.id }}">{{ user.phone_number }}</option>{% endfor %}</select>
+      </label>
+      <label>Persona
+        <select name="persona_id" required>{% for persona in personas %}<option value="{{ persona.id }}">{{ persona.display_name }}</option>{% endfor %}</select>
+      </label>
+      <label>Scene Hint<textarea name="scene_hint" required></textarea></label>
+      <label>Negative Prompt<textarea name="negative_prompt"></textarea></label>
+      <button type="submit">Generate Image</button>
+    </form>
+  </section>
+  <section class="card">
+    <h2>Recent Assets</h2>
+    <table>
+      <thead><tr><th>Time</th><th>Status</th><th>Prompt</th><th>Preview</th></tr></thead>
+      <tbody>
+        {% for asset in assets %}
+        <tr>
+          <td>{{ asset.created_at }}</td>
+          <td>{{ asset.generation_status }}</td>
+          <td>{{ asset.prompt_text or "—" }}</td>
+          <td>
+            {% if asset.local_path or asset.remote_url %}
+            <a href="/api/media/{{ asset.id }}">open</a>
+            {% else %}
+            —
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>
+{% endblock %}

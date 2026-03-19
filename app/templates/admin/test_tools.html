@@ -1,0 +1,51 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header"><div><h1>Test Tools</h1><p class="subtle">Manual sends, prompt preview, proactive triggers, and test calls.</p></div></div>
+<div class="grid two">
+  <section class="card">
+    <h2>Manual Send</h2>
+    <form method="post" action="/admin/test-tools" class="grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="action" value="send_message">
+      <label>User<select name="user_id">{% for user in users %}<option value="{{ user.id }}">{{ user.phone_number }}</option>{% endfor %}</select></label>
+      <label>Persona<select name="persona_id"><option value="">Active</option>{% for persona in personas %}<option value="{{ persona.id }}">{{ persona.display_name }}</option>{% endfor %}</select></label>
+      <label>Body<textarea name="body" required></textarea></label>
+      <button type="submit">Send Message</button>
+    </form>
+  </section>
+  <section class="card">
+    <h2>Prompt Preview</h2>
+    <form method="post" action="/admin/test-tools" class="grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="action" value="prompt_preview">
+      <label>User<select name="user_id"><option value="">None</option>{% for user in users %}<option value="{{ user.id }}">{{ user.phone_number }}</option>{% endfor %}</select></label>
+      <label>Persona<select name="persona_id"><option value="">None</option>{% for persona in personas %}<option value="{{ persona.id }}">{{ persona.display_name }}</option>{% endfor %}</select></label>
+      <label>Template Name<input type="text" name="template_name" value="reactive_reply"></label>
+      <button type="submit">Preview Prompt</button>
+    </form>
+    {% if preview_text %}
+    <pre>{{ preview_text }}</pre>
+    {% endif %}
+  </section>
+  <section class="card">
+    <h2>Manual Proactive Trigger</h2>
+    <form method="post" action="/admin/test-tools" class="grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="action" value="manual_proactive">
+      <label>User<select name="user_id">{% for user in users %}<option value="{{ user.id }}">{{ user.phone_number }}</option>{% endfor %}</select></label>
+      <button type="submit">Trigger Proactive Send</button>
+    </form>
+  </section>
+  <section class="card">
+    <h2>Test Call</h2>
+    <form method="post" action="/admin/test-tools" class="grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="action" value="test_call">
+      <label>User<select name="user_id">{% for user in users %}<option value="{{ user.id }}">{{ user.phone_number }}</option>{% endfor %}</select></label>
+      <label>Persona<select name="persona_id"><option value="">Active</option>{% for persona in personas %}<option value="{{ persona.id }}">{{ persona.display_name }}</option>{% endfor %}</select></label>
+      <label>Opening Line<input type="text" name="opening_line"></label>
+      <button type="submit">Initiate Call</button>
+    </form>
+  </section>
+</div>
+{% endblock %}

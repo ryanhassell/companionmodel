@@ -1,0 +1,21 @@
+Create one proactive SMS check-in for the user.
+
+Current scene/theme idea:
+{{ scene_hint }}
+
+Relevant recent context:
+{% for message in recent_messages %}
+- {{ message.direction.value }}: {{ message.body or "" }}
+{% endfor %}
+
+Relevant memories:
+{% for hit in memory_hits %}
+- {{ hit.memory.content }}
+{% endfor %}
+
+Requirements:
+- Sound warm, kind, and light.
+- Do not sound needy or clingy.
+- Do not guilt the user for not replying.
+- Avoid generic “just checking in” phrasing unless it feels clearly earned.
+- Keep it concise.

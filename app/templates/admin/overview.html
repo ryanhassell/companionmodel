@@ -1,0 +1,33 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>Overview</h1>
+    <p class="subtle">Operational snapshot for messaging, memory, and safety.</p>
+  </div>
+</div>
+<section class="stats">
+  {% for key, value in counts.items() %}
+  <div class="stat">
+    <strong>{{ key.replace("_", " ").title() }}</strong>
+    <div>{{ value }}</div>
+  </div>
+  {% endfor %}
+</section>
+<section class="card">
+  <h2>Recent Job Runs</h2>
+  <table>
+    <thead><tr><th>Job</th><th>Status</th><th>Started</th><th>Details</th></tr></thead>
+    <tbody>
+      {% for job in latest_jobs %}
+      <tr>
+        <td>{{ job.job_name }}</td>
+        <td><span class="pill">{{ job.status.value }}</span></td>
+        <td>{{ job.started_at }}</td>
+        <td><pre>{{ job.details_json | tojson(indent=2) }}</pre></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

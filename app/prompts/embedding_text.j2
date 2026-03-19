@@ -1,0 +1,6 @@
+Persona: {{ persona.display_name if persona else "Companion" }}
+User: {{ user.display_name or user.phone_number if user else "unknown" }}
+Memory Type: {{ memory.memory_type.value }}
+Title: {{ memory.title or "" }}
+Tags: {{ memory.tags | join(", ") }}
+Content: {{ memory.content }}

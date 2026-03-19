@@ -1,0 +1,7 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header"><div><h1>Logs</h1><p class="subtle">Recent structured log output from the app log file.</p></div></div>
+<section class="card">
+  <pre>{{ log_content }}</pre>
+</section>
+{% endblock %}

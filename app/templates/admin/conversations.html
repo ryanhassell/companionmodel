@@ -1,0 +1,21 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header"><div><h1>Conversations</h1><p class="subtle">Conversation state, unresolved threads, and recency.</p></div></div>
+<section class="card">
+  <table>
+    <thead><tr><th>ID</th><th>User</th><th>Persona</th><th>Status</th><th>State</th><th>Updated</th></tr></thead>
+    <tbody>
+      {% for conversation in conversations %}
+      <tr>
+        <td>{{ conversation.id }}</td>
+        <td>{{ conversation.user_id }}</td>
+        <td>{{ conversation.persona_id or "—" }}</td>
+        <td>{{ conversation.status }}</td>
+        <td>{{ conversation.state_label or "—" }}</td>
+        <td>{{ conversation.updated_at }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

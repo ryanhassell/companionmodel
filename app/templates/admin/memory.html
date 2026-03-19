@@ -1,0 +1,60 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header"><div><h1>Memory</h1><p class="subtle">Editable long-term facts, summaries, follow-ups, and pinned memories.</p></div></div>
+<div class="grid two">
+  <section class="card">
+    <h2>Create or Update Memory</h2>
+    <form method="post" action="/admin/memory" class="grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="memory_id">
+      <label>User
+        <select name="user_id">
+          {% for user in users %}
+          <option value="{{ user.id }}">{{ user.phone_number }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Persona
+        <select name="persona_id">
+          <option value="">Any / none</option>
+          {% for persona in personas %}
+          <option value="{{ persona.id }}">{{ persona.display_name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Type
+        <select name="memory_type">
+          {% for memory_type in memory_types %}
+          <option value="{{ memory_type.value }}">{{ memory_type.value }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Title<input type="text" name="title"></label>
+      <label>Content<textarea name="content" required></textarea></label>
+      <label>Summary<textarea name="summary"></textarea></label>
+      <label>Tags (comma separated)<input type="text" name="tags"></label>
+      <label>Importance Score<input type="number" step="0.1" min="0" max="1" name="importance_score" value="0.5"></label>
+      <label>Metadata JSON<textarea name="metadata_json">{}</textarea></label>
+      <label><input type="checkbox" name="pinned"> Pinned</label>
+      <label><input type="checkbox" name="disabled"> Disabled</label>
+      <button type="submit">Save Memory</button>
+    </form>
+  </section>
+  <section class="card">
+    <h2>Current Memory Items</h2>
+    <table>
+      <thead><tr><th>Type</th><th>Content</th><th>Score</th><th>Pinned</th></tr></thead>
+      <tbody>
+        {% for item in memory_items %}
+        <tr>
+          <td>{{ item.memory_type.value }}</td>
+          <td>{{ item.content }}</td>
+          <td>{{ item.importance_score }}</td>
+          <td>{{ "yes" if item.pinned else "no" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>
+{% endblock %}

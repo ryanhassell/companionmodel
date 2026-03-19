@@ -1,0 +1,20 @@
+Extract durable memory candidates from this user message and nearby context.
+
+Return JSON only in one of these formats:
+1. {"facts": [{"memory_type": "fact", "title": "...", "content": "...", "summary": "...", "tags": ["..."], "importance_score": 0.0}]}
+2. [{"memory_type": "fact", "title": "...", "content": "...", "summary": "...", "tags": ["..."], "importance_score": 0.0}]
+
+Rules:
+- Extract only user-related facts worth remembering later.
+- No more than {{ config.memory.max_facts_per_extraction if config.memory is defined else 6 }} items.
+- Use memory_type from: fact, preference, follow_up, episode, safety.
+- Prefer precision over volume.
+- Do not invent anything.
+
+Current message:
+{{ message.body or "" }}
+
+Recent conversation:
+{% for item in recent_messages %}
+- {{ item.direction.value }}: {{ item.body or "" }}
+{% endfor %}

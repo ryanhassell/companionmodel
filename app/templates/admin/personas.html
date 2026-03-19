@@ -1,0 +1,51 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header">
+  <div><h1>Personas</h1><p class="subtle">Companion identity, boundaries, appearance, and prompt behavior.</p></div>
+</div>
+<div class="grid two">
+  <section class="card">
+    <h2>Create or Update Persona</h2>
+    <form method="post" action="/admin/personas" class="grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="persona_id">
+      <label>Key<input type="text" name="key" required></label>
+      <label>Display Name<input type="text" name="display_name" required></label>
+      <label>Description<textarea name="description"></textarea></label>
+      <label>Style<textarea name="style"></textarea></label>
+      <label>Tone<textarea name="tone"></textarea></label>
+      <label>Boundaries<textarea name="boundaries"></textarea></label>
+      <label>Topics of Interest (comma separated)<input type="text" name="topics_of_interest"></label>
+      <label>Favorite Activities (comma separated)<input type="text" name="favorite_activities"></label>
+      <label>Image Appearance<textarea name="image_appearance"></textarea></label>
+      <label>Speech Style<textarea name="speech_style"></textarea></label>
+      <label>Disclosure Policy<textarea name="disclosure_policy"></textarea></label>
+      <label>Texting Length Preference<input type="text" name="texting_length_preference"></label>
+      <label>Emoji Tendency<input type="text" name="emoji_tendency"></label>
+      <label>Proactive Outreach Style<textarea name="proactive_outreach_style"></textarea></label>
+      <label>Visual Bible JSON<textarea name="visual_bible">{}</textarea></label>
+      <label>Prompt Overrides JSON<textarea name="prompt_overrides">{}</textarea></label>
+      <label>Safety Overrides JSON<textarea name="safety_overrides">{}</textarea></label>
+      <label>Operator Notes<textarea name="operator_notes"></textarea></label>
+      <label><input type="checkbox" name="is_active"> Set as active persona</label>
+      <button type="submit">Save Persona</button>
+    </form>
+  </section>
+  <section class="card">
+    <h2>Current Personas</h2>
+    <table>
+      <thead><tr><th>Name</th><th>Key</th><th>Active</th><th>Topics</th></tr></thead>
+      <tbody>
+        {% for persona in personas %}
+        <tr>
+          <td>{{ persona.display_name }}</td>
+          <td>{{ persona.key }}</td>
+          <td>{{ "yes" if persona.is_active else "no" }}</td>
+          <td>{{ persona.topics_of_interest | join(", ") }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>
+{% endblock %}

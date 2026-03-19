@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Bootstrap Admin · Companion Pi</title>
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+  <body>
+    <div class="auth-shell">
+      <div class="card auth-card">
+        <h1>Create First Admin</h1>
+        <p class="subtle">No admin account exists yet. Create one to finish setup.</p>
+        <form method="post" action="/bootstrap" class="grid">
+          <label>
+            Username
+            <input type="text" name="username" required>
+          </label>
+          <label>
+            Password
+            <input type="password" name="password" required minlength="12">
+          </label>
+          <button type="submit">Create Admin</button>
+        </form>
+      </div>
+    </div>
+  </body>
+</html>

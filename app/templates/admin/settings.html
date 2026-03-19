@@ -1,0 +1,42 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header"><div><h1>Settings</h1><p class="subtle">Runtime config overrides layered over env and config files.</p></div></div>
+<div class="grid two">
+  <section class="card">
+    <h2>Create or Update Override</h2>
+    <form method="post" action="/admin/settings" class="grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Scope
+        <select name="scope">{% for scope in scopes %}<option value="{{ scope.value }}">{{ scope.value }}</option>{% endfor %}</select>
+      </label>
+      <label>Namespace<input type="text" name="namespace" required></label>
+      <label>Key<input type="text" name="key" required></label>
+      <label>User
+        <select name="user_id"><option value="">None</option>{% for user in users %}<option value="{{ user.id }}">{{ user.phone_number }}</option>{% endfor %}</select>
+      </label>
+      <label>Persona
+        <select name="persona_id"><option value="">None</option>{% for persona in personas %}<option value="{{ persona.id }}">{{ persona.display_name }}</option>{% endfor %}</select>
+      </label>
+      <label>Description<textarea name="description"></textarea></label>
+      <label>Value JSON<textarea name="value_json" required>{}</textarea></label>
+      <button type="submit">Save Override</button>
+    </form>
+  </section>
+  <section class="card">
+    <h2>Current Overrides</h2>
+    <table>
+      <thead><tr><th>Scope</th><th>Namespace</th><th>Key</th><th>Value</th></tr></thead>
+      <tbody>
+        {% for row in settings_rows %}
+        <tr>
+          <td>{{ row.scope.value }}</td>
+          <td>{{ row.namespace }}</td>
+          <td>{{ row.key }}</td>
+          <td><pre>{{ row.value_json | tojson(indent=2) }}</pre></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>
+{% endblock %}
