@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import audioop
+import base64
 import html
+import io
 import json
 import uuid
+import wave
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote
 
+from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +26,7 @@ from app.models.enums import CallDirection, CallStatus, Channel, Direction, Memo
 from app.models.memory import MemoryItem
 from app.models.persona import Persona
 from app.models.user import User
+from app.providers.elevenlabs import ElevenLabsProvider
 from app.providers.openai import OpenAIProvider
 from app.providers.twilio import TwilioProvider
 from app.services.daily_life import DailyLifeService
@@ -42,12 +48,22 @@ class RealtimeSessionOutcome:
     end_reason: str | None
 
 
+@dataclass(slots=True)
+class MediaStreamSessionOutcome:
+    transcript: str
+    started_at: datetime | None
+    ended_at: datetime | None
+    session_events: list[dict[str, Any]]
+    end_reason: str | None
+
+
 class VoiceService:
     def __init__(
         self,
         settings: RuntimeSettings,
         twilio_provider: TwilioProvider,
         openai_provider: OpenAIProvider,
+        elevenlabs_provider: ElevenLabsProvider,
         prompt_service: PromptService,
         memory_service: MemoryService,
         daily_life_service: DailyLifeService,
@@ -55,6 +71,7 @@ class VoiceService:
         self.settings = settings
         self.twilio_provider = twilio_provider
         self.openai_provider = openai_provider
+        self.elevenlabs_provider = elevenlabs_provider
         self.prompt_service = prompt_service
         self.memory_service = memory_service
         self.daily_life_service = daily_life_service
@@ -72,7 +89,7 @@ class VoiceService:
     ) -> CallRecord:
         if not self.settings.voice.enabled:
             raise RuntimeError("Voice calling is disabled")
-        if self.settings.voice.realtime_enabled:
+        if self._voice_driver() == "openai_realtime_sip":
             return await self.initiate_realtime_call(
                 session,
                 user=user,
@@ -80,6 +97,47 @@ class VoiceService:
                 config=config,
                 opening_line=opening_line,
             )
+        return await self.initiate_media_stream_call(
+            session,
+            user=user,
+            persona=persona,
+            config=config,
+            opening_line=opening_line,
+        )
+
+    def _voice_driver(self) -> str:
+        if self.settings.voice.driver:
+            return self.settings.voice.driver
+        if self.settings.voice.realtime_enabled:
+            return "openai_realtime_sip"
+        return "twilio_twiml"
+
+    def _media_stream_websocket_url(self) -> str:
+        base = self.settings.app.public_webhook_base_url.rstrip("/")
+        if base.startswith("https://"):
+            base = "wss://" + base[len("https://") :]
+        elif base.startswith("http://"):
+            base = "ws://" + base[len("http://") :]
+        return f"{base}{self.settings.voice.media_streams_websocket_path}"
+
+    def _selected_elevenlabs_voice(self, persona: Persona | None) -> str | None:
+        if persona is not None and isinstance(persona.prompt_overrides, dict):
+            override = str(persona.prompt_overrides.get("elevenlabs_voice_id") or "").strip()
+            if override:
+                return override
+        return self.settings.voice.elevenlabs_default_voice_id
+
+    async def initiate_media_stream_call(
+        self,
+        session: AsyncSession,
+        *,
+        user: User,
+        persona: Persona | None,
+        config: dict[str, Any],
+        opening_line: str | None = None,
+    ) -> CallRecord:
+        if not self._selected_elevenlabs_voice(persona):
+            raise RuntimeError("No ElevenLabs voice is configured for this persona or globally")
         script = await self.generate_script(
             session,
             user=user,
@@ -95,20 +153,49 @@ class VoiceService:
             to_number=user.phone_number,
             from_number=self.settings.twilio.from_number,
             script=script,
+            metadata_json={
+                "mode": "media_streams",
+                "transport": "twilio_media_streams",
+                "opening_line": opening_line,
+                "voice_driver": self._voice_driver(),
+                "config_snapshot": {
+                    "voice": config.get("voice", {}),
+                    "safety": {"daily_call_cap": config.get("safety", {}).get("daily_call_cap")},
+                },
+            },
         )
         session.add(record)
         await session.flush()
+        twiml = self.build_media_stream_twiml(
+            record_id=str(record.id),
+            user=user,
+            persona=persona,
+            opening_line=opening_line,
+        )
         result = await self.twilio_provider.initiate_call(
             to_number=user.phone_number,
-            twiml_url=f"{self.settings.app.public_webhook_base_url.rstrip('/')}/webhooks/twilio/voice?call_id={record.id}",
+            twiml=twiml,
+            status_callback=self.settings.twilio.voice_status_callback_url,
         )
         record.provider_call_sid = result.provider_sid
         try:
             record.status = CallStatus(result.status)
         except ValueError:
             record.status = CallStatus.queued
-        record.metadata_json = result.raw_response
+        record.metadata_json = {
+            **(record.metadata_json or {}),
+            "twilio": result.raw_response,
+            "provider_sid": result.provider_sid,
+        }
         await session.flush()
+        logger.info(
+            "media_stream_call_initiated",
+            call_record_id=str(record.id),
+            provider_sid=result.provider_sid,
+            user_id=str(user.id),
+            persona=persona.display_name if persona else None,
+            transport="twilio_media_streams",
+        )
         return record
 
     async def initiate_realtime_call(
@@ -201,6 +288,40 @@ class VoiceService:
             "</Response>"
         )
 
+    def build_media_stream_twiml(
+        self,
+        *,
+        record_id: str,
+        user: User,
+        persona: Persona | None,
+        opening_line: str | None = None,
+    ) -> str:
+        websocket_url = html.escape(self._media_stream_websocket_url())
+        params = {
+            "call_record_id": record_id,
+            "user_id": str(user.id),
+            "user_phone": user.phone_number,
+            "direction": "outbound",
+        }
+        if persona is not None:
+            params["persona_id"] = str(persona.id)
+        if opening_line:
+            params["opening_line"] = opening_line
+        parameter_xml = "".join(
+            f'<Parameter name="{html.escape(name)}" value="{html.escape(value)}"/>' for name, value in params.items()
+        )
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            "<Response>"
+            "<Connect>"
+            f'<Stream url="{websocket_url}">{parameter_xml}</Stream>'
+            "</Connect>"
+            "</Response>"
+        )
+
+    def build_hangup_twiml(self) -> str:
+        return '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
+
     def _selected_realtime_voice(self, persona: Persona | None) -> str:
         if persona is not None and isinstance(persona.prompt_overrides, dict):
             override = str(persona.prompt_overrides.get("realtime_voice") or "").strip()
@@ -243,6 +364,15 @@ class VoiceService:
         record = await self._resolve_call_record(session, payload=payload)
         if record is None:
             user = await self._resolve_user_from_payload(session, payload)
+            if user is None:
+                logger.info(
+                    "realtime_call_rejected_unknown_caller",
+                    call_id=call_id,
+                    from_number=_nested_value(payload, "from", "data.from", "caller", "call.from"),
+                )
+                with suppress(Exception):
+                    await self.openai_provider.end_realtime_call(call_id)
+                return {"status": "rejected", "reason": "unknown_caller", "call_id": call_id}
             persona = await self._resolve_persona_from_payload(session, payload, user=user)
             record = CallRecord(
                 user_id=user.id if user else None,
@@ -388,6 +518,69 @@ class VoiceService:
         await session.flush()
         return record
 
+    async def handle_twilio_voice_webhook(self, session: AsyncSession, *, form: dict[str, Any]) -> str:
+        if self._voice_driver() != "twilio_media_streams_openai_stt_elevenlabs":
+            call_id = str(form.get("call_id") or form.get("CallSid") or "")
+            if not call_id:
+                return self.build_hangup_twiml()
+            record = await session.get(CallRecord, call_id)
+            if record is None:
+                stmt = select(CallRecord).where(CallRecord.provider_call_sid == call_id)
+                record = (await session.execute(stmt)).scalar_one_or_none()
+            if record is None:
+                return self.build_hangup_twiml()
+            script = record.script or "Hi, just checking in and saying hello."
+            return self.build_twiml(script)
+
+        incoming_phone = _normalize_phone_number(str(form.get("From") or ""))
+        user = await self._resolve_user_from_payload(session, {"from": incoming_phone})
+        if user is None:
+            logger.info("twilio_voice_rejected_unknown_caller", from_number=incoming_phone)
+            return self.build_hangup_twiml()
+        persona = await self._resolve_persona_from_payload(session, {"from": incoming_phone}, user=user)
+        call_sid = str(form.get("CallSid") or "")
+        stmt = select(CallRecord).where(CallRecord.provider_call_sid == call_sid)
+        record = (await session.execute(stmt)).scalar_one_or_none()
+        if record is None:
+            record = CallRecord(
+                user_id=user.id,
+                persona_id=persona.id if persona else None,
+                direction=CallDirection.inbound,
+                status=CallStatus.ringing,
+                from_number=incoming_phone,
+                to_number=str(form.get("To") or "") or self.settings.twilio.from_number,
+                provider_call_sid=call_sid,
+                metadata_json={
+                    "mode": "media_streams",
+                    "transport": "twilio_media_streams",
+                    "voice_driver": self._voice_driver(),
+                    "twilio_voice_form": dict(form),
+                },
+            )
+            session.add(record)
+            await session.flush()
+        else:
+            record.status = CallStatus.ringing
+            record.user_id = user.id
+            record.persona_id = persona.id if persona else None
+            record.from_number = incoming_phone
+            record.to_number = str(form.get("To") or "") or record.to_number
+            record.metadata_json = {**(record.metadata_json or {}), "twilio_voice_form": dict(form)}
+            await session.flush()
+        logger.info(
+            "twilio_voice_media_stream_ready",
+            call_record_id=str(record.id),
+            provider_sid=call_sid,
+            user_id=str(user.id),
+            persona_id=str(persona.id) if persona else None,
+        )
+        return self.build_media_stream_twiml(
+            record_id=str(record.id),
+            user=user,
+            persona=persona,
+            opening_line=None,
+        )
+
     def _schedule_sideband_session(self, call_record_id: str, call_id: str) -> None:
         existing = self._session_tasks.get(call_record_id)
         if existing and not existing.done():
@@ -440,6 +633,200 @@ class VoiceService:
                     record.ended_at = utc_now()
                     record.metadata_json = {**(record.metadata_json or {}), "session_error": repr(exc)}
                     await session.commit()
+
+    async def handle_twilio_media_stream(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        session_events: list[dict[str, Any]] = []
+        call_record_id: str | None = None
+        record: CallRecord | None = None
+        user: User | None = None
+        persona: Persona | None = None
+        config: dict[str, Any] | None = None
+        instructions = ""
+        stream_sid = ""
+        transcript_entries: list[tuple[str, str]] = []
+        generation_counter = 0
+        speech_task: asyncio.Task[None] | None = None
+        utterance_buffer = bytearray()
+        speech_active = False
+        speech_ms = 0
+        silence_ms = 0
+        started_at: datetime | None = None
+
+        async def cancel_speech() -> None:
+            nonlocal speech_task, generation_counter
+            generation_counter += 1
+            if speech_task and not speech_task.done():
+                speech_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await speech_task
+            speech_task = None
+            if stream_sid:
+                await websocket.send_json({"event": "clear", "streamSid": stream_sid})
+
+        async def speak_text(text: str, generation_id: int) -> None:
+            if not text or generation_id != generation_counter:
+                return
+            voice_id = self._selected_elevenlabs_voice(persona)
+            if not voice_id:
+                return
+            async for chunk in self.elevenlabs_provider.stream_tts(
+                text=text,
+                voice_id=voice_id,
+                model_id=self.settings.voice.elevenlabs_tts_model,
+                output_format="ulaw_8000",
+            ):
+                if generation_id != generation_counter:
+                    break
+                for piece in _chunk_audio_bytes(chunk, ms=self.settings.voice.stream_chunk_ms):
+                    if generation_id != generation_counter:
+                        break
+                    await websocket.send_json(
+                        {
+                            "event": "media",
+                            "streamSid": stream_sid,
+                            "media": {"payload": base64.b64encode(piece).decode("ascii")},
+                        }
+                    )
+
+        async def generate_and_speak(latest_user_text: str, generation_id: int) -> None:
+            nonlocal transcript_entries
+            if generation_id != generation_counter or not record or not config:
+                return
+            input_text = _format_call_turn_prompt(transcript_entries, latest_user_text)
+            response = await self.openai_provider.generate_text(
+                instructions=instructions,
+                input_items=[{"role": "user", "content": input_text}],
+                model=self.settings.voice.text_model,
+                max_output_tokens=220,
+            )
+            assistant_text = response.text.strip()
+            if not assistant_text or generation_id != generation_counter:
+                return
+            transcript_entries.append(("assistant", assistant_text))
+            await speak_text(assistant_text, generation_id)
+
+        async def finalize_user_utterance() -> None:
+            nonlocal utterance_buffer, speech_active, speech_ms, silence_ms, speech_task
+            audio_bytes = bytes(utterance_buffer)
+            utterance_buffer = bytearray()
+            speech_active = False
+            speech_ms = 0
+            silence_ms = 0
+            if not audio_bytes or not record:
+                return
+            transcript = await self.openai_provider.transcribe_audio(
+                audio_bytes=_mulaw_to_wav_bytes(audio_bytes),
+                filename="call.wav",
+                mime_type="audio/wav",
+                model=self.settings.voice.stt_model,
+                prompt="Phone call speech. Return only the spoken words.",
+            )
+            user_text = transcript.text.strip()
+            if not user_text:
+                return
+            transcript_entries.append(("user", user_text))
+            generation_id = generation_counter
+            speech_task = asyncio.create_task(generate_and_speak(user_text, generation_id))
+
+        try:
+            while True:
+                event = await websocket.receive_json()
+                event_type = str(event.get("event") or "")
+                session_events.append({"type": event_type, "timestamp": utc_now().isoformat()})
+                if event_type == "start":
+                    started_at = started_at or utc_now()
+                    start = event.get("start") or {}
+                    stream_sid = str(start.get("streamSid") or "")
+                    custom_parameters = start.get("customParameters") or {}
+                    call_record_id = str(custom_parameters.get("call_record_id") or "")
+                    if not call_record_id:
+                        await websocket.close()
+                        return
+                    async with self._sessionmaker() as session:
+                        record = await session.get(CallRecord, call_record_id)
+                        if record is None:
+                            await websocket.close()
+                            return
+                        user = await session.get(User, record.user_id) if record.user_id else None
+                        persona = await session.get(Persona, record.persona_id) if record.persona_id else None
+                        config = {
+                            "voice": self.settings.voice.model_dump(mode="json"),
+                            "memory": self.settings.memory.model_dump(mode="json"),
+                            "app": {"timezone": user.timezone if user else self.settings.app.timezone},
+                        }
+                        instructions = await self._build_realtime_session_prompt(
+                            session,
+                            user=user,
+                            persona=persona,
+                            call_record=record,
+                            config=config,
+                            lightweight=True,
+                        )
+                        record.status = CallStatus.in_progress
+                        record.started_at = record.started_at or started_at
+                        await session.commit()
+                    greeting = await self._initial_greeting_text(call_record=record, user=user, persona=persona, instructions=instructions)
+                    if greeting:
+                        transcript_entries.append(("assistant", greeting))
+                        generation_counter += 1
+                        speech_task = asyncio.create_task(speak_text(greeting, generation_counter))
+                    continue
+                if event_type == "media":
+                    media = event.get("media") or {}
+                    payload = str(media.get("payload") or "")
+                    if not payload:
+                        continue
+                    chunk = base64.b64decode(payload)
+                    if not chunk:
+                        continue
+                    ms = max(int(len(chunk) / 8), 20)
+                    rms = _mulaw_rms(chunk)
+                    if rms >= self.settings.voice.vad_rms_threshold:
+                        if speech_task and not speech_task.done():
+                            await cancel_speech()
+                        utterance_buffer.extend(chunk)
+                        speech_active = True
+                        speech_ms += ms
+                        silence_ms = 0
+                    elif speech_active:
+                        utterance_buffer.extend(chunk)
+                        silence_ms += ms
+                        if silence_ms >= self.settings.voice.vad_silence_ms and speech_ms >= self.settings.voice.vad_min_speech_ms:
+                            await finalize_user_utterance()
+                    continue
+                if event_type == "stop":
+                    break
+        except WebSocketDisconnect:
+            session_events.append({"type": "disconnect", "timestamp": utc_now().isoformat()})
+        finally:
+            if speech_active and speech_ms >= self.settings.voice.vad_min_speech_ms:
+                with suppress(Exception):
+                    await finalize_user_utterance()
+            if speech_task and not speech_task.done():
+                with suppress(asyncio.CancelledError):
+                    await speech_task
+            if record and call_record_id:
+                async with self._sessionmaker() as session:
+                    refreshed = await session.get(CallRecord, call_record_id)
+                    user = await session.get(User, refreshed.user_id) if refreshed and refreshed.user_id else None
+                    persona = await session.get(Persona, refreshed.persona_id) if refreshed and refreshed.persona_id else None
+                    if refreshed is not None:
+                        outcome = MediaStreamSessionOutcome(
+                            transcript=_flatten_transcript_entries(transcript_entries),
+                            started_at=started_at,
+                            ended_at=utc_now(),
+                            session_events=session_events[-100:],
+                            end_reason="media_stream_stopped",
+                        )
+                        await self._finalize_media_stream_call(
+                            session,
+                            call_record=refreshed,
+                            user=user,
+                            persona=persona,
+                            outcome=outcome,
+                        )
+                        await session.commit()
 
     async def _stream_realtime_session(
         self,
@@ -606,10 +993,16 @@ class VoiceService:
             "session": {
                 "type": "realtime",
                 "model": self.settings.openai.realtime_model,
-                "voice": self._selected_realtime_voice(persona),
                 "instructions": instructions,
-                "modalities": ["audio", "text"],
-                "turn_detection": self._turn_detection_payload(),
+                "output_modalities": ["audio"],
+                "audio": {
+                    "input": {
+                        "turn_detection": self._turn_detection_payload(),
+                    },
+                    "output": {
+                        "voice": self._selected_realtime_voice(persona),
+                    },
+                },
                 "tool_choice": "auto",
                 "tools": [
                     {
@@ -666,20 +1059,30 @@ class VoiceService:
         user_name = (user.display_name or "").strip() if user and user.display_name else ""
         opening_line = str((call_record.metadata_json or {}).get("opening_line") or "").strip()
         persona_name = persona.display_name if persona else "Companion"
+        persona_style = (persona.style or "").strip() if persona and persona.style else ""
+        persona_tone = (persona.tone or "").strip() if persona and persona.tone else ""
+        persona_descriptor_parts = [part for part in [persona_style, persona_tone] if part]
+        persona_descriptor = "; ".join(persona_descriptor_parts) if persona_descriptor_parts else "natural, casual, fully in character"
         if call_record.direction == CallDirection.inbound:
+            first_line = f"hi {user_name}" if user_name else "hello?"
             prompt = (
-                "The phone just rang and you are answering it. "
-                "Start with a very short natural phone pickup, like 'hello?' or 'hi Ryan'. "
-                "Keep it to one brief sentence, warm and casual, with no long intro."
+                f"You are {persona_name}. Stay fully in character for this entire call. "
+                f"Your vibe should feel {persona_descriptor}. "
+                f'Say exactly this first spoken line and nothing else yet: "{first_line}". '
+                "After saying it, stop and wait for the caller. "
+                "Do not add a follow-up question. "
+                "Do not say things like 'how can I help you today' or anything customer-service-like. "
+                "Do not sound like an assistant, receptionist, or support agent."
             )
-            if user_name:
-                prompt += f" The caller's name is {user_name}."
         else:
             prompt = (
+                f"You are {persona_name}. Stay fully in character for this entire call. "
+                f"Your vibe should feel {persona_descriptor}. "
                 "You just placed this call. "
                 "Start naturally like a real person making a casual call. "
                 "Briefly greet the user, then smoothly ask or say the main thing you called about. "
-                "Keep it to one or two short spoken sentences."
+                "Keep it to one or two short spoken sentences. "
+                "Do not sound like an assistant, receptionist, or support agent."
             )
             if user_name:
                 prompt += f" The user's name is {user_name}."
@@ -890,6 +1293,69 @@ class VoiceService:
             summary_preview=(summary or "")[:160],
         )
 
+    async def _finalize_media_stream_call(
+        self,
+        session: AsyncSession,
+        *,
+        call_record: CallRecord,
+        user: User | None,
+        persona: Persona | None,
+        outcome: MediaStreamSessionOutcome,
+    ) -> None:
+        call_record.transcript = outcome.transcript or call_record.transcript
+        call_record.started_at = outcome.started_at or call_record.started_at or utc_now()
+        call_record.ended_at = outcome.ended_at or utc_now()
+        if call_record.started_at and call_record.ended_at:
+            call_record.duration_seconds = max(
+                int((call_record.ended_at - call_record.started_at).total_seconds()),
+                0,
+            )
+        call_record.status = CallStatus.completed if outcome.transcript else CallStatus.failed
+        summary = await self._summarize_call(transcript=outcome.transcript, persona=persona)
+        call_record.metadata_json = {
+            **(call_record.metadata_json or {}),
+            "summary": summary,
+            "session_events": outcome.session_events,
+            "end_reason": outcome.end_reason,
+        }
+        if outcome.transcript and user is not None:
+            await self._extract_call_memories(
+                session,
+                user=user,
+                persona=persona,
+                call_record=call_record,
+                transcript=outcome.transcript,
+                summary=summary,
+            )
+        await session.flush()
+        logger.info(
+            "media_stream_call_finalized",
+            call_record_id=str(call_record.id),
+            status=call_record.status.value,
+            duration_seconds=call_record.duration_seconds,
+            transcript_preview=(outcome.transcript or "")[:160],
+            summary_preview=(summary or "")[:160],
+        )
+
+    async def _initial_greeting_text(
+        self,
+        *,
+        call_record: CallRecord,
+        user: User | None,
+        persona: Persona | None,
+        instructions: str,
+    ) -> str:
+        if call_record.direction == CallDirection.inbound:
+            return f"hi {(user.display_name or '').strip()}".strip() if user and user.display_name else "hello?"
+        prompt = self._initial_greeting_payload(call_record=call_record, user=user, persona=persona)["response"]["instructions"]
+        response = await self.openai_provider.generate_text(
+            instructions=instructions,
+            input_items=[{"role": "user", "content": prompt}],
+            model=self.settings.voice.text_model,
+            max_output_tokens=80,
+        )
+        return response.text.strip()
+
     async def _summarize_call(self, *, transcript: str, persona: Persona | None) -> str:
         if not transcript:
             return ""
@@ -993,8 +1459,12 @@ class VoiceService:
         phone = _nested_value(payload, "user_phone", "from", "data.from", "caller", "call.from")
         if not phone:
             return None
-        stmt = select(User).where(User.phone_number == phone)
-        return (await session.execute(stmt)).scalar_one_or_none()
+        target = _normalize_phone_number(str(phone))
+        users = (await session.execute(select(User))).scalars().all()
+        for user in users:
+            if _normalize_phone_number(user.phone_number) == target:
+                return user
+        return None
 
     async def _resolve_persona_from_payload(
         self,
@@ -1012,6 +1482,18 @@ class VoiceService:
         )
         if persona_id:
             return await session.get(Persona, _maybe_uuid(persona_id))
+        incoming_phone = _nested_value(payload, "user_phone", "from", "data.from", "caller", "call.from")
+        normalized_incoming = _normalize_phone_number(str(incoming_phone)) if incoming_phone else ""
+        if normalized_incoming:
+            personas = (await session.execute(select(Persona))).scalars().all()
+            for persona in personas:
+                prompt_overrides = persona.prompt_overrides or {}
+                raw_numbers = prompt_overrides.get("calling_numbers") or []
+                if not isinstance(raw_numbers, list):
+                    continue
+                normalized_numbers = {_normalize_phone_number(str(number)) for number in raw_numbers if str(number).strip()}
+                if normalized_incoming in normalized_numbers:
+                    return persona
         if user and user.preferred_persona_id:
             return await session.get(Persona, user.preferred_persona_id)
         stmt = select(Persona).where(Persona.is_active.is_(True)).limit(1)
@@ -1059,6 +1541,62 @@ def _nested_value(payload: dict[str, Any], *paths: str) -> Any:
         if found and cursor not in (None, ""):
             return cursor
     return None
+
+
+def _normalize_phone_number(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    has_plus = raw.startswith("+")
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if not digits:
+        return raw.lower()
+    if has_plus:
+        return f"+{digits}"
+    if len(digits) == 11 and digits.startswith("1"):
+        return f"+{digits}"
+    if len(digits) == 10:
+        return f"+1{digits}"
+    return digits
+
+
+def _mulaw_rms(chunk: bytes) -> int:
+    if not chunk:
+        return 0
+    pcm = audioop.ulaw2lin(chunk, 2)
+    return int(audioop.rms(pcm, 2))
+
+
+def _mulaw_to_wav_bytes(chunk: bytes) -> bytes:
+    pcm = audioop.ulaw2lin(chunk, 2)
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(8000)
+        wav_file.writeframes(pcm)
+    return buffer.getvalue()
+
+
+def _chunk_audio_bytes(data: bytes, *, ms: int) -> list[bytes]:
+    if not data:
+        return []
+    chunk_size = max(int((8000 * ms) / 1000), 160)
+    return [data[index : index + chunk_size] for index in range(0, len(data), chunk_size)]
+
+
+def _format_call_turn_prompt(transcript_entries: list[tuple[str, str]], latest_user_text: str) -> str:
+    lines = ["Live phone call transcript so far:"]
+    for speaker, text in transcript_entries[-12:]:
+        lines.append(f"{speaker}: {text}")
+    lines.append("")
+    lines.append(f"Latest caller speech: {latest_user_text}")
+    lines.append("Reply naturally in one to three short spoken sentences.")
+    return "\n".join(lines)
+
+
+def _flatten_transcript_entries(entries: list[tuple[str, str]]) -> str:
+    return "\n".join(f"{speaker}: {text}".strip() for speaker, text in entries if text and text.strip()).strip()
 
 
 def _event_value(payload: dict[str, Any], *keys: str) -> str:

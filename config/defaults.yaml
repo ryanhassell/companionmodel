@@ -109,14 +109,29 @@ memory:
 voice:
   enabled: true
   realtime_enabled: true
+  driver: twilio_media_streams_openai_stt_elevenlabs
   max_duration_seconds: 300
   default_voice: coral
   default_tts_mode: twilio_say
   realtime_voice: coral
   realtime_sip_uri:
+  media_streams_websocket_path: /webhooks/twilio/voice/media-stream
+  stt_model: gpt-4o-transcribe
+  text_model: gpt-4o-mini
+  elevenlabs_default_voice_id:
+  elevenlabs_tts_model: eleven_flash_v2_5
+  stream_chunk_ms: 120
+  vad_rms_threshold: 450
+  vad_min_speech_ms: 240
+  vad_silence_ms: 720
   sideband_connect_timeout_seconds: 20
   sideband_idle_timeout_seconds: 900
   max_tool_roundtrips: 12
+
+elevenlabs:
+  base_url: https://api.elevenlabs.io/v1
+  api_timeout_seconds: 60
+  tts_model: eleven_flash_v2_5
 
 admin:
   session_cookie_name: companion_admin_session

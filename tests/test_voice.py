@@ -16,6 +16,7 @@ from app.models.memory import MemoryItem
 from app.models.persona import Persona
 from app.models.user import User
 from app.providers.base import OutboundCallResult
+from app.providers.elevenlabs import ElevenLabsProvider
 from app.providers.openai import OpenAIProvider
 from app.providers.twilio import TwilioProvider
 from app.routers.api import router as api_router
@@ -47,6 +48,7 @@ class FakeWebsocket:
 def _build_voice_service(settings) -> tuple[VoiceService, OpenAIProvider]:
     client = httpx.AsyncClient()
     openai_provider = OpenAIProvider(settings, client)
+    elevenlabs_provider = ElevenLabsProvider(settings, client)
     prompt_service = PromptService(settings)
     memory_service = MemoryService(settings, openai_provider, prompt_service)
     daily_life_service = DailyLifeService(memory_service)
@@ -54,6 +56,7 @@ def _build_voice_service(settings) -> tuple[VoiceService, OpenAIProvider]:
         settings,
         FakeTwilioProvider(),  # type: ignore[arg-type]
         openai_provider,
+        elevenlabs_provider,
         prompt_service,
         memory_service,
         daily_life_service,
@@ -63,7 +66,7 @@ def _build_voice_service(settings) -> tuple[VoiceService, OpenAIProvider]:
 
 async def test_voice_service_initiates_realtime_call(sqlite_session, settings):
     settings.voice.enabled = True
-    settings.voice.realtime_enabled = True
+    settings.voice.driver = "openai_realtime_sip"
     settings.voice.realtime_sip_uri = "sip:test@example.com"
     user = User(phone_number="+15555550110", timezone="America/New_York")
     persona = Persona(key="sabrina", display_name="Sabrina", is_active=True)
@@ -89,7 +92,7 @@ async def test_voice_service_initiates_realtime_call(sqlite_session, settings):
 
 async def test_voice_service_accepts_incoming_realtime_call(sqlite_session, settings, monkeypatch):
     settings.voice.enabled = True
-    settings.voice.realtime_enabled = True
+    settings.voice.driver = "openai_realtime_sip"
     user = User(phone_number="+15555550111", timezone="America/New_York")
     persona = Persona(key="sabrina", display_name="Sabrina", is_active=True)
     sqlite_session.add_all([user, persona])
@@ -137,9 +140,84 @@ async def test_voice_service_accepts_incoming_realtime_call(sqlite_session, sett
     await openai_provider.client.aclose()
 
 
+async def test_voice_service_routes_incoming_call_to_persona_by_calling_number(sqlite_session, settings, monkeypatch):
+    settings.voice.enabled = True
+    settings.voice.driver = "openai_realtime_sip"
+    user = User(phone_number="+15555550114", timezone="America/New_York")
+    persona_a = Persona(key="sabrina", display_name="Sabrina", is_active=True)
+    persona_b = Persona(
+        key="ella",
+        display_name="Ella",
+        is_active=False,
+        prompt_overrides={"calling_numbers": ["+1 (555) 555-0114"]},
+    )
+    sqlite_session.add_all([user, persona_a, persona_b])
+    await sqlite_session.flush()
+
+    service, openai_provider = _build_voice_service(settings)
+    accepted_payload: dict[str, object] = {}
+
+    async def fake_accept(call_id: str, *, payload: dict[str, object]):
+        accepted_payload.update(payload)
+        return {"id": call_id, "status": "accepted", "payload": payload}
+
+    monkeypatch.setattr(openai_provider, "accept_realtime_call", fake_accept)
+    monkeypatch.setattr(service, "_schedule_sideband_session", lambda call_record_id, call_id: None)
+
+    result = await service.handle_openai_realtime_event(
+        sqlite_session,
+        payload={
+            "type": "realtime.call.incoming",
+            "call_id": "call_route_1",
+            "from": "+15555550114",
+            "to": "+15550000000",
+        },
+    )
+
+    assert result["status"] == "accepted"
+    record = (await sqlite_session.execute(select(CallRecord).where(CallRecord.provider_call_sid == "call_route_1"))).scalar_one()
+    assert str(record.persona_id) == str(persona_b.id)
+    assert accepted_payload["audio"]["output"]["voice"] == settings.voice.realtime_voice
+    await openai_provider.client.aclose()
+
+
+async def test_voice_service_rejects_unknown_incoming_caller(sqlite_session, settings, monkeypatch):
+    settings.voice.enabled = True
+    settings.voice.driver = "openai_realtime_sip"
+    persona = Persona(key="sabrina", display_name="Sabrina", is_active=True)
+    sqlite_session.add(persona)
+    await sqlite_session.flush()
+
+    service, openai_provider = _build_voice_service(settings)
+    ended: list[str] = []
+
+    async def fake_end(call_id: str):
+        ended.append(call_id)
+        return {"id": call_id, "status": "ended"}
+
+    monkeypatch.setattr(openai_provider, "end_realtime_call", fake_end)
+
+    result = await service.handle_openai_realtime_event(
+        sqlite_session,
+        payload={
+            "type": "realtime.call.incoming",
+            "call_id": "call_unknown_1",
+            "from": "+15555550999",
+            "to": "+15550000000",
+        },
+    )
+
+    assert result["status"] == "rejected"
+    assert result["reason"] == "unknown_caller"
+    assert ended == ["call_unknown_1"]
+    records = list((await sqlite_session.execute(select(CallRecord))).scalars().all())
+    assert records == []
+    await openai_provider.client.aclose()
+
+
 async def test_voice_service_stream_and_finalize_realtime_call(sqlite_session, settings, monkeypatch):
     settings.voice.enabled = True
-    settings.voice.realtime_enabled = True
+    settings.voice.driver = "openai_realtime_sip"
     user = User(phone_number="+15555550112", timezone="America/New_York")
     persona = Persona(key="sabrina", display_name="Sabrina", is_active=True)
     sqlite_session.add_all([user, persona])
@@ -220,22 +298,26 @@ async def test_voice_service_stream_and_finalize_realtime_call(sqlite_session, s
     assert "hey I saw Joe today" in record.transcript
     assert record.status == CallStatus.completed
     assert record.metadata_json["summary"] == "Quick summary about Joe."
-    assert any(item.metadata_json.get("source") == "call_tool" for item in memories)
+    assert any(item.metadata_json.get("source") in {"call_tool", "entity_merge"} for item in memories)
     session_update = fake_ws.sent[0]
     assert session_update["type"] == "session.update"
-    assert session_update["session"]["turn_detection"]["type"] == "semantic_vad"
-    assert session_update["session"]["turn_detection"]["eagerness"] == "low"
-    assert session_update["session"]["turn_detection"]["interrupt_response"] is False
+    assert session_update["session"]["output_modalities"] == ["audio"]
+    assert session_update["session"]["audio"]["output"]["voice"] == settings.voice.realtime_voice
+    assert session_update["session"]["audio"]["input"]["turn_detection"]["type"] == "semantic_vad"
+    assert session_update["session"]["audio"]["input"]["turn_detection"]["eagerness"] == "low"
+    assert session_update["session"]["audio"]["input"]["turn_detection"]["interrupt_response"] is False
     greeting = fake_ws.sent[1]
     assert greeting["type"] == "response.create"
-    assert "The phone just rang and you are answering it." in greeting["response"]["instructions"]
+    assert "Stay fully in character for this entire call." in greeting["response"]["instructions"]
+    assert 'Say exactly this first spoken line and nothing else yet: "hello?".' in greeting["response"]["instructions"]
+    assert "Do not add a follow-up question." in greeting["response"]["instructions"]
 
     await openai_provider.client.aclose()
 
 
 async def test_calls_initiate_api_returns_transport(sqlite_session, settings):
     settings.voice.enabled = True
-    settings.voice.realtime_enabled = True
+    settings.voice.driver = "openai_realtime_sip"
     user = User(phone_number="+15555550113", timezone="America/New_York")
     persona = Persona(key="sabrina", display_name="Sabrina", is_active=True)
     sqlite_session.add_all([user, persona])
@@ -291,6 +373,58 @@ async def test_calls_initiate_api_returns_transport(sqlite_session, settings):
     assert response.status_code == 200
     assert payload["transport"] == "twilio_pstn_openai_sip"
     assert payload["status"] == "queued"
+
+
+async def test_voice_service_initiates_media_stream_call(sqlite_session, settings):
+    settings.voice.enabled = True
+    settings.voice.driver = "twilio_media_streams_openai_stt_elevenlabs"
+    settings.voice.elevenlabs_default_voice_id = "voice_123"
+    user = User(phone_number="+15555550115", timezone="America/New_York")
+    persona = Persona(key="sabrina", display_name="Sabrina", is_active=True)
+    sqlite_session.add_all([user, persona])
+    await sqlite_session.flush()
+    service, openai_provider = _build_voice_service(settings)
+
+    record = await service.initiate_call(
+        sqlite_session,
+        user=user,
+        persona=persona,
+        config={"voice": {}, "safety": {}},
+        opening_line="hey there",
+    )
+
+    assert record.status == CallStatus.queued
+    assert record.metadata_json["transport"] == "twilio_media_streams"
+    twiml = record.metadata_json["twilio"].get("Twiml") or record.metadata_json["twilio"].get("twiml") or ""
+    assert "<Connect><Stream" in twiml
+    assert "call_record_id" in twiml
+    await openai_provider.client.aclose()
+
+
+async def test_voice_service_handles_inbound_twilio_voice_webhook_for_media_streams(sqlite_session, settings):
+    settings.voice.enabled = True
+    settings.voice.driver = "twilio_media_streams_openai_stt_elevenlabs"
+    settings.voice.elevenlabs_default_voice_id = "voice_123"
+    user = User(phone_number="+15555550116", timezone="America/New_York")
+    persona = Persona(
+        key="sabrina",
+        display_name="Sabrina",
+        is_active=True,
+        prompt_overrides={"calling_numbers": ["+15555550116"], "elevenlabs_voice_id": "voice_abc"},
+    )
+    sqlite_session.add_all([user, persona])
+    await sqlite_session.flush()
+    service, openai_provider = _build_voice_service(settings)
+
+    twiml = await service.handle_twilio_voice_webhook(
+        sqlite_session,
+        form={"From": "+15555550116", "To": "+15550000000", "CallSid": "CA999"},
+    )
+
+    assert "<Connect><Stream" in twiml
+    record = (await sqlite_session.execute(select(CallRecord).where(CallRecord.provider_call_sid == "CA999"))).scalar_one()
+    assert str(record.persona_id) == str(persona.id)
+    await openai_provider.client.aclose()
 
 
 async def _async_return(value):
