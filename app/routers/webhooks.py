@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import PlainTextResponse, Response
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.dependencies import get_container
@@ -9,10 +11,10 @@ from app.db.session import get_db_session
 from app.models.communication import CallRecord
 from app.services.container import ServiceContainer
 
-router = APIRouter(prefix="/webhooks/twilio", tags=["webhooks"])
+router = APIRouter(tags=["webhooks"])
 
 
-@router.post("/sms")
+@router.post("/webhooks/twilio/sms")
 async def twilio_sms_webhook(
     request: Request,
     session: AsyncSession = Depends(get_db_session),
@@ -28,7 +30,7 @@ async def twilio_sms_webhook(
     return PlainTextResponse("ok")
 
 
-@router.post("/status")
+@router.post("/webhooks/twilio/status")
 async def twilio_status_webhook(
     request: Request,
     session: AsyncSession = Depends(get_db_session),
@@ -48,7 +50,7 @@ async def twilio_status_webhook(
     return PlainTextResponse("ok")
 
 
-@router.api_route("/voice", methods=["GET", "POST"])
+@router.api_route("/webhooks/twilio/voice", methods=["GET", "POST"])
 async def twilio_voice_webhook(
     request: Request,
     call_id: str,
@@ -66,7 +68,7 @@ async def twilio_voice_webhook(
     return Response(content=twiml, media_type="application/xml")
 
 
-@router.post("/voice/status")
+@router.post("/webhooks/twilio/voice/status")
 async def twilio_voice_status_webhook(
     request: Request,
     session: AsyncSession = Depends(get_db_session),
@@ -83,3 +85,26 @@ async def twilio_voice_status_webhook(
     )
     await session.commit()
     return PlainTextResponse("ok")
+
+
+@router.post("/webhooks/openai/realtime")
+async def openai_realtime_webhook(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    container: ServiceContainer = Depends(get_container),
+) -> Response:
+    raw_body = await request.body()
+    if not container.openai_provider.validate_realtime_webhook(
+        body=raw_body,
+        webhook_id=request.headers.get("webhook-id"),
+        webhook_timestamp=request.headers.get("webhook-timestamp"),
+        webhook_signature=request.headers.get("webhook-signature"),
+    ):
+        raise HTTPException(status_code=403, detail="Invalid OpenAI webhook signature")
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
+    result = await container.voice_service.handle_openai_realtime_event(session, payload=payload)
+    await session.commit()
+    return JSONResponse(result)

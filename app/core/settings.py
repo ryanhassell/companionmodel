@@ -8,6 +8,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+from dotenv import load_dotenv
 
 
 class AppConfig(BaseModel):
@@ -45,6 +46,7 @@ class TwilioConfig(BaseModel):
     status_callback_url: str | None = None
     voice_callback_url: str | None = None
     voice_status_callback_url: str | None = None
+    sip_domain: str | None = None
     validate_signatures: bool = True
     api_timeout_seconds: int = 15
     max_retries: int = 3
@@ -56,11 +58,15 @@ class OpenAIConfig(BaseModel):
     api_key: str | None = None
     base_url: str = "https://api.openai.com/v1"
     api_timeout_seconds: int = 30
+    image_api_timeout_seconds: int = 900
     max_retries: int = 3
     chat_model: str = "gpt-5.4-mini"
     embedding_model: str = "text-embedding-3-small"
     image_model: str = "gpt-image-1"
     speech_model: str = "gpt-4o-mini-tts"
+    realtime_model: str = "gpt-realtime-mini"
+    realtime_webhook_secret: str | None = None
+    validate_realtime_webhooks: bool = True
     reasoning_effort: str = "low"
     temperature: float = 0.8
     max_output_tokens: int = 220
@@ -78,6 +84,7 @@ class SchedulingConfig(BaseModel):
     stale_followup_minutes: int = 15
     cleanup_hours: int = 24
     embed_pending_minutes: int = 10
+    daily_life_refresh_minutes: int = 10
 
 
 class SafetyConfig(BaseModel):
@@ -89,11 +96,17 @@ class SafetyConfig(BaseModel):
     cooldown_minutes: int = 8
     obsessive_window_minutes: int = 20
     obsessive_message_threshold: int = 10
-    quiet_hours_start: str = "21:30"
-    quiet_hours_end: str = "08:30"
+    quiet_hours_start: str = "22:00"
+    quiet_hours_end: str = "08:00"
     proactive_min_gap_minutes: int = 120
     proactive_max_gap_minutes: int = 360
     proactive_probability: float = 0.7
+    proactive_morning_start: str = "08:20"
+    proactive_morning_end: str = "10:30"
+    proactive_midday_start: str = "11:45"
+    proactive_midday_end: str = "13:45"
+    proactive_evening_start: str = "16:30"
+    proactive_evening_end: str = "18:45"
     distress_patterns: list[str] = Field(default_factory=list)
     blocked_patterns: list[str] = Field(default_factory=list)
     prohibited_topics: list[str] = Field(default_factory=list)
@@ -110,6 +123,7 @@ class MessagingConfig(BaseModel):
     duplicate_similarity_threshold: float = 0.9
     max_recent_context_messages: int = 18
     proactive_image_probability: float = 0.2
+    reactive_image_probability: float = 0.04
 
 
 class MemoryConfig(BaseModel):
@@ -127,9 +141,15 @@ class VoiceConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     enabled: bool = False
+    realtime_enabled: bool = False
     max_duration_seconds: int = 300
     default_voice: str = "coral"
     default_tts_mode: str = "twilio_say"
+    realtime_voice: str = "coral"
+    realtime_sip_uri: str | None = None
+    sideband_connect_timeout_seconds: int = 20
+    sideband_idle_timeout_seconds: int = 900
+    max_tool_roundtrips: int = 12
 
 
 class AdminConfig(BaseModel):
@@ -212,6 +232,7 @@ class YamlConfigSettingsSource(PydanticBaseSettingsSource):
 
     def __call__(self) -> dict[str, Any]:
         config_path = os.getenv("APP_CONFIG_FILE", "config/defaults.yaml")
+        load_dotenv(".env", override=True)
         path = Path(config_path)
         if not path.exists():
             return {}
@@ -240,12 +261,17 @@ def _apply_flat_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
         ("twilio", "status_callback_url"): os.getenv("TWILIO_STATUS_CALLBACK_URL"),
         ("twilio", "voice_callback_url"): os.getenv("TWILIO_VOICE_CALLBACK_URL"),
         ("twilio", "voice_status_callback_url"): os.getenv("TWILIO_VOICE_STATUS_CALLBACK_URL"),
+        ("twilio", "sip_domain"): os.getenv("TWILIO_SIP_DOMAIN"),
         ("openai", "api_key"): os.getenv("OPENAI_API_KEY"),
         ("openai", "base_url"): os.getenv("OPENAI_BASE_URL"),
         ("openai", "chat_model"): os.getenv("OPENAI_CHAT_MODEL"),
         ("openai", "embedding_model"): os.getenv("OPENAI_EMBEDDING_MODEL"),
         ("openai", "image_model"): os.getenv("OPENAI_IMAGE_MODEL"),
         ("openai", "speech_model"): os.getenv("OPENAI_SPEECH_MODEL"),
+        ("openai", "realtime_model"): os.getenv("OPENAI_REALTIME_MODEL"),
+        ("openai", "realtime_webhook_secret"): os.getenv("OPENAI_REALTIME_WEBHOOK_SECRET"),
+        ("openai", "validate_realtime_webhooks"): os.getenv("OPENAI_VALIDATE_REALTIME_WEBHOOKS"),
+        ("voice", "realtime_sip_uri"): os.getenv("VOICE_REALTIME_SIP_URI"),
         ("admin", "bootstrap_username"): os.getenv("ADMIN_BOOTSTRAP_USERNAME"),
         ("admin", "bootstrap_password"): os.getenv("ADMIN_BOOTSTRAP_PASSWORD"),
         ("admin", "session_cookie_name"): os.getenv("ADMIN_SESSION_COOKIE_NAME"),

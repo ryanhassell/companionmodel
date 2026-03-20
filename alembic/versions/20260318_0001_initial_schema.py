@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 from pgvector.sqlalchemy import Vector
 
 revision = "20260318_0001"
@@ -20,10 +21,10 @@ depends_on = None
 def upgrade() -> None:
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
-    app_setting_scope = sa.Enum("global", "persona", "user", name="appsettingscope")
-    direction = sa.Enum("inbound", "outbound", name="direction")
-    channel = sa.Enum("sms", "mms", "voice", "system", name="channel")
-    message_status = sa.Enum(
+    app_setting_scope = postgresql.ENUM("global", "persona", "user", name="appsettingscope", create_type=False)
+    direction = postgresql.ENUM("inbound", "outbound", name="direction", create_type=False)
+    channel = postgresql.ENUM("sms", "mms", "voice", "system", name="channel", create_type=False)
+    message_status = postgresql.ENUM(
         "queued",
         "processing",
         "sent",
@@ -32,9 +33,10 @@ def upgrade() -> None:
         "received",
         "blocked",
         name="messagestatus",
+        create_type=False,
     )
-    media_role = sa.Enum("inbound", "outbound", "generated", name="mediarole")
-    memory_type = sa.Enum(
+    media_role = postgresql.ENUM("inbound", "outbound", "generated", name="mediarole", create_type=False)
+    memory_type = postgresql.ENUM(
         "fact",
         "episode",
         "summary",
@@ -43,18 +45,20 @@ def upgrade() -> None:
         "operator_note",
         "safety",
         name="memorytype",
+        create_type=False,
     )
-    safety_severity = sa.Enum("low", "medium", "high", "critical", name="safetyseverity")
-    schedule_rule_type = sa.Enum(
+    safety_severity = postgresql.ENUM("low", "medium", "high", "critical", name="safetyseverity", create_type=False)
+    schedule_rule_type = postgresql.ENUM(
         "proactive_window",
         "quiet_hours",
         "follow_up",
         "call_window",
         name="scheduleruletype",
+        create_type=False,
     )
-    delivery_status = sa.Enum("pending", "sent", "failed", "acknowledged", name="deliverystatus")
-    call_direction = sa.Enum("outbound", "inbound", name="calldirection")
-    call_status = sa.Enum(
+    delivery_status = postgresql.ENUM("pending", "sent", "failed", "acknowledged", name="deliverystatus", create_type=False)
+    call_direction = postgresql.ENUM("outbound", "inbound", name="calldirection", create_type=False)
+    call_status = postgresql.ENUM(
         "queued",
         "ringing",
         "in_progress",
@@ -62,8 +66,9 @@ def upgrade() -> None:
         "failed",
         "no_answer",
         name="callstatus",
+        create_type=False,
     )
-    job_status = sa.Enum("idle", "running", "success", "failed", name="jobstatus")
+    job_status = postgresql.ENUM("idle", "running", "success", "failed", name="jobstatus", create_type=False)
 
     bind = op.get_bind()
     for enum in [

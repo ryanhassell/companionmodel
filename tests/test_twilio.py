@@ -4,6 +4,8 @@ import base64
 import hashlib
 import hmac
 
+import httpx
+import respx
 from starlette.datastructures import FormData
 
 from app.providers.twilio import TwilioProvider
@@ -41,3 +43,23 @@ def test_twilio_inbound_parsing(settings):
     assert payload.message_sid == "SM123"
     assert payload.num_media == 1
     assert payload.media[0].content_type == "image/jpeg"
+
+
+@respx.mock
+async def test_twilio_initiate_call_supports_inline_twiml(settings):
+    settings.twilio.account_sid = "AC123"
+    settings.twilio.auth_token = "secret"
+    settings.twilio.from_number = "+15550001111"
+    client = httpx.AsyncClient()
+    provider = TwilioProvider(settings, client)
+    route = respx.post("https://api.twilio.com/2010-04-01/Accounts/AC123/Calls.json").mock(
+        return_value=httpx.Response(200, json={"sid": "CA123", "status": "queued"})
+    )
+    result = await provider.initiate_call(
+        to_number="+15550002222",
+        twiml="<Response><Dial><Sip>sip:test</Sip></Dial></Response>",
+    )
+    assert route.called
+    assert result.provider_sid == "CA123"
+    assert "Twiml=%3CResponse%3E" in route.calls[0].request.content.decode("utf-8")
+    await client.aclose()

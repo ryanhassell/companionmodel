@@ -77,7 +77,7 @@ class CallStatus(StrEnum):
 
 
 class AppSettingScope(StrEnum):
-    global_scope = "global"
+    global_ = "global"
     persona = "persona"
     user = "user"
 

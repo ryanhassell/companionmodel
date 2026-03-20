@@ -6,8 +6,9 @@
 <div class="grid two">
   <section class="card">
     <h2>Create or Update Persona</h2>
-    <form method="post" action="/admin/personas" class="grid">
+    <form method="post" action="/admin/personas" class="grid" enctype="multipart/form-data">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="action" value="upsert_persona">
       <input type="hidden" name="persona_id">
       <label>Key<input type="text" name="key" required></label>
       <label>Display Name<input type="text" name="display_name" required></label>
@@ -19,6 +20,13 @@
       <label>Favorite Activities (comma separated)<input type="text" name="favorite_activities"></label>
       <label>Image Appearance<textarea name="image_appearance"></textarea></label>
       <label>Speech Style<textarea name="speech_style"></textarea></label>
+      <label>Realtime Voice
+        <select name="realtime_voice">
+          {% for voice_value, voice_label in realtime_voice_options %}
+          <option value="{{ voice_value }}">{{ voice_label }}</option>
+          {% endfor %}
+        </select>
+      </label>
       <label>Disclosure Policy<textarea name="disclosure_policy"></textarea></label>
       <label>Texting Length Preference<input type="text" name="texting_length_preference"></label>
       <label>Emoji Tendency<input type="text" name="emoji_tendency"></label>
@@ -32,15 +40,43 @@
     </form>
   </section>
   <section class="card">
+    <h2>Reference Photo</h2>
+    <form method="post" action="/admin/personas" class="grid" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="action" value="upload_reference">
+      <label>Persona
+        <select name="persona_id" required>
+          {% for persona in personas %}
+          <option value="{{ persona.id }}">{{ persona.display_name }} ({{ persona.key }})</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Reference Image
+        <input type="file" name="reference_image" accept="image/*" required>
+      </label>
+      <p class="subtle">Upload one clean reference photo here. Future generated images for that persona will use it as the visual base.</p>
+      <button type="submit">Upload Reference Photo</button>
+    </form>
+  </section>
+  <section class="card">
     <h2>Current Personas</h2>
     <table>
-      <thead><tr><th>Name</th><th>Key</th><th>Active</th><th>Topics</th></tr></thead>
+      <thead><tr><th>Name</th><th>Key</th><th>Active</th><th>Call Voice</th><th>Reference</th><th>Topics</th></tr></thead>
       <tbody>
         {% for persona in personas %}
         <tr>
           <td>{{ persona.display_name }}</td>
           <td>{{ persona.key }}</td>
           <td>{{ "yes" if persona.is_active else "no" }}</td>
+          <td>{{ ((persona.prompt_overrides or {}).get("realtime_voice")) or "app default" }}</td>
+          <td>
+            {% set asset = reference_assets.get(persona.id|string) %}
+            {% if asset %}
+            <a href="/api/media/{{ asset.id }}" target="_blank">open</a>
+            {% else %}
+            —
+            {% endif %}
+          </td>
           <td>{{ persona.topics_of_interest | join(", ") }}</td>
         </tr>
         {% endfor %}

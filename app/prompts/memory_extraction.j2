@@ -1,8 +1,8 @@
 Extract durable memory candidates from this user message and nearby context.
 
 Return JSON only in one of these formats:
-1. {"facts": [{"memory_type": "fact", "title": "...", "content": "...", "summary": "...", "tags": ["..."], "importance_score": 0.0}]}
-2. [{"memory_type": "fact", "title": "...", "content": "...", "summary": "...", "tags": ["..."], "importance_score": 0.0}]
+1. {"facts": [{"memory_type": "fact", "title": "...", "content": "...", "summary": "...", "tags": ["..."], "importance_score": 0.0, "entity_name": "...", "entity_kind": "...", "should_profile": true}]}
+2. [{"memory_type": "fact", "title": "...", "content": "...", "summary": "...", "tags": ["..."], "importance_score": 0.0, "entity_name": "...", "entity_kind": "...", "should_profile": true}]
 
 Rules:
 - Extract only user-related facts worth remembering later.
@@ -10,6 +10,12 @@ Rules:
 - Use memory_type from: fact, preference, follow_up, episode, safety.
 - Prefer precision over volume.
 - Do not invent anything.
+- If a person, pet, place, show, artist, hobby, recurring topic, or favorite thing is mentioned and seems worth remembering, include:
+  - "entity_name": the canonical short name like "Joe" or "Taylor Swift"
+  - "entity_kind": person, pet, place, artist, show, hobby, food, topic, etc
+  - "should_profile": true
+- If no durable entity/profile should be created, set "entity_name" and "entity_kind" to "" and "should_profile" to false.
+- Prefer entity/profile memories for recurring people and favorite things.
 
 Current message:
 {{ message.body or "" }}

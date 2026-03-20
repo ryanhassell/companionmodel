@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.user import User
 from app.services.config import ConfigService
 from app.services.conversation import ConversationService
+from app.services.daily_life import DailyLifeService
 from app.services.image import ImageService
 from app.services.memory import MemoryService
 from app.services.message import MessageService
@@ -23,6 +24,7 @@ class ProactiveService:
         prompt_service: PromptService,
         message_service: MessageService,
         schedule_service: ScheduleService,
+        daily_life_service: DailyLifeService,
         image_service: ImageService,
         memory_service: MemoryService,
     ) -> None:
@@ -31,6 +33,7 @@ class ProactiveService:
         self.prompt_service = prompt_service
         self.message_service = message_service
         self.schedule_service = schedule_service
+        self.daily_life_service = daily_life_service
         self.image_service = image_service
         self.memory_service = memory_service
 
@@ -72,7 +75,16 @@ class ProactiveService:
                 top_k=int(config["memory"]["top_k"]),
                 threshold=float(config["memory"]["similarity_threshold"]),
             )
-            scene_hint = random.choice(persona.favorite_activities or ["a calm moment at home"])
+            daily_context = await self.daily_life_service.prompt_context(
+                session,
+                user=user,
+                persona=persona,
+                config=config,
+            )
+            scene_hint = str(
+                daily_context.get("proactive_photo_scene_hint")
+                or random.choice(persona.favorite_activities or ["a calm moment at home"])
+            )
             context = {
                 "user": user,
                 "persona": persona,
@@ -81,6 +93,7 @@ class ProactiveService:
                 "memory_hits": memory_hits,
                 "scene_hint": scene_hint,
                 "config": config,
+                **daily_context,
             }
             instructions = await self.prompt_service.render(session, "system_prompt", context)
             prompt = await self.prompt_service.render(session, "proactive_message", context)
@@ -108,6 +121,7 @@ class ProactiveService:
                         user=user,
                         scene_hint=scene_hint,
                         config=config,
+                        use_reference_image=bool(daily_context.get("proactive_photo_include_person")),
                         metadata={"source": "proactive"},
                     )
                     if asset.generation_status == "ready":

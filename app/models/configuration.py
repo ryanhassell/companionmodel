@@ -14,6 +14,10 @@ if TYPE_CHECKING:
     from app.models.user import User
 
 
+def enum_values(enum_cls):
+    return [member.value for member in enum_cls]
+
+
 class ScheduleRule(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "schedule_rules"
     __table_args__ = (
@@ -24,7 +28,10 @@ class ScheduleRule(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
     persona_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("personas.id"))
     name: Mapped[str] = mapped_column(String(120), nullable=False)
-    rule_type: Mapped[ScheduleRuleType] = mapped_column(Enum(ScheduleRuleType), nullable=False)
+    rule_type: Mapped[ScheduleRuleType] = mapped_column(
+        Enum(ScheduleRuleType, values_callable=enum_values),
+        nullable=False,
+    )
     weekday: Mapped[int | None] = mapped_column(Integer)
     start_time: Mapped[Any | None] = mapped_column(Time(timezone=False))
     end_time: Mapped[Any | None] = mapped_column(Time(timezone=False))
@@ -46,7 +53,10 @@ class AppSetting(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Index("ix_app_settings_user_scope", "user_id", "persona_id"),
     )
 
-    scope: Mapped[AppSettingScope] = mapped_column(Enum(AppSettingScope), nullable=False)
+    scope: Mapped[AppSettingScope] = mapped_column(
+        Enum(AppSettingScope, values_callable=enum_values),
+        nullable=False,
+    )
     namespace: Mapped[str] = mapped_column(String(80), nullable=False)
     key: Mapped[str] = mapped_column(String(80), nullable=False)
     description: Mapped[str | None] = mapped_column(Text())

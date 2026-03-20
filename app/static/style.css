@@ -191,6 +191,79 @@ pre {
   width: min(520px, 100%);
 }
 
+.simulator-layout {
+  align-items: start;
+}
+
+.chat-thread {
+  display: grid;
+  gap: 12px;
+  max-height: 70vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.chat-bubble {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 12px 14px;
+  background: #fff;
+}
+
+.chat-bubble.inbound {
+  background: #f8f3ea;
+}
+
+.chat-bubble.outbound {
+  background: #eef8f4;
+  border-color: rgba(31, 122, 101, 0.25);
+}
+
+.chat-bubble header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: 0.9rem;
+}
+
+.chat-bubble p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.pill-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.chat-media {
+  margin-top: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.chat-media img {
+  width: min(260px, 100%);
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  display: block;
+}
+
+.simulator-actions {
+  margin-top: 12px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.alert-card {
+  border-color: rgba(166, 63, 52, 0.35);
+  background: #fff5f2;
+  margin-bottom: 16px;
+}
+
 @media (max-width: 920px) {
   .layout {
     grid-template-columns: 1fr;

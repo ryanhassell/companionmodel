@@ -18,7 +18,7 @@ from app.services.container import ServiceContainer
 router = APIRouter(prefix="/api", tags=["api"])
 
 
-@router.get("/media/{asset_id}")
+@router.get("/media/{asset_id}", response_model=None)
 async def media_file(
     asset_id: str,
     session: AsyncSession = Depends(get_db_session),
@@ -135,7 +135,11 @@ async def initiate_call(
         opening_line=payload.opening_line,
     )
     await session.commit()
-    return {"call_id": str(record.id), "status": record.status.value}
+    return {
+        "call_id": str(record.id),
+        "status": record.status.value,
+        "transport": str((record.metadata_json or {}).get("transport") or "twilio_twiml"),
+    }
 
 
 @router.post("/memory/search")

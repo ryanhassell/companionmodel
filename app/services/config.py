@@ -59,7 +59,7 @@ class ConfigService:
         key: str,
         value_json: Any,
         description: str | None = None,
-        scope: AppSettingScope = AppSettingScope.global_scope,
+        scope: AppSettingScope = AppSettingScope.global_,
         user_id: UUID | None = None,
         persona_id: UUID | None = None,
     ) -> AppSetting:
@@ -92,7 +92,7 @@ class ConfigService:
         user_id: UUID | None,
         persona_id: UUID | None,
     ) -> list[AppSetting]:
-        stmt = select(AppSetting).where(AppSetting.scope == AppSettingScope.global_scope)
+        stmt = select(AppSetting).where(AppSetting.scope == AppSettingScope.global_)
         rows = list((await session.execute(stmt)).scalars().all())
         if persona_id:
             stmt = select(AppSetting).where(

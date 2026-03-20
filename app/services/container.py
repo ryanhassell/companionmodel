@@ -12,6 +12,7 @@ from app.services.audit import AuditService
 from app.services.auth import AuthService
 from app.services.config import ConfigService
 from app.services.conversation import ConversationService
+from app.services.daily_life import DailyLifeService
 from app.services.image import ImageService
 from app.services.memory import MemoryService
 from app.services.message import MessageService
@@ -33,6 +34,7 @@ class ServiceContainer:
     auth_service: AuthService
     config_service: ConfigService
     conversation_service: ConversationService
+    daily_life_service: DailyLifeService
     prompt_service: PromptService
     schedule_service: ScheduleService
     safety_service: SafetyService
@@ -58,8 +60,16 @@ class ServiceContainer:
         schedule_service = ScheduleService()
         safety_service = SafetyService(alerting_service)
         memory_service = MemoryService(actual_settings, openai_provider, prompt_service)
+        daily_life_service = DailyLifeService(memory_service)
         image_service = ImageService(actual_settings, openai_provider, prompt_service)
-        voice_service = VoiceService(actual_settings, twilio_provider, openai_provider, prompt_service)
+        voice_service = VoiceService(
+            actual_settings,
+            twilio_provider,
+            openai_provider,
+            prompt_service,
+            memory_service,
+            daily_life_service,
+        )
         message_service = MessageService(
             actual_settings,
             twilio_provider,
@@ -68,6 +78,7 @@ class ServiceContainer:
             safety_service,
             memory_service,
             conversation_service,
+            daily_life_service,
             schedule_service,
             config_service,
             image_service,
@@ -78,6 +89,7 @@ class ServiceContainer:
             prompt_service,
             message_service,
             schedule_service,
+            daily_life_service,
             image_service,
             memory_service,
         )
@@ -91,6 +103,7 @@ class ServiceContainer:
             auth_service=auth_service,
             config_service=config_service,
             conversation_service=conversation_service,
+            daily_life_service=daily_life_service,
             prompt_service=prompt_service,
             schedule_service=schedule_service,
             safety_service=safety_service,

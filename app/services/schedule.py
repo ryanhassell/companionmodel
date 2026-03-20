@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from random import random
 from typing import Any
 
 from sqlalchemy import func, select
@@ -21,7 +21,84 @@ class SendDecision:
     reason: str
 
 
+@dataclass(slots=True)
+class _WindowSpec:
+    name: str
+    start: Any
+    end: Any
+    probability_multiplier: float = 1.0
+
+
 class ScheduleService:
+    def _stable_ratio(self, *parts: object) -> float:
+        seed = "|".join(str(part) for part in parts).encode("utf-8")
+        digest = hashlib.sha256(seed).digest()
+        return int.from_bytes(digest[:8], "big") / float(2**64 - 1)
+
+    def _no_contact_factor(self, user: User, *, safety_config: dict[str, Any]) -> float:
+        last_contact = max(
+            [timestamp for timestamp in [user.last_inbound_at, user.last_outbound_at] if timestamp is not None],
+            default=None,
+        )
+        if last_contact is None:
+            return 0.0
+        elapsed_hours = max((utc_now() - last_contact).total_seconds() / 3600.0, 0.0)
+        min_gap_hours = max(float(safety_config["proactive_min_gap_minutes"]) / 60.0, 0.1)
+        max_gap_hours = max(float(safety_config["proactive_max_gap_minutes"]) / 60.0, min_gap_hours + 0.1)
+        if elapsed_hours <= min_gap_hours:
+            return 0.0
+        if elapsed_hours >= max_gap_hours:
+            return 1.0
+        return (elapsed_hours - min_gap_hours) / (max_gap_hours - min_gap_hours)
+
+    def _chance_from_no_contact_factor(self, factor: float) -> float:
+        if factor >= 1.0:
+            return 1.0
+        scaled = max(0.0, (factor - 0.45) / 0.55)
+        return min(0.95, (scaled**1.5) * 0.85 + 0.02)
+
+    def _default_proactive_windows(self, safety_config: dict[str, Any]) -> list[_WindowSpec]:
+        return [
+            _WindowSpec(
+                "morning",
+                parse_clock(safety_config["proactive_morning_start"]),
+                parse_clock(safety_config["proactive_morning_end"]),
+            ),
+            _WindowSpec(
+                "midday",
+                parse_clock(safety_config["proactive_midday_start"]),
+                parse_clock(safety_config["proactive_midday_end"]),
+            ),
+            _WindowSpec(
+                "evening",
+                parse_clock(safety_config["proactive_evening_start"]),
+                parse_clock(safety_config["proactive_evening_end"]),
+            ),
+        ]
+
+    def _window_target_reached(self, *, user: User, window: _WindowSpec, effective_now: datetime) -> bool:
+        current_time = effective_now.timetz().replace(tzinfo=None)
+        start_minutes = (window.start.hour * 60) + window.start.minute
+        end_minutes = (window.end.hour * 60) + window.end.minute
+        window_span = max(end_minutes - start_minutes, 1)
+        target_offset = int(self._stable_ratio(user.id, effective_now.date().isoformat(), window.name, "minute") * window_span)
+        target_minutes = start_minutes + target_offset
+        current_minutes = (current_time.hour * 60) + current_time.minute
+        return current_minutes >= target_minutes
+
+    def _window_probability_allows(
+        self,
+        *,
+        user: User,
+        effective_now: datetime,
+        window: _WindowSpec,
+        chance: float,
+    ) -> bool:
+        if chance >= 1.0:
+            return True
+        roll = self._stable_ratio(user.id, effective_now.date().isoformat(), window.name, "send")
+        return roll <= min(max(chance * window.probability_multiplier, 0.0), 0.999)
+
     async def outbound_count_today(
         self,
         session: AsyncSession,
@@ -48,6 +125,7 @@ class ScheduleService:
         end = datetime.combine(tomorrow, datetime.min.time(), tzinfo=now_in_timezone(timezone_name).tzinfo)
         stmt = select(func.count()).select_from(MediaAsset).where(
             MediaAsset.user_id == user_id,
+            MediaAsset.generation_status == "ready",
             MediaAsset.created_at >= start,
             MediaAsset.created_at < end,
         )
@@ -121,6 +199,7 @@ class ScheduleService:
         if user.last_outbound_at and user.last_outbound_at > utc_now() - timedelta(minutes=int(safety["proactive_min_gap_minutes"])):
             return SendDecision(False, "recent_outbound")
 
+        active_window: _WindowSpec | None = None
         rules = await self.proactive_rules_for_user(
             session,
             user_id=user.id,
@@ -128,19 +207,49 @@ class ScheduleService:
             weekday=effective_now.weekday(),
         )
         if rules:
-            matched = False
-            for rule in rules:
+            for rule in sorted(rules, key=lambda item: item.priority):
                 if rule.start_time and rule.end_time and in_time_range(
                     effective_now.timetz().replace(tzinfo=None),
                     rule.start_time,
                     rule.end_time,
                 ):
-                    matched = True
-                    if rule.probability is not None and random() > float(rule.probability):
-                        return SendDecision(False, "window_probability_skip")
+                    active_window = _WindowSpec(
+                        name=f"rule:{rule.id}",
+                        start=rule.start_time,
+                        end=rule.end_time,
+                        probability_multiplier=float(rule.probability) if rule.probability is not None else 1.0,
+                    )
                     break
-            if not matched:
+            if active_window is None:
                 return SendDecision(False, "outside_schedule_window")
-        elif random() > float(safety["proactive_probability"]):
-            return SendDecision(False, "global_probability_skip")
+        else:
+            active_window = next(
+                (
+                    window
+                    for window in self._default_proactive_windows(safety)
+                    if in_time_range(
+                        effective_now.timetz().replace(tzinfo=None),
+                        window.start,
+                        window.end,
+                    )
+                ),
+                None,
+            )
+            if active_window is None:
+                return SendDecision(False, "outside_default_proactive_windows")
+
+        if not self._window_target_reached(user=user, window=active_window, effective_now=effective_now):
+            return SendDecision(False, "before_window_target")
+
+        factor = self._no_contact_factor(user, safety_config=safety)
+        if factor <= 0.0:
+            return SendDecision(False, "no_contact_factor_too_low")
+        chance = self._chance_from_no_contact_factor(factor)
+        if factor < 1.0 and not self._window_probability_allows(
+            user=user,
+            effective_now=effective_now,
+            window=active_window,
+            chance=chance,
+        ):
+            return SendDecision(False, "no_contact_probability_skip")
         return SendDecision(True, "ok")

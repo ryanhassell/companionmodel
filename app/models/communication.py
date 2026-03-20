@@ -15,6 +15,10 @@ if TYPE_CHECKING:
     from app.models.user import User
 
 
+def enum_values(enum_cls):
+    return [member.value for member in enum_cls]
+
+
 class Conversation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "conversations"
     __table_args__ = (
@@ -48,14 +52,14 @@ class Message(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     conversation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("conversations.id"), nullable=False)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     persona_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("personas.id"))
-    direction: Mapped[Direction] = mapped_column(Enum(Direction), nullable=False)
-    channel: Mapped[Channel] = mapped_column(Enum(Channel), nullable=False)
+    direction: Mapped[Direction] = mapped_column(Enum(Direction, values_callable=enum_values), nullable=False)
+    channel: Mapped[Channel] = mapped_column(Enum(Channel, values_callable=enum_values), nullable=False)
     provider: Mapped[str] = mapped_column(String(40), default="twilio", nullable=False)
     provider_message_sid: Mapped[str | None] = mapped_column(String(80))
     idempotency_key: Mapped[str] = mapped_column(String(120), nullable=False)
     body: Mapped[str | None] = mapped_column(Text())
     normalized_body: Mapped[str | None] = mapped_column(Text())
-    status: Mapped[MessageStatus] = mapped_column(Enum(MessageStatus), nullable=False)
+    status: Mapped[MessageStatus] = mapped_column(Enum(MessageStatus, values_callable=enum_values), nullable=False)
     is_proactive: Mapped[bool] = mapped_column(default=False, nullable=False)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -85,7 +89,7 @@ class MediaAsset(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
     persona_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("personas.id"))
     provider_asset_id: Mapped[str | None] = mapped_column(String(120))
-    role: Mapped[MediaRole] = mapped_column(Enum(MediaRole), nullable=False)
+    role: Mapped[MediaRole] = mapped_column(Enum(MediaRole, values_callable=enum_values), nullable=False)
     mime_type: Mapped[str | None] = mapped_column(String(120))
     local_path: Mapped[str | None] = mapped_column(String(300))
     remote_url: Mapped[str | None] = mapped_column(String(500))
@@ -110,7 +114,7 @@ class DeliveryAttempt(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     message_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("messages.id"), nullable=False)
     provider: Mapped[str] = mapped_column(String(40), nullable=False)
     attempt_number: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
-    status: Mapped[DeliveryStatus] = mapped_column(Enum(DeliveryStatus), nullable=False)
+    status: Mapped[DeliveryStatus] = mapped_column(Enum(DeliveryStatus, values_callable=enum_values), nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text())
     request_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     response_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
@@ -130,7 +134,7 @@ class SafetyEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("conversations.id"))
     message_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("messages.id"))
     event_type: Mapped[str] = mapped_column(String(80), nullable=False)
-    severity: Mapped[SafetySeverity] = mapped_column(Enum(SafetySeverity), nullable=False)
+    severity: Mapped[SafetySeverity] = mapped_column(Enum(SafetySeverity, values_callable=enum_values), nullable=False)
     detector: Mapped[str] = mapped_column(String(80), nullable=False)
     action_taken: Mapped[str | None] = mapped_column(Text())
     acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -151,8 +155,8 @@ class CallRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
     persona_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("personas.id"))
     provider_call_sid: Mapped[str | None] = mapped_column(String(80))
-    direction: Mapped[CallDirection] = mapped_column(Enum(CallDirection), nullable=False)
-    status: Mapped[CallStatus] = mapped_column(Enum(CallStatus), nullable=False)
+    direction: Mapped[CallDirection] = mapped_column(Enum(CallDirection, values_callable=enum_values), nullable=False)
+    status: Mapped[CallStatus] = mapped_column(Enum(CallStatus, values_callable=enum_values), nullable=False)
     from_number: Mapped[str | None] = mapped_column(String(32))
     to_number: Mapped[str | None] = mapped_column(String(32))
     script: Mapped[str | None] = mapped_column(Text())

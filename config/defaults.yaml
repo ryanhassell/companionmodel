@@ -19,15 +19,20 @@ twilio:
   validate_signatures: true
   api_timeout_seconds: 15
   max_retries: 3
+  sip_domain:
 
 openai:
   base_url: https://api.openai.com/v1
   api_timeout_seconds: 30
+  image_api_timeout_seconds: 900
   max_retries: 3
   chat_model: gpt-5.4-mini
   embedding_model: text-embedding-3-small
   image_model: gpt-image-1
   speech_model: gpt-4o-mini-tts
+  realtime_model: gpt-realtime-mini
+  realtime_webhook_secret:
+  validate_realtime_webhooks: true
   reasoning_effort: low
   temperature: 0.8
   max_output_tokens: 220
@@ -42,6 +47,7 @@ scheduling:
   stale_followup_minutes: 15
   cleanup_hours: 24
   embed_pending_minutes: 10
+  daily_life_refresh_minutes: 10
 
 safety:
   daily_message_cap: 60
@@ -50,11 +56,17 @@ safety:
   cooldown_minutes: 8
   obsessive_window_minutes: 20
   obsessive_message_threshold: 10
-  quiet_hours_start: "21:30"
-  quiet_hours_end: "08:30"
+  quiet_hours_start: "22:00"
+  quiet_hours_end: "08:00"
   proactive_min_gap_minutes: 120
   proactive_max_gap_minutes: 360
   proactive_probability: 0.7
+  proactive_morning_start: "08:20"
+  proactive_morning_end: "10:30"
+  proactive_midday_start: "11:45"
+  proactive_midday_end: "13:45"
+  proactive_evening_start: "16:30"
+  proactive_evening_end: "18:45"
   distress_patterns:
     - "i want to die"
     - "i don't want to live"
@@ -84,6 +96,7 @@ messaging:
   duplicate_similarity_threshold: 0.9
   max_recent_context_messages: 18
   proactive_image_probability: 0.2
+  reactive_image_probability: 0.04
 
 memory:
   top_k: 8
@@ -94,10 +107,16 @@ memory:
   embedding_dimensions: 1536
 
 voice:
-  enabled: false
+  enabled: true
+  realtime_enabled: true
   max_duration_seconds: 300
   default_voice: coral
   default_tts_mode: twilio_say
+  realtime_voice: coral
+  realtime_sip_uri:
+  sideband_connect_timeout_seconds: 20
+  sideband_idle_timeout_seconds: 900
+  max_tool_roundtrips: 12
 
 admin:
   session_cookie_name: companion_admin_session

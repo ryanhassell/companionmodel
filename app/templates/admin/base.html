@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ title or "Companion Pi Admin" }}</title>
     <link rel="stylesheet" href="/static/style.css">
+    {% block head_extra %}{% endblock %}
   </head>
   <body>
     <div class="layout">
@@ -25,6 +26,7 @@
           <a href="/admin/delivery-failures" class="{{ 'active' if active_nav == 'deliveries' else '' }}">Deliveries</a>
           <a href="/admin/media" class="{{ 'active' if active_nav == 'media' else '' }}">Media</a>
           <a href="/admin/test-tools" class="{{ 'active' if active_nav == 'test-tools' else '' }}">Test Tools</a>
+          <a href="/admin/simulator" class="{{ 'active' if active_nav == 'simulator' else '' }}">Simulator</a>
           <a href="/admin/calls" class="{{ 'active' if active_nav == 'calls' else '' }}">Calls</a>
           <a href="/admin/health" class="{{ 'active' if active_nav == 'health' else '' }}">Health</a>
           <a href="/admin/settings" class="{{ 'active' if active_nav == 'settings' else '' }}">Settings</a>
