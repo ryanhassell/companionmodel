@@ -1,16 +1,32 @@
 {% extends "admin/base.html" %}
 {% block content %}
-<div class="page-header"><div><h1>Calls</h1><p class="subtle">Voice call history and generated scripts.</p></div></div>
+<div class="page-header"><div><h1>Calls</h1><p class="subtle">Voice call history, summaries, and transcripts.</p></div></div>
 <section class="card">
   <table>
-    <thead><tr><th>Time</th><th>Status</th><th>To</th><th>Script</th></tr></thead>
+    <thead><tr><th>Time</th><th>Status</th><th>Direction</th><th>Number</th><th>Details</th></tr></thead>
     <tbody>
       {% for call in calls %}
       <tr>
         <td>{{ call.created_at }}</td>
         <td>{{ call.status.value }}</td>
-        <td>{{ call.to_number }}</td>
-        <td>{{ call.script or "—" }}</td>
+        <td>{{ call.direction.value }}</td>
+        <td>{{ call.to_number or call.from_number or "—" }}</td>
+        <td>
+          <div><strong>Transport:</strong> {{ call.metadata_json.get("transport") or "legacy" }}</div>
+          <div><strong>Duration:</strong> {{ call.duration_seconds or 0 }}s</div>
+          <div><strong>Summary:</strong> {{ call.metadata_json.get("summary") or "—" }}</div>
+          {% if call.transcript %}
+          <details>
+            <summary>Transcript</summary>
+            <pre style="white-space: pre-wrap;">{{ call.transcript }}</pre>
+          </details>
+          {% elif call.script %}
+          <details>
+            <summary>Legacy Script</summary>
+            <pre style="white-space: pre-wrap;">{{ call.script }}</pre>
+          </details>
+          {% endif %}
+        </td>
       </tr>
       {% endfor %}
     </tbody>

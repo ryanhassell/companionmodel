@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse
-from sqlalchemy import desc, func, or_, select
+from sqlalchemy import delete, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.dependencies import AdminRequestContext, get_optional_admin_context, verify_csrf_or_403
@@ -15,13 +15,28 @@ from app.db.session import get_db_session
 from app.models.admin import JobRun
 from app.models.communication import CallRecord, Conversation, DeliveryAttempt, MediaAsset, Message, SafetyEvent
 from app.models.configuration import AppSetting, PromptTemplate, ScheduleRule
-from app.models.enums import AppSettingScope, DeliveryStatus, MemoryType, ScheduleRuleType
+from app.models.enums import AppSettingScope, Channel, DeliveryStatus, Direction, MemoryType, MessageStatus, ScheduleRuleType
 from app.models.memory import MemoryItem
 from app.models.persona import Persona
 from app.models.user import User
+from app.utils.text import make_idempotency_key
 from app.utils.time import parse_clock
+from app.utils.time import utc_now
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+REALTIME_VOICE_OPTIONS = [
+    ("", "Use app default"),
+    ("alloy", "Alloy"),
+    ("ash", "Ash"),
+    ("ballad", "Ballad"),
+    ("cedar", "Cedar"),
+    ("coral", "Coral"),
+    ("echo", "Echo"),
+    ("marin", "Marin"),
+    ("sage", "Sage"),
+    ("shimmer", "Shimmer"),
+    ("verse", "Verse"),
+]
 
 
 def _redirect_login() -> RedirectResponse:
@@ -53,6 +68,51 @@ def _parse_json_input(value: str | None, default):
         return json.loads(value)
     except json.JSONDecodeError:
         return default
+
+
+async def _persona_reference_assets(session: AsyncSession, personas: list[Persona]) -> dict[str, MediaAsset]:
+    assets: dict[str, MediaAsset] = {}
+    for persona in personas:
+        asset_id = (persona.visual_bible or {}).get("reference_image_asset_id")
+        if not asset_id:
+            continue
+        asset = await session.get(MediaAsset, asset_id)
+        if asset is not None:
+            assets[str(persona.id)] = asset
+    return assets
+
+
+async def _message_assets(session: AsyncSession, messages: list[Message]) -> dict[str, list[MediaAsset]]:
+    message_ids = [message.id for message in messages]
+    if not message_ids:
+        return {}
+    assets = (
+        await session.execute(
+            select(MediaAsset)
+            .where(MediaAsset.message_id.in_(message_ids))
+            .order_by(MediaAsset.created_at)
+        )
+    ).scalars().all()
+    grouped: dict[str, list[MediaAsset]] = {}
+    for asset in assets:
+        if asset.message_id is None:
+            continue
+        grouped.setdefault(str(asset.message_id), []).append(asset)
+    return grouped
+
+
+async def _has_pending_media(session: AsyncSession, user: User | None) -> bool:
+    if user is None:
+        return False
+    pending = await session.scalar(
+        select(func.count())
+        .select_from(MediaAsset)
+        .where(
+            MediaAsset.user_id == user.id,
+            MediaAsset.generation_status == "processing",
+        )
+    )
+    return bool(pending)
 
 
 @router.get("")
@@ -103,7 +163,7 @@ async def users_submit(
         return _redirect_login()
     await verify_csrf_or_403(request, context)
     form = await request.form()
-    user_id = form.get("user_id")
+    user_id = form.get("user_id") or None
     user = await session.get(User, user_id) if user_id else User(phone_number=str(form.get("phone_number", "")))
     if user_id is None:
         session.add(user)
@@ -138,9 +198,17 @@ async def personas_page(
     if context is None:
         return _redirect_login()
     personas = (await session.execute(select(Persona).order_by(desc(Persona.updated_at)))).scalars().all()
+    reference_assets = await _persona_reference_assets(session, list(personas))
     return templates.TemplateResponse(
         "admin/personas.html",
-        _context_dict(request, context, active_nav="personas", personas=personas),
+        _context_dict(
+            request,
+            context,
+            active_nav="personas",
+            personas=personas,
+            reference_assets=reference_assets,
+            realtime_voice_options=REALTIME_VOICE_OPTIONS,
+        ),
     )
 
 
@@ -154,7 +222,28 @@ async def personas_submit(
         return _redirect_login()
     await verify_csrf_or_403(request, context)
     form = await request.form()
-    persona_id = form.get("persona_id")
+    action = str(form.get("action") or "upsert_persona")
+    if action == "upload_reference":
+        persona = await session.get(Persona, form.get("persona_id"))
+        upload = form.get("reference_image")
+        if persona is not None and getattr(upload, "filename", ""):
+            await context.container.image_service.save_persona_reference_image(
+                session,
+                persona=persona,
+                upload=upload,
+            )
+            await context.container.audit_service.record(
+                session,
+                admin_user_id=str(context.admin_user.id),
+                action="upload_persona_reference_image",
+                entity_type="persona",
+                entity_id=str(persona.id),
+                summary=f"Uploaded reference image for persona {persona.display_name}",
+            )
+            await session.commit()
+        return RedirectResponse(url="/admin/personas", status_code=303)
+
+    persona_id = form.get("persona_id") or None
     persona = await session.get(Persona, persona_id) if persona_id else Persona(key=str(form.get("key", "")), display_name=str(form.get("display_name", "")))
     if persona_id is None:
         session.add(persona)
@@ -174,6 +263,11 @@ async def personas_submit(
     persona.proactive_outreach_style = str(form.get("proactive_outreach_style") or "") or None
     persona.visual_bible = _parse_json_input(str(form.get("visual_bible") or ""), {})
     persona.prompt_overrides = _parse_json_input(str(form.get("prompt_overrides") or ""), {})
+    realtime_voice = str(form.get("realtime_voice") or "").strip()
+    if realtime_voice:
+        persona.prompt_overrides["realtime_voice"] = realtime_voice
+    else:
+        persona.prompt_overrides.pop("realtime_voice", None)
     persona.safety_overrides = _parse_json_input(str(form.get("safety_overrides") or ""), {})
     persona.operator_notes = str(form.get("operator_notes") or "") or None
     persona.is_active = form.get("is_active") == "on"
@@ -551,6 +645,154 @@ async def test_tools_submit(
         )
     await session.commit()
     return RedirectResponse(url="/admin/test-tools", status_code=303)
+
+
+@router.get("/simulator")
+async def simulator_page(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    context: AdminRequestContext | None = Depends(get_optional_admin_context),
+):
+    if context is None:
+        return _redirect_login()
+    users = (await session.execute(select(User).order_by(User.phone_number))).scalars().all()
+    personas = (await session.execute(select(Persona).order_by(Persona.display_name))).scalars().all()
+    selected_user_id = request.query_params.get("user_id")
+    selected_user = await session.get(User, selected_user_id) if selected_user_id else None
+    selected_persona = None
+    thread_messages: list[Message] = []
+    message_assets: dict[str, list[MediaAsset]] = {}
+    flash_error = request.query_params.get("error")
+    pending_media = False
+    if selected_user:
+        selected_persona = await context.container.conversation_service.get_active_persona(session, selected_user)
+        conversation = await context.container.conversation_service.get_or_create_conversation(
+            session,
+            user=selected_user,
+            persona=selected_persona,
+        )
+        thread_messages = await context.container.conversation_service.recent_messages(
+            session,
+            conversation_id=conversation.id,
+            limit=30,
+        )
+        message_assets = await _message_assets(session, thread_messages)
+        pending_media = await _has_pending_media(session, selected_user)
+    return templates.TemplateResponse(
+        "admin/simulator.html",
+        _context_dict(
+            request,
+            context,
+            active_nav="simulator",
+            users=users,
+            personas=personas,
+            selected_user=selected_user,
+            selected_persona=selected_persona,
+            thread_messages=thread_messages,
+            message_assets=message_assets,
+            flash_error=flash_error,
+            pending_media=pending_media,
+        ),
+    )
+
+
+@router.post("/simulator")
+async def simulator_submit(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    context: AdminRequestContext | None = Depends(get_optional_admin_context),
+):
+    if context is None:
+        return _redirect_login()
+    await verify_csrf_or_403(request, context)
+    form = await request.form()
+    user_id = form.get("user_id")
+    if not user_id:
+        return RedirectResponse(url="/admin/simulator", status_code=303)
+    user = await session.get(User, user_id)
+    if user is None:
+        return RedirectResponse(url="/admin/simulator", status_code=303)
+    persona = await session.get(Persona, form.get("persona_id")) if form.get("persona_id") else None
+    action = str(form.get("action") or "simulate_text")
+    if action == "clear_thread":
+        conversation = await context.container.conversation_service.get_or_create_conversation(
+            session,
+            user=user,
+            persona=persona or await context.container.conversation_service.get_active_persona(session, user),
+        )
+        message_ids = (
+            await session.execute(select(Message.id).where(Message.conversation_id == conversation.id))
+        ).scalars().all()
+        if message_ids:
+            memory_ids = (
+                await session.execute(select(MemoryItem.id).where(MemoryItem.source_message_id.in_(message_ids)))
+            ).scalars().all()
+            if memory_ids:
+                await session.execute(delete(MemoryItem).where(MemoryItem.consolidated_into_id.in_(memory_ids)))
+                await session.execute(delete(MemoryItem).where(MemoryItem.id.in_(memory_ids)))
+            await session.execute(delete(MediaAsset).where(MediaAsset.message_id.in_(message_ids)))
+            await session.execute(delete(DeliveryAttempt).where(DeliveryAttempt.message_id.in_(message_ids)))
+            await session.execute(delete(SafetyEvent).where(SafetyEvent.message_id.in_(message_ids)))
+            await session.execute(delete(Message).where(Message.id.in_(message_ids)))
+        await session.commit()
+        return RedirectResponse(url=f"/admin/simulator?user_id={user.id}", status_code=303)
+    if action == "simulate_image":
+        persona = persona or await context.container.conversation_service.get_active_persona(session, user)
+        if persona is not None:
+            scene_hint = str(form.get("scene_hint") or "").strip()
+            if scene_hint:
+                config = await context.container.config_service.get_effective_config(session, user=user, persona=persona)
+                conversation = await context.container.conversation_service.get_or_create_conversation(
+                    session,
+                    user=user,
+                    persona=persona,
+                )
+                asset = await context.container.image_service.generate_image(
+                    session,
+                    persona=persona,
+                    user=user,
+                    scene_hint=scene_hint,
+                    negative_prompt=str(form.get("negative_prompt") or "") or None,
+                    config=config,
+                    metadata={"source": "admin_simulator"},
+                )
+                message = Message(
+                    conversation_id=conversation.id,
+                    user_id=user.id,
+                    persona_id=persona.id if persona else None,
+                    direction=Direction.outbound,
+                    channel=Channel.mms,
+                    provider="simulator",
+                    idempotency_key=make_idempotency_key("simulator-image", conversation.id, scene_hint, utc_now()),
+                    body=str(form.get("caption") or "").strip() or None,
+                    normalized_body=None,
+                    status=MessageStatus.sent,
+                    is_proactive=False,
+                    sent_at=utc_now(),
+                    metadata_json={"source": "admin_simulator", "scene_hint": scene_hint},
+                )
+                session.add(message)
+                await session.flush()
+                asset.message_id = message.id
+                context.container.conversation_service.mark_outbound(user, conversation)
+                await session.commit()
+                if asset.generation_status != "ready":
+                    return RedirectResponse(
+                        url=f"/admin/simulator?user_id={user.id}&error=image_failed",
+                        status_code=303,
+                    )
+        return RedirectResponse(url=f"/admin/simulator?user_id={user.id}", status_code=303)
+    body = str(form.get("body") or "").strip()
+    if body:
+        await context.container.message_service.simulate_inbound_message(
+            session,
+            user=user,
+            persona=persona,
+            body=body,
+            force_photo=form.get("force_photo") == "on",
+        )
+        await session.commit()
+    return RedirectResponse(url=f"/admin/simulator?user_id={user.id}", status_code=303)
 
 
 @router.get("/calls")

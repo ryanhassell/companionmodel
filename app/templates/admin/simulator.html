@@ -1,0 +1,130 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>SMS Simulator</h1>
+    <p class="subtle">Simulate inbound texts and watch the companion reply without sending a real SMS.</p>
+  </div>
+</div>
+{% if flash_error == "image_failed" %}
+<section class="card alert-card">
+  <strong>Image generation failed.</strong>
+  <p class="subtle">The simulator kept working, but the image request was blocked or timed out. Try a simpler everyday scene prompt.</p>
+</section>
+{% endif %}
+<div class="grid two simulator-layout">
+  <section class="card">
+    <h2>Simulate Inbound Message</h2>
+    <form method="post" action="/admin/simulator" class="grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="action" value="simulate_text">
+      <label>User
+        <select name="user_id" required>
+          <option value="">Select a user</option>
+          {% for user in users %}
+          <option value="{{ user.id }}" {{ 'selected' if selected_user and selected_user.id == user.id else '' }}>{{ user.phone_number }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Persona
+        <select name="persona_id">
+          <option value="">Automatic active persona</option>
+          {% for persona in personas %}
+          <option value="{{ persona.id }}" {{ 'selected' if selected_persona and selected_persona.id == persona.id else '' }}>{{ persona.display_name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Incoming Text
+        <textarea name="body" required placeholder="Type what the user would text..."></textarea>
+      </label>
+      <label><input type="checkbox" name="force_photo"> Force photo chance for this reply</label>
+      <button type="submit">Simulate Text</button>
+    </form>
+  </section>
+  <section class="card">
+    <h2>Generate Companion Photo</h2>
+    <form method="post" action="/admin/simulator" class="grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="action" value="simulate_image">
+      <label>User
+        <select name="user_id" required>
+          <option value="">Select a user</option>
+          {% for user in users %}
+          <option value="{{ user.id }}" {{ 'selected' if selected_user and selected_user.id == user.id else '' }}>{{ user.phone_number }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Persona
+        <select name="persona_id">
+          <option value="">Automatic active persona</option>
+          {% for persona in personas %}
+          <option value="{{ persona.id }}" {{ 'selected' if selected_persona and selected_persona.id == persona.id else '' }}>{{ persona.display_name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Scene Hint
+        <textarea name="scene_hint" required placeholder="cute selfie in a pastel hoodie by a window, soft morning light"></textarea>
+      </label>
+      <label>Optional Caption
+        <input type="text" name="caption" placeholder="this one is so cute lol">
+      </label>
+      <label>Negative Prompt
+        <input type="text" name="negative_prompt" placeholder="optional extra things to avoid">
+      </label>
+      <button type="submit">Generate Photo In Thread</button>
+    </form>
+  </section>
+  <section class="card">
+    <h2>Conversation Preview</h2>
+    {% if selected_user %}
+    <p class="subtle">Showing the latest messages for {{ selected_user.phone_number }}.</p>
+    {% else %}
+    <p class="subtle">Pick a user to load the thread.</p>
+    {% endif %}
+    <div class="chat-thread">
+      {% for message in thread_messages %}
+      <article class="chat-bubble {{ 'inbound' if message.direction.value == 'inbound' else 'outbound' }}">
+        <header>
+          <strong>{{ 'User' if message.direction.value == 'inbound' else 'Companion' }}</strong>
+          <span class="subtle">{{ message.created_at }}</span>
+        </header>
+        <p>{{ message.body or "—" }}</p>
+        {% for asset in message_assets.get(message.id|string, []) %}
+        {% if asset.local_path or asset.remote_url %}
+        <div class="chat-media">
+          <img src="/api/media/{{ asset.id }}" alt="Attached media">
+          <a href="/api/media/{{ asset.id }}" target="_blank">open full image</a>
+        </div>
+        {% endif %}
+        {% endfor %}
+        <div class="pill-row">
+          <span class="pill">{{ message.provider }}</span>
+          <span class="pill">{{ message.status.value }}</span>
+          <span class="pill">{{ message.channel.value }}</span>
+        </div>
+      </article>
+      {% endfor %}
+      {% if not thread_messages %}
+      <p class="subtle">No messages yet for this thread.</p>
+      {% endif %}
+    </div>
+    {% if selected_user %}
+    <div class="simulator-actions">
+      <form method="get" action="/admin/simulator" class="inline-form">
+        <input type="hidden" name="user_id" value="{{ selected_user.id }}">
+        <button class="secondary" type="submit">Refresh Thread</button>
+      </form>
+      <form method="post" action="/admin/simulator" class="inline-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="action" value="clear_thread">
+        <input type="hidden" name="user_id" value="{{ selected_user.id }}">
+        {% if selected_persona %}
+        <input type="hidden" name="persona_id" value="{{ selected_persona.id }}">
+        {% endif %}
+        <button class="danger" type="submit">Clear Messages</button>
+      </form>
+    </div>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

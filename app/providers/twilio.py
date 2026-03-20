@@ -125,16 +125,22 @@ class TwilioProvider:
         self,
         *,
         to_number: str,
-        twiml_url: str,
+        twiml_url: str | None = None,
+        twiml: str | None = None,
         from_number: str | None = None,
         status_callback: str | None = None,
     ) -> OutboundCallResult:
         twilio = self.settings.twilio
         payload: dict[str, Any] = {
             "To": to_number,
-            "Url": twiml_url,
             "From": from_number or twilio.from_number,
         }
+        if twiml:
+            payload["Twiml"] = twiml
+        elif twiml_url:
+            payload["Url"] = twiml_url
+        else:
+            raise RuntimeError("A TwiML URL or inline TwiML is required to initiate a call")
         if status_callback or twilio.voice_status_callback_url:
             payload["StatusCallback"] = status_callback or twilio.voice_status_callback_url
         data = await self._post_form("Calls.json", payload)

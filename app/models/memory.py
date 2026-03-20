@@ -17,6 +17,10 @@ if TYPE_CHECKING:
     from app.models.user import User
 
 
+def enum_values(enum_cls):
+    return [member.value for member in enum_cls]
+
+
 class MemoryItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "memory_items"
     __table_args__ = (
@@ -29,7 +33,7 @@ class MemoryItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     persona_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("personas.id"))
     source_message_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("messages.id"))
     consolidated_into_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("memory_items.id"))
-    memory_type: Mapped[MemoryType] = mapped_column(Enum(MemoryType), nullable=False)
+    memory_type: Mapped[MemoryType] = mapped_column(Enum(MemoryType, values_callable=enum_values), nullable=False)
     title: Mapped[str | None] = mapped_column(String(120))
     content: Mapped[str] = mapped_column(Text(), nullable=False)
     summary: Mapped[str | None] = mapped_column(Text())

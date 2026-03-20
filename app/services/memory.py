@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import desc, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.logging import get_logger
 from app.core.settings import RuntimeSettings
 from app.models.communication import Message
 from app.models.enums import Direction, MemoryType
@@ -16,6 +17,8 @@ from app.models.user import User
 from app.providers.openai import OpenAIProvider
 from app.services.prompt import PromptService
 from app.utils.time import utc_now
+
+logger = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -76,23 +79,35 @@ class MemoryService:
             content = str(item.get("content", "")).strip()
             if not content:
                 continue
-            memory = MemoryItem(
-                user_id=user.id,
-                persona_id=persona.id if persona else None,
-                source_message_id=message.id,
-                memory_type=MemoryType(item.get("memory_type", "fact")),
-                title=item.get("title"),
-                content=content,
-                summary=item.get("summary"),
-                tags=item.get("tags", []),
-                importance_score=float(item.get("importance_score", 0.5)),
-                metadata_json={"source": "extraction"},
+            memory = await self._build_or_merge_memory_item(
+                session,
+                user=user,
+                persona=persona,
+                source_message=message,
+                raw_item=item,
+                config=config,
             )
-            session.add(memory)
+            if memory is None:
+                continue
             created.append(memory)
         await session.flush()
         if created:
             await self.embed_items(session, created, config=config)
+            for memory in created:
+                logger.info(
+                    "memory_saved",
+                    memory_id=str(memory.id),
+                    user_id=str(memory.user_id) if memory.user_id else None,
+                    persona_id=str(memory.persona_id) if memory.persona_id else None,
+                    memory_type=memory.memory_type.value,
+                    title=memory.title,
+                    summary=memory.summary,
+                    tags=memory.tags,
+                    source=(memory.metadata_json or {}).get("source"),
+                    entity_name=(memory.metadata_json or {}).get("entity_name"),
+                    entity_kind=(memory.metadata_json or {}).get("entity_kind"),
+                    merge_count=(memory.metadata_json or {}).get("merge_count"),
+                )
         return created
 
     async def embed_items(
@@ -173,19 +188,34 @@ class MemoryService:
         threshold: float,
     ) -> list[RetrievedMemory]:
         vector_literal = "[" + ",".join(f"{value:.12f}" for value in query_embedding) + "]"
-        sql = text(
-            """
-            SELECT id, 1 - (embedding_vector <=> CAST(:vector_literal AS vector)) AS similarity
-            FROM memory_items
-            WHERE user_id = :user_id
-              AND disabled = false
-              AND embedding_vector IS NOT NULL
-              AND (:persona_id IS NULL OR persona_id IS NULL OR persona_id = :persona_id)
-            ORDER BY embedding_vector <=> CAST(:vector_literal AS vector)
-            LIMIT :top_k
-            """
-        )
-        rows = (await session.execute(sql, {"vector_literal": vector_literal, "user_id": user_id, "persona_id": persona_id, "top_k": top_k})).all()
+        if persona_id is None:
+            sql = text(
+                """
+                SELECT id, 1 - (embedding_vector <=> CAST(:vector_literal AS vector)) AS similarity
+                FROM memory_items
+                WHERE user_id = :user_id
+                  AND disabled = false
+                  AND embedding_vector IS NOT NULL
+                ORDER BY embedding_vector <=> CAST(:vector_literal AS vector)
+                LIMIT :top_k
+                """
+            )
+            params = {"vector_literal": vector_literal, "user_id": user_id, "top_k": top_k}
+        else:
+            sql = text(
+                """
+                SELECT id, 1 - (embedding_vector <=> CAST(:vector_literal AS vector)) AS similarity
+                FROM memory_items
+                WHERE user_id = :user_id
+                  AND disabled = false
+                  AND embedding_vector IS NOT NULL
+                  AND (persona_id IS NULL OR persona_id = :persona_id)
+                ORDER BY embedding_vector <=> CAST(:vector_literal AS vector)
+                LIMIT :top_k
+                """
+            )
+            params = {"vector_literal": vector_literal, "user_id": user_id, "persona_id": persona_id, "top_k": top_k}
+        rows = (await session.execute(sql, params)).all()
         if not rows:
             return []
         ids = [row.id for row in rows if row.similarity is None or row.similarity >= threshold]
@@ -266,7 +296,17 @@ class MemoryService:
 
     def _embedding_text(self, item: MemoryItem) -> str:
         tags = ", ".join(item.tags or [])
-        return f"type={item.memory_type.value}\ntitle={item.title or ''}\ntags={tags}\ncontent={item.content}"
+        metadata = item.metadata_json or {}
+        entity_name = metadata.get("entity_name") or ""
+        entity_kind = metadata.get("entity_kind") or ""
+        return (
+            f"type={item.memory_type.value}\n"
+            f"title={item.title or ''}\n"
+            f"entity_name={entity_name}\n"
+            f"entity_kind={entity_kind}\n"
+            f"tags={tags}\n"
+            f"content={item.content}"
+        )
 
     def _heuristic_facts(self, body: str) -> list[dict[str, Any]]:
         lowered = body.lower()
@@ -284,6 +324,182 @@ class MemoryService:
             ]
         return []
 
+    async def _build_or_merge_memory_item(
+        self,
+        session: AsyncSession,
+        *,
+        user: User,
+        persona: Persona | None,
+        source_message: Message,
+        raw_item: dict[str, Any],
+        config: dict[str, Any],
+    ) -> MemoryItem | None:
+        content = str(raw_item.get("content", "")).strip()
+        if not content:
+            return None
+        metadata_json = {"source": "extraction"}
+        entity_name = str(raw_item.get("entity_name", "")).strip()
+        entity_kind = str(raw_item.get("entity_kind", "")).strip()
+        should_profile = bool(raw_item.get("should_profile")) and bool(entity_name)
+        if should_profile:
+            metadata_json.update(
+                {
+                    "entity_name": entity_name,
+                    "entity_name_normalized": entity_name.casefold(),
+                    "entity_kind": entity_kind or "topic",
+                    "memory_scope": "entity",
+                }
+            )
+            merged = await self._merge_entity_memory(
+                session,
+                user=user,
+                persona=persona,
+                source_message=source_message,
+                raw_item=raw_item,
+                metadata_json=metadata_json,
+            )
+            if merged is not None:
+                return merged
+
+        memory = MemoryItem(
+            user_id=user.id,
+            persona_id=persona.id if persona else None,
+            source_message_id=source_message.id,
+            memory_type=MemoryType(raw_item.get("memory_type", "fact")),
+            title=raw_item.get("title"),
+            content=content,
+            summary=raw_item.get("summary"),
+            tags=raw_item.get("tags", []),
+            importance_score=float(raw_item.get("importance_score", 0.5)),
+            metadata_json=metadata_json,
+        )
+        session.add(memory)
+        return memory
+
+    async def _merge_entity_memory(
+        self,
+        session: AsyncSession,
+        *,
+        user: User,
+        persona: Persona | None,
+        source_message: Message,
+        raw_item: dict[str, Any],
+        metadata_json: dict[str, Any],
+    ) -> MemoryItem | None:
+        entity_name = str(metadata_json.get("entity_name") or "").strip()
+        if not entity_name:
+            return None
+        normalized_name = entity_name.casefold()
+        stmt = (
+            select(MemoryItem)
+            .where(
+                MemoryItem.user_id == user.id,
+                MemoryItem.disabled.is_(False),
+            )
+            .order_by(desc(MemoryItem.updated_at))
+            .limit(100)
+        )
+        candidates = list((await session.execute(stmt)).scalars().all())
+        if persona is not None:
+            candidates = [item for item in candidates if item.persona_id in (None, persona.id)]
+        entity_candidates = [
+            item
+            for item in candidates
+            if (item.metadata_json or {}).get("entity_name_normalized") == normalized_name
+        ]
+        if not entity_candidates:
+            return None
+        existing = entity_candidates[0]
+        merged_data = await self._entity_merge_decision(existing=existing, raw_item=raw_item, source_message=source_message)
+        if not merged_data.get("same_entity", True):
+            return None
+        existing.title = str(merged_data.get("title") or existing.title or raw_item.get("title") or entity_name)[:120]
+        existing.content = str(merged_data.get("content") or existing.content).strip()
+        existing.summary = str(merged_data.get("summary") or existing.summary or existing.content[:160]).strip()
+        existing.tags = _merge_tags(existing.tags, raw_item.get("tags", []), merged_data.get("tags", []))
+        existing.importance_score = max(
+            float(existing.importance_score or 0.0),
+            float(raw_item.get("importance_score", 0.5)),
+            float(merged_data.get("importance_score", 0.0) or 0.0),
+        )
+        existing.source_message_id = source_message.id
+        existing.metadata_json = {
+            **(existing.metadata_json or {}),
+            **metadata_json,
+            "source": "entity_merge",
+            "merge_count": int((existing.metadata_json or {}).get("merge_count", 0)) + 1,
+            "last_fact_added": str(raw_item.get("content", "")).strip()[:300],
+        }
+        logger.info(
+            "memory_merged",
+            memory_id=str(existing.id),
+            user_id=str(existing.user_id) if existing.user_id else None,
+            persona_id=str(existing.persona_id) if existing.persona_id else None,
+            memory_type=existing.memory_type.value,
+            title=existing.title,
+            summary=existing.summary,
+            tags=existing.tags,
+            entity_name=(existing.metadata_json or {}).get("entity_name"),
+            entity_kind=(existing.metadata_json or {}).get("entity_kind"),
+            merge_count=(existing.metadata_json or {}).get("merge_count"),
+            last_fact_added=(existing.metadata_json or {}).get("last_fact_added"),
+        )
+        return existing
+
+    async def _entity_merge_decision(
+        self,
+        *,
+        existing: MemoryItem,
+        raw_item: dict[str, Any],
+        source_message: Message,
+    ) -> dict[str, Any]:
+        if not self.openai_provider.enabled:
+            return {
+                "same_entity": True,
+                "title": existing.title or raw_item.get("title"),
+                "content": _merge_text(existing.content, str(raw_item.get("content", ""))),
+                "summary": raw_item.get("summary") or existing.summary,
+                "tags": raw_item.get("tags", []),
+                "importance_score": raw_item.get("importance_score", 0.5),
+            }
+        response = await self.openai_provider.generate_json(
+            instructions="Return JSON only.",
+            input_items=[
+                {
+                    "role": "user",
+                    "content": (
+                        "Decide whether this new memory candidate is about the same entity as the existing entity memory, "
+                        "and if so merge it into an updated compact profile.\n"
+                        "Return JSON only in this format: "
+                        "{\"same_entity\": true/false, \"title\": \"...\", \"content\": \"...\", "
+                        "\"summary\": \"...\", \"tags\": [\"...\"], \"importance_score\": 0.0}.\n"
+                        "- Prefer same_entity=true when the names clearly match and the new fact adds detail.\n"
+                        "- Keep merged content compact but cumulative, like a living memory/profile.\n"
+                        "- Include only factual information that has actually been mentioned.\n\n"
+                        f"Existing memory title: {existing.title or ''}\n"
+                        f"Existing memory content: {existing.content}\n"
+                        f"Existing summary: {existing.summary or ''}\n\n"
+                        f"New message: {source_message.body or ''}\n"
+                        f"New candidate title: {raw_item.get('title', '')}\n"
+                        f"New candidate content: {raw_item.get('content', '')}\n"
+                        f"New candidate summary: {raw_item.get('summary', '')}\n"
+                        f"New candidate tags: {raw_item.get('tags', [])}\n"
+                    ),
+                }
+            ],
+            max_output_tokens=self.settings.openai.memory_max_output_tokens,
+        )
+        if isinstance(response, dict):
+            return response
+        return {
+            "same_entity": True,
+            "title": existing.title or raw_item.get("title"),
+            "content": _merge_text(existing.content, str(raw_item.get("content", ""))),
+            "summary": raw_item.get("summary") or existing.summary,
+            "tags": raw_item.get("tags", []),
+            "importance_score": raw_item.get("importance_score", 0.5),
+        }
+
 
 def cosine_similarity(left: list[float], right: list[float]) -> float:
     dot = sum(a * b for a, b in zip(left, right))
@@ -292,3 +508,27 @@ def cosine_similarity(left: list[float], right: list[float]) -> float:
     if left_norm == 0 or right_norm == 0:
         return 0.0
     return dot / (left_norm * right_norm)
+
+
+def _merge_tags(*tag_groups: list[str] | Any) -> list[str]:
+    seen: list[str] = []
+    for group in tag_groups:
+        if not isinstance(group, list):
+            continue
+        for tag in group:
+            value = str(tag).strip()
+            if value and value not in seen:
+                seen.append(value)
+    return seen[:16]
+
+
+def _merge_text(existing: str, new: str) -> str:
+    existing_clean = existing.strip()
+    new_clean = new.strip()
+    if not existing_clean:
+        return new_clean
+    if not new_clean:
+        return existing_clean
+    if new_clean in existing_clean:
+        return existing_clean
+    return f"{existing_clean} {new_clean}".strip()
