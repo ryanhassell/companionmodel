@@ -31,6 +31,13 @@ class SpeechResult:
 
 
 @dataclass(slots=True)
+class TranscriptionResult:
+    model: str
+    text: str
+    raw_response: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class OutboundMessageResult:
     provider_sid: str | None
     status: str

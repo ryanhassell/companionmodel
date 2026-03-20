@@ -20,6 +20,8 @@
       <label>Favorite Activities (comma separated)<input type="text" name="favorite_activities"></label>
       <label>Image Appearance<textarea name="image_appearance"></textarea></label>
       <label>Speech Style<textarea name="speech_style"></textarea></label>
+      <label>Calling Numbers (comma separated)<input type="text" name="calling_numbers"></label>
+      <label>ElevenLabs Voice ID<input type="text" name="elevenlabs_voice_id"></label>
       <label>Realtime Voice
         <select name="realtime_voice">
           {% for voice_value, voice_label in realtime_voice_options %}
@@ -61,14 +63,16 @@
   <section class="card">
     <h2>Current Personas</h2>
     <table>
-      <thead><tr><th>Name</th><th>Key</th><th>Active</th><th>Call Voice</th><th>Reference</th><th>Topics</th></tr></thead>
+      <thead><tr><th>Name</th><th>Key</th><th>Active</th><th>ElevenLabs Voice</th><th>Realtime Voice</th><th>Calling Numbers</th><th>Reference</th><th>Topics</th></tr></thead>
       <tbody>
         {% for persona in personas %}
         <tr>
           <td>{{ persona.display_name }}</td>
           <td>{{ persona.key }}</td>
           <td>{{ "yes" if persona.is_active else "no" }}</td>
+          <td>{{ ((persona.prompt_overrides or {}).get("elevenlabs_voice_id")) or "—" }}</td>
           <td>{{ ((persona.prompt_overrides or {}).get("realtime_voice")) or "app default" }}</td>
+          <td>{{ ((persona.prompt_overrides or {}).get("calling_numbers")) | join(", ") if (persona.prompt_overrides or {}).get("calling_numbers") else "—" }}</td>
           <td>
             {% set asset = reference_assets.get(persona.id|string) %}
             {% if asset %}

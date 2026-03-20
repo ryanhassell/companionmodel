@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -53,17 +53,25 @@ async def twilio_status_webhook(
 @router.api_route("/webhooks/twilio/voice", methods=["GET", "POST"])
 async def twilio_voice_webhook(
     request: Request,
-    call_id: str,
     session: AsyncSession = Depends(get_db_session),
+    container: ServiceContainer = Depends(get_container),
 ) -> Response:
+    if request.method == "POST":
+        form = await request.form()
+        signature = request.headers.get("X-Twilio-Signature")
+        if not container.twilio_provider.validate_request(str(request.url), dict(form), signature):
+            raise HTTPException(status_code=403, detail="Invalid Twilio signature")
+        twiml = await container.voice_service.handle_twilio_voice_webhook(session, form=dict(form))
+        await session.commit()
+        return Response(content=twiml, media_type="application/xml")
+
+    call_id = request.query_params.get("call_id")
+    if not call_id:
+        return Response(content=container.voice_service.build_hangup_twiml(), media_type="application/xml")
     record = await session.get(CallRecord, call_id)
     if record is None:
-        return Response(
-            content='<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>',
-            media_type="application/xml",
-        )
+        return Response(content=container.voice_service.build_hangup_twiml(), media_type="application/xml")
     script = record.script or "Hi, just checking in and saying hello."
-    container = request.app.state.container
     twiml = container.voice_service.build_twiml(script)
     return Response(content=twiml, media_type="application/xml")
 
@@ -108,3 +116,9 @@ async def openai_realtime_webhook(
     result = await container.voice_service.handle_openai_realtime_event(session, payload=payload)
     await session.commit()
     return JSONResponse(result)
+
+
+@router.websocket("/webhooks/twilio/voice/media-stream")
+async def twilio_voice_media_stream(websocket: WebSocket) -> None:
+    container = websocket.app.state.container
+    await container.voice_service.handle_twilio_media_stream(websocket)

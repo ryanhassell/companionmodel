@@ -44,6 +44,20 @@ async def test_openai_accept_realtime_call_hits_expected_endpoint(settings):
     await client.aclose()
 
 
+@respx.mock
+async def test_openai_transcribe_audio_hits_expected_endpoint(settings):
+    settings.openai.api_key = "key"
+    client = httpx.AsyncClient()
+    provider = OpenAIProvider(settings, client)
+    route = respx.post("https://api.openai.com/v1/audio/transcriptions").mock(
+        return_value=httpx.Response(200, json={"text": "hello there"})
+    )
+    result = await provider.transcribe_audio(audio_bytes=b"RIFF....", filename="call.wav")
+    assert route.called
+    assert result.text == "hello there"
+    await client.aclose()
+
+
 def test_openai_realtime_webhook_validation(settings):
     settings.openai.realtime_webhook_secret = "whsec_test"
     provider = OpenAIProvider(settings, httpx.AsyncClient())

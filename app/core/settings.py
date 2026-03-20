@@ -75,6 +75,15 @@ class OpenAIConfig(BaseModel):
     image_size: str = "1024x1024"
 
 
+class ElevenLabsConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    api_key: str | None = None
+    base_url: str = "https://api.elevenlabs.io/v1"
+    api_timeout_seconds: int = 60
+    tts_model: str = "eleven_flash_v2_5"
+
+
 class SchedulingConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -142,11 +151,21 @@ class VoiceConfig(BaseModel):
 
     enabled: bool = False
     realtime_enabled: bool = False
+    driver: str = "twilio_media_streams_openai_stt_elevenlabs"
     max_duration_seconds: int = 300
     default_voice: str = "coral"
     default_tts_mode: str = "twilio_say"
     realtime_voice: str = "coral"
     realtime_sip_uri: str | None = None
+    media_streams_websocket_path: str = "/webhooks/twilio/voice/media-stream"
+    stt_model: str = "gpt-4o-transcribe"
+    text_model: str = "gpt-4o-mini"
+    elevenlabs_default_voice_id: str | None = None
+    elevenlabs_tts_model: str = "eleven_flash_v2_5"
+    stream_chunk_ms: int = 120
+    vad_rms_threshold: int = 450
+    vad_min_speech_ms: int = 240
+    vad_silence_ms: int = 720
     sideband_connect_timeout_seconds: int = 20
     sideband_idle_timeout_seconds: int = 900
     max_tool_roundtrips: int = 12
@@ -182,6 +201,7 @@ class RuntimeSettings(BaseSettings):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     twilio: TwilioConfig = Field(default_factory=TwilioConfig)
     openai: OpenAIConfig = Field(default_factory=OpenAIConfig)
+    elevenlabs: ElevenLabsConfig = Field(default_factory=ElevenLabsConfig)
     scheduling: SchedulingConfig = Field(default_factory=SchedulingConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     messaging: MessagingConfig = Field(default_factory=MessagingConfig)
@@ -271,7 +291,16 @@ def _apply_flat_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
         ("openai", "realtime_model"): os.getenv("OPENAI_REALTIME_MODEL"),
         ("openai", "realtime_webhook_secret"): os.getenv("OPENAI_REALTIME_WEBHOOK_SECRET"),
         ("openai", "validate_realtime_webhooks"): os.getenv("OPENAI_VALIDATE_REALTIME_WEBHOOKS"),
+        ("elevenlabs", "api_key"): os.getenv("ELEVENLABS_API_KEY"),
+        ("elevenlabs", "base_url"): os.getenv("ELEVENLABS_BASE_URL"),
+        ("elevenlabs", "tts_model"): os.getenv("ELEVENLABS_TTS_MODEL"),
+        ("voice", "driver"): os.getenv("VOICE_DRIVER"),
         ("voice", "realtime_sip_uri"): os.getenv("VOICE_REALTIME_SIP_URI"),
+        ("voice", "media_streams_websocket_path"): os.getenv("VOICE_MEDIA_STREAMS_WEBSOCKET_PATH"),
+        ("voice", "stt_model"): os.getenv("VOICE_STT_MODEL"),
+        ("voice", "text_model"): os.getenv("VOICE_TEXT_MODEL"),
+        ("voice", "elevenlabs_default_voice_id"): os.getenv("VOICE_ELEVENLABS_DEFAULT_VOICE_ID"),
+        ("voice", "elevenlabs_tts_model"): os.getenv("VOICE_ELEVENLABS_TTS_MODEL"),
         ("admin", "bootstrap_username"): os.getenv("ADMIN_BOOTSTRAP_USERNAME"),
         ("admin", "bootstrap_password"): os.getenv("ADMIN_BOOTSTRAP_PASSWORD"),
         ("admin", "session_cookie_name"): os.getenv("ADMIN_SESSION_COOKIE_NAME"),

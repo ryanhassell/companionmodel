@@ -14,7 +14,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 from app.core.logging import get_logger
 from app.core.security import redact_secrets
 from app.core.settings import RuntimeSettings
-from app.providers.base import GeneratedImage, GeneratedText, SpeechResult
+from app.providers.base import GeneratedImage, GeneratedText, SpeechResult, TranscriptionResult
 from app.utils.text import extract_json_block
 
 logger = get_logger(__name__)
@@ -256,6 +256,60 @@ class OpenAIProvider:
             max_output_tokens=max_output_tokens,
         )
         return extract_json_block(response.text)
+
+    async def transcribe_audio(
+        self,
+        *,
+        audio_bytes: bytes,
+        filename: str = "audio.wav",
+        mime_type: str = "audio/wav",
+        model: str | None = None,
+        prompt: str | None = None,
+        language: str | None = None,
+    ) -> TranscriptionResult:
+        chosen_model = model or self.settings.voice.stt_model
+        url = f"{self.settings.openai.base_url.rstrip('/')}/audio/transcriptions"
+        data: dict[str, Any] = {"model": chosen_model}
+        if prompt:
+            data["prompt"] = prompt
+        if language:
+            data["language"] = language
+        logger.info(
+            "openai_transcription_request",
+            endpoint="audio/transcriptions",
+            model=chosen_model,
+            filename=filename,
+            mime_type=mime_type,
+            size_bytes=len(audio_bytes),
+            prompt_preview=_preview_text(prompt),
+        )
+        response = await self.client.post(
+            url,
+            headers={"Authorization": f"Bearer {self.settings.openai.api_key}"},
+            data=data,
+            files={"file": (filename, audio_bytes, mime_type)},
+            timeout=self.settings.openai.api_timeout_seconds,
+        )
+        if response.is_error:
+            logger.info(
+                "openai_transcription_error",
+                endpoint="audio/transcriptions",
+                status_code=response.status_code,
+                body_preview=_preview_text(response.text, limit=400),
+            )
+        response.raise_for_status()
+        payload = response.json()
+        logger.info(
+            "openai_transcription_response",
+            endpoint="audio/transcriptions",
+            status_code=response.status_code,
+            text_preview=_preview_text(payload.get("text")),
+        )
+        return TranscriptionResult(
+            model=chosen_model,
+            text=str(payload.get("text") or "").strip(),
+            raw_response=payload,
+        )
 
     async def embed_texts(self, texts: list[str], model: str | None = None) -> list[list[float]]:
         payload = {

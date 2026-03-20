@@ -263,6 +263,16 @@ async def personas_submit(
     persona.proactive_outreach_style = str(form.get("proactive_outreach_style") or "") or None
     persona.visual_bible = _parse_json_input(str(form.get("visual_bible") or ""), {})
     persona.prompt_overrides = _parse_json_input(str(form.get("prompt_overrides") or ""), {})
+    calling_numbers = _split_csv(str(form.get("calling_numbers") or ""))
+    if calling_numbers:
+        persona.prompt_overrides["calling_numbers"] = calling_numbers
+    else:
+        persona.prompt_overrides.pop("calling_numbers", None)
+    elevenlabs_voice_id = str(form.get("elevenlabs_voice_id") or "").strip()
+    if elevenlabs_voice_id:
+        persona.prompt_overrides["elevenlabs_voice_id"] = elevenlabs_voice_id
+    else:
+        persona.prompt_overrides.pop("elevenlabs_voice_id", None)
     realtime_voice = str(form.get("realtime_voice") or "").strip()
     if realtime_voice:
         persona.prompt_overrides["realtime_voice"] = realtime_voice

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import httpx
 
 from app.core.settings import RuntimeSettings, get_settings
+from app.providers.elevenlabs import ElevenLabsProvider
 from app.providers.openai import OpenAIProvider
 from app.providers.twilio import TwilioProvider
 from app.services.alerting import AlertingService
@@ -28,6 +29,7 @@ class ServiceContainer:
     settings: RuntimeSettings
     http_client: httpx.AsyncClient
     openai_provider: OpenAIProvider
+    elevenlabs_provider: ElevenLabsProvider
     twilio_provider: TwilioProvider
     alerting_service: AlertingService
     audit_service: AuditService
@@ -50,6 +52,7 @@ class ServiceContainer:
         actual_settings = settings or get_settings()
         http_client = httpx.AsyncClient(follow_redirects=True)
         openai_provider = OpenAIProvider(actual_settings, http_client)
+        elevenlabs_provider = ElevenLabsProvider(actual_settings, http_client)
         twilio_provider = TwilioProvider(actual_settings, http_client)
         alerting_service = AlertingService(actual_settings, http_client)
         audit_service = AuditService()
@@ -66,6 +69,7 @@ class ServiceContainer:
             actual_settings,
             twilio_provider,
             openai_provider,
+            elevenlabs_provider,
             prompt_service,
             memory_service,
             daily_life_service,
@@ -97,6 +101,7 @@ class ServiceContainer:
             settings=actual_settings,
             http_client=http_client,
             openai_provider=openai_provider,
+            elevenlabs_provider=elevenlabs_provider,
             twilio_provider=twilio_provider,
             alerting_service=alerting_service,
             audit_service=audit_service,

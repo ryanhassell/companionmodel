@@ -182,8 +182,14 @@ async def upsert_persona(
         persona = Persona(key=payload.key, display_name=payload.display_name)
         session.add(persona)
     data = payload.model_dump()
+    elevenlabs_voice_id = str(data.pop("elevenlabs_voice_id") or "").strip()
     for key, value in data.items():
         setattr(persona, key, value)
+    persona.prompt_overrides = dict(persona.prompt_overrides or {})
+    if elevenlabs_voice_id:
+        persona.prompt_overrides["elevenlabs_voice_id"] = elevenlabs_voice_id
+    else:
+        persona.prompt_overrides.pop("elevenlabs_voice_id", None)
     if payload.is_active:
         for other in (await session.execute(select(Persona).where(Persona.id != persona.id))).scalars().all():
             other.is_active = False
