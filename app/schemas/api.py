@@ -53,6 +53,8 @@ class PersonaUpsertRequest(BaseModel):
     proactive_outreach_style: str | None = None
     visual_bible: dict[str, Any] = Field(default_factory=dict)
     elevenlabs_voice_id: str | None = None
+    elevenlabs_call_model: str | None = None
+    elevenlabs_creative_model: str | None = None
     prompt_overrides: dict[str, Any] = Field(default_factory=dict)
     safety_overrides: dict[str, Any] = Field(default_factory=dict)
     operator_notes: str | None = None

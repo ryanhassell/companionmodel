@@ -273,6 +273,16 @@ async def personas_submit(
         persona.prompt_overrides["elevenlabs_voice_id"] = elevenlabs_voice_id
     else:
         persona.prompt_overrides.pop("elevenlabs_voice_id", None)
+    elevenlabs_call_model = str(form.get("elevenlabs_call_model") or "").strip()
+    if elevenlabs_call_model:
+        persona.prompt_overrides["elevenlabs_call_model"] = elevenlabs_call_model
+    else:
+        persona.prompt_overrides.pop("elevenlabs_call_model", None)
+    elevenlabs_creative_model = str(form.get("elevenlabs_creative_model") or "").strip()
+    if elevenlabs_creative_model:
+        persona.prompt_overrides["elevenlabs_creative_model"] = elevenlabs_creative_model
+    else:
+        persona.prompt_overrides.pop("elevenlabs_creative_model", None)
     realtime_voice = str(form.get("realtime_voice") or "").strip()
     if realtime_voice:
         persona.prompt_overrides["realtime_voice"] = realtime_voice
@@ -638,6 +648,7 @@ async def test_tools_submit(
                 users=(await session.execute(select(User).order_by(User.phone_number))).scalars().all(),
                 personas=(await session.execute(select(Persona).order_by(Persona.display_name))).scalars().all(),
                 preview_text=rendered,
+                creative_audio_asset=None,
             ),
         )
     elif action == "manual_proactive":
@@ -652,6 +663,27 @@ async def test_tools_submit(
             persona=persona,
             config=config,
             opening_line=str(form.get("opening_line") or "") or None,
+        )
+    elif action == "creative_audio":
+        user = await session.get(User, form.get("user_id")) if form.get("user_id") else None
+        persona = await session.get(Persona, form.get("persona_id")) if form.get("persona_id") else (await context.container.conversation_service.get_active_persona(session, user) if user else None)
+        asset = await context.container.voice_service.generate_creative_audio_clip(
+            session,
+            user=user,
+            persona=persona,
+            text=str(form.get("creative_text") or "").strip(),
+        )
+        await session.commit()
+        return templates.TemplateResponse(
+            "admin/test_tools.html",
+            _context_dict(
+                request,
+                context,
+                active_nav="test-tools",
+                users=(await session.execute(select(User).order_by(User.phone_number))).scalars().all(),
+                personas=(await session.execute(select(Persona).order_by(Persona.display_name))).scalars().all(),
+                creative_audio_asset=asset,
+            ),
         )
     await session.commit()
     return RedirectResponse(url="/admin/test-tools", status_code=303)

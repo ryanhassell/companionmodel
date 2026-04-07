@@ -101,7 +101,7 @@ class SafetyConfig(BaseModel):
 
     daily_message_cap: int = 60
     daily_image_cap: int = 3
-    daily_call_cap: int = 1
+    daily_call_cap: int = 2
     cooldown_minutes: int = 8
     obsessive_window_minutes: int = 20
     obsessive_message_threshold: int = 10
@@ -161,11 +161,14 @@ class VoiceConfig(BaseModel):
     stt_model: str = "gpt-4o-transcribe"
     text_model: str = "gpt-4o-mini"
     elevenlabs_default_voice_id: str | None = None
-    elevenlabs_tts_model: str = "eleven_flash_v2_5"
-    stream_chunk_ms: int = 120
-    vad_rms_threshold: int = 450
-    vad_min_speech_ms: int = 240
-    vad_silence_ms: int = 720
+    elevenlabs_call_tts_model: str = "eleven_flash_v2_5"
+    elevenlabs_creative_tts_model: str = "eleven_v3"
+    proactive_call_probability: float = 0.12
+    proactive_second_call_probability: float = 0.015
+    stream_chunk_ms: int = 40
+    vad_rms_threshold: int = 320
+    vad_min_speech_ms: int = 80
+    vad_silence_ms: int = 120
     sideband_connect_timeout_seconds: int = 20
     sideband_idle_timeout_seconds: int = 900
     max_tool_roundtrips: int = 12
@@ -300,7 +303,8 @@ def _apply_flat_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
         ("voice", "stt_model"): os.getenv("VOICE_STT_MODEL"),
         ("voice", "text_model"): os.getenv("VOICE_TEXT_MODEL"),
         ("voice", "elevenlabs_default_voice_id"): os.getenv("VOICE_ELEVENLABS_DEFAULT_VOICE_ID"),
-        ("voice", "elevenlabs_tts_model"): os.getenv("VOICE_ELEVENLABS_TTS_MODEL"),
+        ("voice", "elevenlabs_call_tts_model"): os.getenv("VOICE_ELEVENLABS_CALL_TTS_MODEL"),
+        ("voice", "elevenlabs_creative_tts_model"): os.getenv("VOICE_ELEVENLABS_CREATIVE_TTS_MODEL"),
         ("admin", "bootstrap_username"): os.getenv("ADMIN_BOOTSTRAP_USERNAME"),
         ("admin", "bootstrap_password"): os.getenv("ADMIN_BOOTSTRAP_PASSWORD"),
         ("admin", "session_cookie_name"): os.getenv("ADMIN_SESSION_COOKIE_NAME"),

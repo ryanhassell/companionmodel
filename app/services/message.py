@@ -824,12 +824,20 @@ class MessageService:
             persona=persona,
             config=config,
         )
+        recent_discussed_topics = await self._recent_discussed_topics(
+            session,
+            user=user,
+            persona=persona,
+            conversation=conversation,
+            recent_messages=recent_messages,
+        )
         context = {
             "user": user,
             "persona": persona,
             "conversation": conversation,
             "inbound_message": inbound_message,
             "recent_messages": recent_messages,
+            "recent_discussed_topics": recent_discussed_topics,
             "memory_hits": memory_hits,
             "config": config,
             **daily_context,
@@ -875,6 +883,50 @@ class MessageService:
                 )
                 break
         return reply
+
+    async def _recent_discussed_topics(
+        self,
+        session: AsyncSession,
+        *,
+        user: User,
+        persona: Persona | None,
+        conversation: Conversation,
+        recent_messages: list[Message],
+    ) -> list[str]:
+        topics: list[str] = []
+        seen: set[str] = set()
+        for message in recent_messages[-8:]:
+            body = truncate_text((message.body or "").strip(), 120)
+            if not body:
+                continue
+            key = normalize_text(body)
+            if key and key not in seen:
+                seen.add(key)
+                topics.append(body)
+        call_stmt = (
+            select(CallRecord)
+            .where(CallRecord.user_id == user.id)
+            .order_by(desc(CallRecord.created_at))
+            .limit(4)
+        )
+        if persona is not None:
+            call_stmt = (
+                select(CallRecord)
+                .where(CallRecord.user_id == user.id, CallRecord.persona_id == persona.id)
+                .order_by(desc(CallRecord.created_at))
+                .limit(4)
+            )
+        call_records = list((await session.execute(call_stmt)).scalars().all())
+        for record in call_records:
+            metadata = record.metadata_json or {}
+            summary = truncate_text(str(metadata.get("summary") or "").strip(), 140)
+            if not summary:
+                continue
+            key = normalize_text(summary)
+            if key and key not in seen:
+                seen.add(key)
+                topics.append(summary)
+        return topics[:8]
 
     async def send_outbound_message(
         self,

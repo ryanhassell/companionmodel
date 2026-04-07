@@ -77,3 +77,49 @@ async def test_proactive_schedule_allows_when_no_contact_factor_maxes_out(settin
     )
     assert decision.allowed is True
     assert decision.reason == "ok"
+
+
+async def test_proactive_call_schedule_allows_rare_call(settings, monkeypatch):
+    service = ScheduleService()
+    user = User(phone_number="+15555550106", timezone="America/New_York", is_enabled=True)
+    user.last_inbound_at = utc_now() - timedelta(hours=8)
+    config = settings.model_dump(mode="json")
+    now = now_in_timezone("America/New_York").replace(hour=12, minute=30)
+    monkeypatch.setattr(service, "_window_target_reached", lambda **kwargs: True)
+    monkeypatch.setattr(service, "_window_probability_allows", lambda **kwargs: True)
+
+    decision = await service.should_send_proactive_call(
+        FakeSession(),
+        user=user,
+        persona_id=None,
+        config=config,
+        now=now,
+    )
+
+    assert decision.allowed is True
+    assert decision.reason == "ok"
+
+
+async def test_proactive_call_schedule_skips_second_call_when_probability_fails(settings, monkeypatch):
+    service = ScheduleService()
+    user = User(phone_number="+15555550107", timezone="America/New_York", is_enabled=True)
+    user.last_inbound_at = utc_now() - timedelta(hours=8)
+    config = settings.model_dump(mode="json")
+    now = now_in_timezone("America/New_York").replace(hour=12, minute=30)
+    async def fake_call_count_today(*args, **kwargs):
+        return 1
+
+    monkeypatch.setattr(service, "_window_target_reached", lambda **kwargs: True)
+    monkeypatch.setattr(service, "call_count_today", fake_call_count_today)
+    monkeypatch.setattr(service, "_window_probability_allows", lambda **kwargs: False)
+
+    decision = await service.should_send_proactive_call(
+        FakeSession(),
+        user=user,
+        persona_id=None,
+        config=config,
+        now=now,
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "call_probability_skip"

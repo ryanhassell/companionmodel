@@ -33,13 +33,12 @@ class ElevenLabsProvider:
         text: str,
         voice_id: str,
         model_id: str | None = None,
-        output_format: str = "ulaw_8000",
+        output_format: str | None = "ulaw_8000",
     ) -> AsyncIterator[bytes]:
         url = f"{self.settings.elevenlabs.base_url.rstrip('/')}/text-to-speech/{voice_id}/stream"
         payload = {
             "text": text,
-            "model_id": model_id or self.settings.voice.elevenlabs_tts_model or self.settings.elevenlabs.tts_model,
-            "output_format": output_format,
+            "model_id": model_id or self.settings.voice.elevenlabs_call_tts_model or self.settings.elevenlabs.tts_model,
         }
         logger.info(
             "elevenlabs_tts_request",
@@ -53,6 +52,7 @@ class ElevenLabsProvider:
             url,
             headers=self._headers(),
             json=payload,
+            params={"output_format": output_format} if output_format else None,
             timeout=self.settings.elevenlabs.api_timeout_seconds,
         ) as response:
             response.raise_for_status()

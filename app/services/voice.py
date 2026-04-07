@@ -6,6 +6,7 @@ import base64
 import html
 import io
 import json
+import secrets
 import uuid
 import wave
 from contextlib import suppress
@@ -15,14 +16,14 @@ from typing import Any
 from urllib.parse import quote
 
 from fastapi import WebSocket, WebSocketDisconnect
-from sqlalchemy import select
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.core.settings import RuntimeSettings
 from app.db.session import get_sessionmaker
-from app.models.communication import CallRecord, Conversation, Message
-from app.models.enums import CallDirection, CallStatus, Channel, Direction, MemoryType, MessageStatus
+from app.models.communication import CallRecord, Conversation, MediaAsset, Message
+from app.models.enums import CallDirection, CallStatus, Channel, Direction, MediaRole, MemoryType, MessageStatus
 from app.models.memory import MemoryItem
 from app.models.persona import Persona
 from app.models.user import User
@@ -32,6 +33,8 @@ from app.providers.twilio import TwilioProvider
 from app.services.daily_life import DailyLifeService
 from app.services.memory import MemoryService
 from app.services.prompt import PromptService
+from app.utils.files import ensure_parent
+from app.utils.text import normalize_text, truncate_text
 from app.utils.time import utc_now
 
 logger = get_logger(__name__)
@@ -44,6 +47,7 @@ class RealtimeSessionOutcome:
     ended_at: datetime | None
     tool_events: list[dict[str, Any]]
     session_events: list[dict[str, Any]]
+    speech_events: list[str]
     ended_by_tool: bool
     end_reason: str | None
 
@@ -54,6 +58,7 @@ class MediaStreamSessionOutcome:
     started_at: datetime | None
     ended_at: datetime | None
     session_events: list[dict[str, Any]]
+    speech_events: list[str]
     end_reason: str | None
 
 
@@ -126,6 +131,76 @@ class VoiceService:
             if override:
                 return override
         return self.settings.voice.elevenlabs_default_voice_id
+
+    def _selected_elevenlabs_call_model(self, persona: Persona | None) -> str:
+        if persona is not None and isinstance(persona.prompt_overrides, dict):
+            override = str(persona.prompt_overrides.get("elevenlabs_call_model") or "").strip()
+            if override:
+                return override
+        return self.settings.voice.elevenlabs_call_tts_model
+
+    def _selected_elevenlabs_creative_model(self, persona: Persona | None) -> str:
+        if persona is not None and isinstance(persona.prompt_overrides, dict):
+            override = str(persona.prompt_overrides.get("elevenlabs_creative_model") or "").strip()
+            if override:
+                return override
+        return self.settings.voice.elevenlabs_creative_tts_model
+
+    async def generate_creative_audio_clip(
+        self,
+        session: AsyncSession,
+        *,
+        persona: Persona | None,
+        user: User | None,
+        text: str,
+    ) -> Any:
+        voice_id = self._selected_elevenlabs_voice(persona)
+        if not voice_id:
+            raise RuntimeError("No ElevenLabs voice is configured for this persona or globally")
+        model_id = self._selected_elevenlabs_creative_model(persona)
+        asset = MediaAsset(
+            user_id=user.id if user else None,
+            persona_id=persona.id if persona else None,
+            role=MediaRole.generated,
+            mime_type="audio/mpeg",
+            prompt_text=text,
+            generation_status="processing",
+            metadata_json={
+                "provider": "elevenlabs",
+                "voice_id": voice_id,
+                "model_id": model_id,
+                "audio_tags_enabled": "["
+                in text
+                and "]" in text,
+            },
+        )
+        session.add(asset)
+        await session.flush()
+        try:
+            collected = bytearray()
+            async for chunk in self.elevenlabs_provider.stream_tts(
+                text=text,
+                voice_id=voice_id,
+                model_id=model_id,
+                output_format="mp3_44100_128",
+            ):
+                collected.extend(chunk)
+            filename = f"{asset.id}_{secrets.token_hex(6)}.mp3"
+            target = self.settings.media_root_path / "audio" / filename
+            ensure_parent(target)
+            target.write_bytes(bytes(collected))
+            asset.local_path = str(target)
+            asset.generation_status = "ready"
+        except Exception as exc:
+            asset.generation_status = "failed"
+            asset.error_message = str(exc) or exc.__class__.__name__
+            asset.metadata_json = {
+                **asset.metadata_json,
+                "generation_error": str(exc) or exc.__class__.__name__,
+                "generation_error_type": exc.__class__.__name__,
+            }
+        await session.flush()
+        return asset
 
     async def initiate_media_stream_call(
         self,
@@ -363,7 +438,17 @@ class VoiceService:
     ) -> dict[str, Any]:
         record = await self._resolve_call_record(session, payload=payload)
         if record is None:
+            incoming_phone = _normalize_phone_number(
+                str(_nested_value(payload, "from", "data.from", "caller", "call.from") or "")
+            )
             user = await self._resolve_user_from_payload(session, payload)
+            persona = await self._resolve_persona_from_payload(session, payload, user=user)
+            if user is None and persona is not None and incoming_phone and self._persona_allows_calling_number(persona, incoming_phone):
+                user = await self._get_or_create_voice_user(
+                    session,
+                    phone_number=incoming_phone,
+                    preferred_persona=persona,
+                )
             if user is None:
                 logger.info(
                     "realtime_call_rejected_unknown_caller",
@@ -373,7 +458,6 @@ class VoiceService:
                 with suppress(Exception):
                     await self.openai_provider.end_realtime_call(call_id)
                 return {"status": "rejected", "reason": "unknown_caller", "call_id": call_id}
-            persona = await self._resolve_persona_from_payload(session, payload, user=user)
             record = CallRecord(
                 user_id=user.id if user else None,
                 persona_id=persona.id if persona else None,
@@ -534,10 +618,24 @@ class VoiceService:
 
         incoming_phone = _normalize_phone_number(str(form.get("From") or ""))
         user = await self._resolve_user_from_payload(session, {"from": incoming_phone})
+        persona = await self._resolve_persona_from_payload(session, {"from": incoming_phone}, user=user)
+        if user is None and persona is not None and incoming_phone and self._persona_allows_calling_number(persona, incoming_phone):
+            user = await self._get_or_create_voice_user(
+                session,
+                phone_number=incoming_phone,
+                preferred_persona=persona,
+            )
+        persona_debug = await self._debug_inbound_persona_routing(session, incoming_phone=incoming_phone)
+        logger.info(
+            "twilio_voice_inbound_routing",
+            from_number=incoming_phone,
+            resolved_user_id=str(user.id) if user else None,
+            preferred_persona_id=str(user.preferred_persona_id) if user and user.preferred_persona_id else None,
+            persona_candidates=persona_debug,
+        )
         if user is None:
             logger.info("twilio_voice_rejected_unknown_caller", from_number=incoming_phone)
             return self.build_hangup_twiml()
-        persona = await self._resolve_persona_from_payload(session, {"from": incoming_phone}, user=user)
         call_sid = str(form.get("CallSid") or "")
         stmt = select(CallRecord).where(CallRecord.provider_call_sid == call_sid)
         record = (await session.execute(stmt)).scalar_one_or_none()
@@ -645,6 +743,7 @@ class VoiceService:
         instructions = ""
         stream_sid = ""
         transcript_entries: list[tuple[str, str]] = []
+        speech_events: list[str] = []
         generation_counter = 0
         speech_task: asyncio.Task[None] | None = None
         utterance_buffer = bytearray()
@@ -652,6 +751,7 @@ class VoiceService:
         speech_ms = 0
         silence_ms = 0
         started_at: datetime | None = None
+        pending_dictionary_candidate: dict[str, str] | None = None
 
         async def cancel_speech() -> None:
             nonlocal speech_task, generation_counter
@@ -664,7 +764,7 @@ class VoiceService:
             if stream_sid:
                 await websocket.send_json({"event": "clear", "streamSid": stream_sid})
 
-        async def speak_text(text: str, generation_id: int) -> None:
+        async def speak_text(text: str, generation_id: int, *, model_id: str | None = None) -> None:
             if not text or generation_id != generation_counter:
                 return
             voice_id = self._selected_elevenlabs_voice(persona)
@@ -673,7 +773,7 @@ class VoiceService:
             async for chunk in self.elevenlabs_provider.stream_tts(
                 text=text,
                 voice_id=voice_id,
-                model_id=self.settings.voice.elevenlabs_tts_model,
+                model_id=model_id or self._selected_elevenlabs_call_model(persona),
                 output_format="ulaw_8000",
             ):
                 if generation_id != generation_counter:
@@ -681,33 +781,55 @@ class VoiceService:
                 for piece in _chunk_audio_bytes(chunk, ms=self.settings.voice.stream_chunk_ms):
                     if generation_id != generation_counter:
                         break
-                    await websocket.send_json(
-                        {
-                            "event": "media",
-                            "streamSid": stream_sid,
-                            "media": {"payload": base64.b64encode(piece).decode("ascii")},
-                        }
-                    )
+                    try:
+                        await websocket.send_json(
+                            {
+                                "event": "media",
+                                "streamSid": stream_sid,
+                                "media": {"payload": base64.b64encode(piece).decode("ascii")},
+                            }
+                        )
+                    except WebSocketDisconnect:
+                        return
 
         async def generate_and_speak(latest_user_text: str, generation_id: int) -> None:
             nonlocal transcript_entries
             if generation_id != generation_counter or not record or not config:
                 return
-            input_text = _format_call_turn_prompt(transcript_entries, latest_user_text)
+            song_mode = _is_song_request(latest_user_text)
+            input_text = _format_call_turn_prompt(
+                transcript_entries,
+                latest_user_text,
+                persona_name=persona.display_name if persona else "companion",
+                companion_led=_user_prefers_companion_led_calls(user),
+                song_mode=song_mode,
+            )
             response = await self.openai_provider.generate_text(
                 instructions=instructions,
                 input_items=[{"role": "user", "content": input_text}],
                 model=self.settings.voice.text_model,
-                max_output_tokens=220,
+                max_output_tokens=220 if song_mode else 45,
             )
-            assistant_text = response.text.strip()
+            assistant_text = _clean_spoken_call_text(
+                response.text,
+                persona_name=persona.display_name if persona else "companion",
+            )
             if not assistant_text or generation_id != generation_counter:
                 return
             transcript_entries.append(("assistant", assistant_text))
-            await speak_text(assistant_text, generation_id)
+            speech_events.extend(_speech_events_from_text(assistant_text))
+            await speak_text(
+                assistant_text,
+                generation_id,
+                model_id=(
+                    self._selected_elevenlabs_creative_model(persona)
+                    if _should_use_creative_call_tts(latest_user_text, assistant_text)
+                    else None
+                ),
+            )
 
         async def finalize_user_utterance() -> None:
-            nonlocal utterance_buffer, speech_active, speech_ms, silence_ms, speech_task
+            nonlocal utterance_buffer, speech_active, speech_ms, silence_ms, speech_task, pending_dictionary_candidate, generation_counter
             audio_bytes = bytes(utterance_buffer)
             utterance_buffer = bytearray()
             speech_active = False
@@ -720,12 +842,61 @@ class VoiceService:
                 filename="call.wav",
                 mime_type="audio/wav",
                 model=self.settings.voice.stt_model,
-                prompt="Phone call speech. Return only the spoken words.",
+                prompt=_transcription_prompt(
+                    user=user,
+                    persona=persona,
+                    transcript_entries=transcript_entries,
+                    dictionary_entries=await self._speech_dictionary_entries(
+                        session=None,
+                        user=user,
+                        persona=persona,
+                    ),
+                ),
             )
             user_text = transcript.text.strip()
             if not user_text:
                 return
+            user_text = await self._apply_speech_dictionary(user=user, persona=persona, text=user_text)
             transcript_entries.append(("user", user_text))
+
+            if pending_dictionary_candidate is not None:
+                confirmation = await self._classify_dictionary_confirmation(
+                    raw_text=user_text,
+                    candidate=pending_dictionary_candidate["canonical"],
+                )
+                if confirmation == "yes":
+                    if transcript_entries:
+                        transcript_entries[-1] = ("user", pending_dictionary_candidate["canonical"])
+                    await self._save_speech_dictionary_entry(
+                        user=user,
+                        persona=persona,
+                        spoken_form=pending_dictionary_candidate["spoken"],
+                        canonical_form=pending_dictionary_candidate["canonical"],
+                    )
+                    generation_id = generation_counter
+                    speech_task = asyncio.create_task(
+                        generate_and_speak(pending_dictionary_candidate["canonical"], generation_id)
+                    )
+                    pending_dictionary_candidate = None
+                    return
+                if confirmation == "no":
+                    pending_dictionary_candidate = None
+                    return
+
+            candidate = await self._maybe_infer_speech_dictionary_candidate(
+                user=user,
+                persona=persona,
+                transcript_entries=transcript_entries,
+                latest_user_text=user_text,
+            )
+            if candidate is not None:
+                pending_dictionary_candidate = candidate
+                generation_counter += 1
+                speech_task = asyncio.create_task(
+                    speak_text(candidate["confirmation_text"], generation_counter)
+                )
+                return
+
             generation_id = generation_counter
             speech_task = asyncio.create_task(generate_and_speak(user_text, generation_id))
 
@@ -769,6 +940,7 @@ class VoiceService:
                     greeting = await self._initial_greeting_text(call_record=record, user=user, persona=persona, instructions=instructions)
                     if greeting:
                         transcript_entries.append(("assistant", greeting))
+                        speech_events.extend(_speech_events_from_text(greeting))
                         generation_counter += 1
                         speech_task = asyncio.create_task(speak_text(greeting, generation_counter))
                     continue
@@ -813,10 +985,14 @@ class VoiceService:
                     persona = await session.get(Persona, refreshed.persona_id) if refreshed and refreshed.persona_id else None
                     if refreshed is not None:
                         outcome = MediaStreamSessionOutcome(
-                            transcript=_flatten_transcript_entries(transcript_entries),
+                            transcript=_flatten_transcript_entries(
+                                transcript_entries,
+                                persona_name=persona.display_name if persona else "companion",
+                            ),
                             started_at=started_at,
                             ended_at=utc_now(),
                             session_events=session_events[-100:],
+                            speech_events=speech_events,
                             end_reason="media_stream_stopped",
                         )
                         await self._finalize_media_stream_call(
@@ -919,6 +1095,7 @@ class VoiceService:
             ended_at=ended_at or utc_now(),
             tool_events=tool_events,
             session_events=session_events[-100:],
+            speech_events=_speech_events_from_text(" ".join(transcript_parts)),
             ended_by_tool=ended_by_tool,
             end_reason=end_reason,
         )
@@ -982,6 +1159,12 @@ class VoiceService:
             "call_record": call_record,
             "opening_line": (call_record.metadata_json or {}).get("opening_line") or "",
             "recent_messages": recent_messages,
+            "recent_discussed_topics": await self._recent_discussed_topics(
+                session,
+                user=user,
+                persona=persona,
+                recent_messages=recent_messages,
+            ),
             "memory_hits": memory_hits,
             **daily_context,
         }
@@ -1064,16 +1247,20 @@ class VoiceService:
         persona_descriptor_parts = [part for part in [persona_style, persona_tone] if part]
         persona_descriptor = "; ".join(persona_descriptor_parts) if persona_descriptor_parts else "natural, casual, fully in character"
         if call_record.direction == CallDirection.inbound:
-            first_line = f"hi {user_name}" if user_name else "hello?"
             prompt = (
                 f"You are {persona_name}. Stay fully in character for this entire call. "
                 f"Your vibe should feel {persona_descriptor}. "
-                f'Say exactly this first spoken line and nothing else yet: "{first_line}". '
-                "After saying it, stop and wait for the caller. "
-                "Do not add a follow-up question. "
+                "The caller just rang you. "
+                "Start with one tiny natural pickup line like a real person answering the phone. "
+                "Keep it very short, like one brief greeting, and then wait. "
+                "Keep the opener warm and casual, but not squealy, overly excited, or overly high-energy. "
+                "You may use the caller's name if that feels natural. "
+                "If you use a laugh or giggle, keep it very subtle. "
                 "Do not say things like 'how can I help you today' or anything customer-service-like. "
                 "Do not sound like an assistant, receptionist, or support agent."
             )
+            if user_name:
+                prompt += f" The caller's name is {user_name}."
         else:
             prompt = (
                 f"You are {persona_name}. Stay fully in character for this entire call. "
@@ -1082,6 +1269,8 @@ class VoiceService:
                 "Start naturally like a real person making a casual call. "
                 "Briefly greet the user, then smoothly ask or say the main thing you called about. "
                 "Keep it to one or two short spoken sentences. "
+                "Keep the delivery warm and casual, not squealy or overly animated. "
+                "If you use a laugh or giggle, keep it very subtle. "
                 "Do not sound like an assistant, receptionist, or support agent."
             )
             if user_name:
@@ -1198,6 +1387,269 @@ class VoiceService:
             },
         }
 
+    async def _recent_discussed_topics(
+        self,
+        session: AsyncSession,
+        *,
+        user: User | None,
+        persona: Persona | None,
+        recent_messages: list[Message],
+    ) -> list[str]:
+        if user is None:
+            return []
+        topics: list[str] = []
+        seen: set[str] = set()
+        for message in recent_messages[-8:]:
+            body = truncate_text((message.body or "").strip(), 120)
+            if not body:
+                continue
+            key = normalize_text(body)
+            if key and key not in seen:
+                seen.add(key)
+                topics.append(body)
+        stmt = select(CallRecord).where(CallRecord.user_id == user.id).order_by(CallRecord.created_at.desc()).limit(4)
+        if persona is not None:
+            stmt = (
+                select(CallRecord)
+                .where(CallRecord.user_id == user.id, CallRecord.persona_id == persona.id)
+                .order_by(CallRecord.created_at.desc())
+                .limit(4)
+            )
+        call_records = list((await session.execute(stmt)).scalars().all())
+        for record in call_records:
+            summary = truncate_text(str((record.metadata_json or {}).get("summary") or "").strip(), 140)
+            if not summary:
+                continue
+            key = normalize_text(summary)
+            if key and key not in seen:
+                seen.add(key)
+                topics.append(summary)
+        return topics[:8]
+
+    async def _speech_dictionary_entries(
+        self,
+        *,
+        session: AsyncSession | None,
+        user: User | None,
+        persona: Persona | None,
+    ) -> list[dict[str, str]]:
+        if user is None:
+            return []
+
+        async def _load(active_session: AsyncSession) -> list[dict[str, str]]:
+            stmt = (
+                select(MemoryItem)
+                .where(
+                    MemoryItem.user_id == user.id,
+                    MemoryItem.disabled.is_(False),
+                )
+                .order_by(desc(MemoryItem.updated_at))
+                .limit(80)
+            )
+            items = list((await active_session.execute(stmt)).scalars().all())
+            if persona is not None:
+                items = [item for item in items if item.persona_id in (None, persona.id)]
+            results: list[dict[str, str]] = []
+            seen: set[str] = set()
+            for item in items:
+                metadata = item.metadata_json or {}
+                if metadata.get("source") != "speech_dictionary":
+                    continue
+                spoken_form = str(metadata.get("spoken_form") or "").strip()
+                canonical_form = str(metadata.get("canonical_form") or "").strip()
+                if not spoken_form or not canonical_form:
+                    continue
+                key = normalize_text(spoken_form)
+                if key in seen:
+                    continue
+                seen.add(key)
+                results.append({"spoken": spoken_form, "canonical": canonical_form})
+            return results[:20]
+
+        if session is not None:
+            return await _load(session)
+        async with self._sessionmaker() as new_session:
+            return await _load(new_session)
+
+    async def _apply_speech_dictionary(
+        self,
+        *,
+        user: User | None,
+        persona: Persona | None,
+        text: str,
+    ) -> str:
+        cleaned = (text or "").strip()
+        if not cleaned or user is None:
+            return cleaned
+        dictionary = await self._speech_dictionary_entries(session=None, user=user, persona=persona)
+        normalized_text = normalize_text(cleaned)
+        for entry in dictionary:
+            if normalize_text(entry["spoken"]) == normalized_text:
+                return entry["canonical"]
+        return cleaned
+
+    async def _maybe_infer_speech_dictionary_candidate(
+        self,
+        *,
+        user: User | None,
+        persona: Persona | None,
+        transcript_entries: list[tuple[str, str]],
+        latest_user_text: str,
+    ) -> dict[str, str] | None:
+        if user is None or not _user_has_speech_support_needs(user) or not self.openai_provider.enabled:
+            return None
+        text = (latest_user_text or "").strip()
+        if len(text) < 2 or len(text) > 24:
+            return None
+        if " " in text and len(text.split()) > 4:
+            return None
+        recent_context = _flatten_recent_call_context(
+            transcript_entries,
+            persona_name=persona.display_name if persona else "companion",
+        )
+        response = await self.openai_provider.generate_json(
+            instructions="Return JSON only.",
+            input_items=[
+                {
+                    "role": "user",
+                    "content": (
+                        "The caller may have speech differences and sometimes says words unclearly.\n"
+                        "Decide if the latest short phrase likely means a more common word or phrase.\n"
+                        "Only suggest a meaning if it is a strong, context-aware guess.\n"
+                        'Return JSON as {"should_confirm": true/false, "candidate": "...", "confirmation_text": "..."}.\n'
+                        "If you suggest a candidate, make the confirmation text one short natural spoken sentence like "
+                        "\"wait, did you mean sunday?\" and keep it casual.\n\n"
+                        f"Latest caller phrase: {text}\n\n"
+                        f"Recent call context:\n{recent_context}\n"
+                    ),
+                }
+            ],
+            model=self.settings.voice.text_model,
+            max_output_tokens=80,
+        )
+        if not isinstance(response, dict) or not response.get("should_confirm"):
+            return None
+        candidate = str(response.get("candidate") or "").strip()
+        confirmation_text = _clean_spoken_call_text(
+            str(response.get("confirmation_text") or "").strip(),
+            persona_name=persona.display_name if persona else "companion",
+        )
+        if not candidate or not confirmation_text:
+            return None
+        if normalize_text(candidate) == normalize_text(text):
+            return None
+        return {"spoken": text, "canonical": candidate, "confirmation_text": confirmation_text}
+
+    async def _classify_dictionary_confirmation(self, *, raw_text: str, candidate: str) -> str:
+        normalized = normalize_text(raw_text)
+        if normalized in {"yes", "yeah", "yep", "ya", "correct", "right"}:
+            return "yes"
+        if normalized in {"no", "nope", "nah", "wrong"}:
+            return "no"
+        if not self.openai_provider.enabled:
+            return "unknown"
+        response = await self.openai_provider.generate_json(
+            instructions="Return JSON only.",
+            input_items=[
+                {
+                    "role": "user",
+                    "content": (
+                        'Classify whether this caller reply confirms a guessed meaning. Return JSON as {"answer": "yes"|"no"|"unknown"}.\n'
+                        f"Guessed meaning: {candidate}\n"
+                        f"Caller reply: {raw_text}\n"
+                    ),
+                }
+            ],
+            model=self.settings.voice.text_model,
+            max_output_tokens=20,
+        )
+        if isinstance(response, dict):
+            answer = str(response.get("answer") or "").strip().lower()
+            if answer in {"yes", "no", "unknown"}:
+                return answer
+        return "unknown"
+
+    async def _save_speech_dictionary_entry(
+        self,
+        *,
+        user: User | None,
+        persona: Persona | None,
+        spoken_form: str,
+        canonical_form: str,
+    ) -> None:
+        if user is None:
+            return
+        async with self._sessionmaker() as session:
+            stmt = (
+                select(MemoryItem)
+                .where(
+                    MemoryItem.user_id == user.id,
+                    MemoryItem.disabled.is_(False),
+                )
+                .order_by(desc(MemoryItem.updated_at))
+                .limit(50)
+            )
+            existing_items = list((await session.execute(stmt)).scalars().all())
+            if persona is not None:
+                existing_items = [item for item in existing_items if item.persona_id in (None, persona.id)]
+            normalized_spoken = normalize_text(spoken_form)
+            for item in existing_items:
+                metadata = item.metadata_json or {}
+                if metadata.get("source") != "speech_dictionary":
+                    continue
+                if normalize_text(str(metadata.get("spoken_form") or "")) == normalized_spoken:
+                    metadata.update(
+                        {
+                            "canonical_form": canonical_form,
+                            "spoken_form": spoken_form,
+                            "confirmed_at": utc_now().isoformat(),
+                        }
+                    )
+                    item.metadata_json = metadata
+                    item.content = f'When {user.display_name or "the caller"} says "{spoken_form}", they usually mean "{canonical_form}".'
+                    item.summary = f'"{spoken_form}" means "{canonical_form}".'
+                    item.tags = _merge_string_tags(item.tags, ["speech_dictionary", "language_assist"])
+                    await self.memory_service.embed_items(
+                        session,
+                        [item],
+                        config={"memory": self.settings.memory.model_dump(mode="json")},
+                    )
+                    await session.commit()
+                    return
+            memory = MemoryItem(
+                user_id=user.id,
+                persona_id=persona.id if persona else None,
+                memory_type=MemoryType.fact,
+                title=f'Speech dictionary: {spoken_form}',
+                content=f'When {user.display_name or "the caller"} says "{spoken_form}", they usually mean "{canonical_form}".',
+                summary=f'"{spoken_form}" means "{canonical_form}".',
+                tags=["speech_dictionary", "language_assist"],
+                importance_score=0.8,
+                metadata_json={
+                    "source": "speech_dictionary",
+                    "spoken_form": spoken_form,
+                    "spoken_form_normalized": normalized_spoken,
+                    "canonical_form": canonical_form,
+                    "confirmed_at": utc_now().isoformat(),
+                },
+            )
+            session.add(memory)
+            await session.flush()
+            await self.memory_service.embed_items(
+                session,
+                [memory],
+                config={"memory": self.settings.memory.model_dump(mode="json")},
+            )
+            logger.info(
+                "speech_dictionary_saved",
+                user_id=str(user.id),
+                persona_id=str(persona.id) if persona else None,
+                spoken_form=spoken_form,
+                canonical_form=canonical_form,
+                memory_id=str(memory.id),
+            )
+            await session.commit()
+
     async def _tool_save_call_memory(
         self,
         session: AsyncSession,
@@ -1265,12 +1717,20 @@ class VoiceService:
                 0,
             )
         call_record.status = CallStatus.completed if transcript or outcome.end_reason else CallStatus.failed
-        summary = await self._summarize_call(transcript=transcript, persona=persona)
+        try:
+            summary = await self._summarize_call(
+                transcript=transcript,
+                persona=persona,
+                speech_events=outcome.speech_events,
+            )
+        except TypeError:
+            summary = await self._summarize_call(transcript=transcript, persona=persona)
         call_record.metadata_json = {
             **(call_record.metadata_json or {}),
             "summary": summary,
             "tool_events": outcome.tool_events,
             "session_events": outcome.session_events,
+            "speech_events": outcome.speech_events,
             "ended_by_tool": outcome.ended_by_tool,
             "end_reason": outcome.end_reason,
         }
@@ -1311,11 +1771,19 @@ class VoiceService:
                 0,
             )
         call_record.status = CallStatus.completed if outcome.transcript else CallStatus.failed
-        summary = await self._summarize_call(transcript=outcome.transcript, persona=persona)
+        try:
+            summary = await self._summarize_call(
+                transcript=outcome.transcript,
+                persona=persona,
+                speech_events=outcome.speech_events,
+            )
+        except TypeError:
+            summary = await self._summarize_call(transcript=outcome.transcript, persona=persona)
         call_record.metadata_json = {
             **(call_record.metadata_json or {}),
             "summary": summary,
             "session_events": outcome.session_events,
+            "speech_events": outcome.speech_events,
             "end_reason": outcome.end_reason,
         }
         if outcome.transcript and user is not None:
@@ -1345,34 +1813,46 @@ class VoiceService:
         persona: Persona | None,
         instructions: str,
     ) -> str:
-        if call_record.direction == CallDirection.inbound:
-            return f"hi {(user.display_name or '').strip()}".strip() if user and user.display_name else "hello?"
         prompt = self._initial_greeting_payload(call_record=call_record, user=user, persona=persona)["response"]["instructions"]
         response = await self.openai_provider.generate_text(
             instructions=instructions,
             input_items=[{"role": "user", "content": prompt}],
             model=self.settings.voice.text_model,
-            max_output_tokens=80,
+            max_output_tokens=35,
         )
-        return response.text.strip()
+        return _clean_spoken_call_text(
+            response.text,
+            persona_name=persona.display_name if persona else "companion",
+        )
 
-    async def _summarize_call(self, *, transcript: str, persona: Persona | None) -> str:
+    async def _summarize_call(
+        self,
+        *,
+        transcript: str,
+        persona: Persona | None,
+        speech_events: list[str] | None = None,
+    ) -> str:
         if not transcript:
             return ""
+        normalized_speech_events = speech_events or _speech_events_from_text(transcript)
         if not self.openai_provider.enabled:
             return transcript[:280]
         response = await self.openai_provider.generate_text(
-            instructions="Summarize this phone call for internal memory in 2-4 short sentences.",
+            instructions=(
+                "Summarize this phone call for internal memory in 2-4 short sentences. "
+                "If there were notable vocal moments like laughter, giggling, humming, or singing, mention them briefly when relevant."
+            ),
             input_items=[
                 {
                     "role": "user",
                     "content": (
                         f"Persona: {persona.display_name if persona else 'Companion'}\n"
+                        f"Speech events: {', '.join(normalized_speech_events) if normalized_speech_events else 'none'}\n"
                         f"Transcript:\n{transcript[:8000]}"
                     ),
                 }
             ],
-            max_output_tokens=220,
+                max_output_tokens=70,
         )
         return response.text.strip()
 
@@ -1466,6 +1946,25 @@ class VoiceService:
                 return user
         return None
 
+    async def _get_or_create_voice_user(
+        self,
+        session: AsyncSession,
+        *,
+        phone_number: str,
+        preferred_persona: Persona | None,
+    ) -> User:
+        normalized_phone = _normalize_phone_number(phone_number)
+        stmt = select(User).where(User.phone_number == normalized_phone)
+        user = (await session.execute(stmt)).scalar_one_or_none()
+        if user is None:
+            user = User(phone_number=normalized_phone)
+            session.add(user)
+            await session.flush()
+        if preferred_persona is not None and user.preferred_persona_id != preferred_persona.id:
+            user.preferred_persona_id = preferred_persona.id
+            await session.flush()
+        return user
+
     async def _resolve_persona_from_payload(
         self,
         session: AsyncSession,
@@ -1498,6 +1997,47 @@ class VoiceService:
             return await session.get(Persona, user.preferred_persona_id)
         stmt = select(Persona).where(Persona.is_active.is_(True)).limit(1)
         return (await session.execute(stmt)).scalar_one_or_none()
+
+    def _persona_allows_calling_number(self, persona: Persona, incoming_phone: str) -> bool:
+        prompt_overrides = persona.prompt_overrides or {}
+        raw_numbers = prompt_overrides.get("calling_numbers") or []
+        if not isinstance(raw_numbers, list):
+            return False
+        normalized_numbers = {
+            _normalize_phone_number(str(number))
+            for number in raw_numbers
+            if str(number).strip()
+        }
+        return incoming_phone in normalized_numbers
+
+    async def _debug_inbound_persona_routing(
+        self,
+        session: AsyncSession,
+        *,
+        incoming_phone: str,
+    ) -> list[dict[str, Any]]:
+        personas = (await session.execute(select(Persona))).scalars().all()
+        details: list[dict[str, Any]] = []
+        for persona in personas:
+            prompt_overrides = persona.prompt_overrides or {}
+            raw_numbers = prompt_overrides.get("calling_numbers") or []
+            if not isinstance(raw_numbers, list):
+                raw_numbers = []
+            normalized_numbers = [
+                _normalize_phone_number(str(number))
+                for number in raw_numbers
+                if str(number).strip()
+            ]
+            details.append(
+                {
+                    "persona_id": str(persona.id),
+                    "display_name": persona.display_name,
+                    "raw_calling_numbers": raw_numbers,
+                    "normalized_calling_numbers": normalized_numbers,
+                    "matches_incoming": incoming_phone in normalized_numbers,
+                }
+            )
+        return details
 
 
 def _extract_transcript_text(event: dict[str, Any]) -> str:
@@ -1578,6 +2118,13 @@ def _mulaw_to_wav_bytes(chunk: bytes) -> bytes:
     return buffer.getvalue()
 
 
+def _pcm16le_16000_to_mulaw_8000(chunk: bytes) -> bytes:
+    if not chunk:
+        return b""
+    downsampled, _state = audioop.ratecv(chunk, 2, 1, 16000, 8000, None)
+    return audioop.lin2ulaw(downsampled, 2)
+
+
 def _chunk_audio_bytes(data: bytes, *, ms: int) -> list[bytes]:
     if not data:
         return []
@@ -1585,18 +2132,210 @@ def _chunk_audio_bytes(data: bytes, *, ms: int) -> list[bytes]:
     return [data[index : index + chunk_size] for index in range(0, len(data), chunk_size)]
 
 
-def _format_call_turn_prompt(transcript_entries: list[tuple[str, str]], latest_user_text: str) -> str:
+def _format_call_turn_prompt(
+    transcript_entries: list[tuple[str, str]],
+    latest_user_text: str,
+    *,
+    persona_name: str,
+    companion_led: bool = False,
+    song_mode: bool = False,
+) -> str:
     lines = ["Live phone call transcript so far:"]
+    companion_label = (persona_name or "companion").strip() or "companion"
     for speaker, text in transcript_entries[-12:]:
-        lines.append(f"{speaker}: {text}")
+        label = companion_label if speaker == "assistant" else speaker
+        lines.append(f"{label}: {text}")
     lines.append("")
     lines.append(f"Latest caller speech: {latest_user_text}")
-    lines.append("Reply naturally in one to three short spoken sentences.")
+    if song_mode:
+        lines.append("The caller asked you to sing.")
+        lines.append("Respond naturally, then sing an original song for them in character.")
+        lines.append("Do not use copyrighted lyrics or quote an existing song.")
+        lines.append("It is okay for the song to be longer than a normal reply.")
+        lines.append("Keep it singable, playful, and emotionally clear.")
+        lines.append("Return only the spoken and sung words you would say on the call.")
+    else:
+        lines.append("Reply naturally in one or two short spoken sentences.")
+        lines.append("Help carry the conversation.")
+        lines.append("Prefer a specific reaction, thought, mini update, or concrete question.")
+        if companion_led:
+            lines.append("The caller is not very talkative, so you should carry more of the conversation yourself.")
+            lines.append("Prefer telling a small story, update, opinion, or observation over asking a question.")
+            lines.append("Ask at most one short concrete question, and often ask none.")
+    lines.append("Do not ask vague filler like 'what do you want to talk about?'.")
+    lines.append(f"Do not prepend '{companion_label}:' or your name to the reply.")
+    lines.append("Return only the spoken words.")
     return "\n".join(lines)
 
 
-def _flatten_transcript_entries(entries: list[tuple[str, str]]) -> str:
-    return "\n".join(f"{speaker}: {text}".strip() for speaker, text in entries if text and text.strip()).strip()
+def _flatten_transcript_entries(entries: list[tuple[str, str]], *, persona_name: str) -> str:
+    companion_label = (persona_name or "companion").strip() or "companion"
+    parts = []
+    for speaker, text in entries:
+        if not text or not text.strip():
+            continue
+        label = companion_label if speaker == "assistant" else speaker
+        parts.append(f"{label}: {text}".strip())
+    return "\n".join(parts).strip()
+
+
+def _flatten_recent_call_context(entries: list[tuple[str, str]], *, persona_name: str) -> str:
+    companion_label = (persona_name or "companion").strip() or "companion"
+    parts = []
+    for speaker, text in entries[-6:]:
+        if not text or not text.strip():
+            continue
+        label = companion_label if speaker == "assistant" else speaker
+        parts.append(f"{label}: {text}".strip())
+    return "\n".join(parts).strip() or "No recent context."
+
+
+def _clean_spoken_call_text(text: str, *, persona_name: str) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+    labels = [
+        (persona_name or "").strip(),
+        "assistant",
+        "companion",
+        "bot",
+        "ai",
+    ]
+    changed = True
+    while changed and cleaned:
+        changed = False
+        for label in labels:
+            if not label:
+                continue
+            prefix = f"{label}:"
+            if cleaned[: len(prefix)].casefold() == prefix.casefold():
+                cleaned = cleaned[len(prefix) :].lstrip()
+                changed = True
+    cleaned = "".join(ch for ch in cleaned if ord(ch) < 128)
+    cleaned = cleaned.replace("...", ".")
+    while "!!" in cleaned:
+        cleaned = cleaned.replace("!!", "!")
+    while "??" in cleaned:
+        cleaned = cleaned.replace("??", "?")
+    cleaned = " ".join(cleaned.split())
+    return cleaned.strip()
+
+
+def _merge_string_tags(*tag_lists: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for tag_list in tag_lists:
+        for tag in tag_list:
+            cleaned = str(tag or "").strip()
+            if not cleaned:
+                continue
+            key = cleaned.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(cleaned)
+    return merged
+
+
+def _speech_events_from_text(text: str) -> list[str]:
+    normalized = normalize_text(text)
+    events: list[str] = []
+    if any(token in normalized for token in ["haha", "hehe", "lol", "giggle", "giggled", "laugh", "laughed", "chuckle"]):
+        events.append("laughter")
+    if any(token in normalized for token in ["sing", "sings", "sang", "song", "la la", "humming", "hummed", "hum a little", "hum"]):
+        events.append("singing")
+    return events
+
+
+def _is_song_request(text: str) -> bool:
+    normalized = normalize_text(text)
+    return any(
+        token in normalized
+        for token in [
+            "sing me a song",
+            "can you sing",
+            "will you sing",
+            "sing a song",
+            "sing for me",
+            "sing something",
+            "hum a song",
+            "hum for me",
+        ]
+    )
+
+
+def _should_use_creative_call_tts(latest_user_text: str, assistant_text: str) -> bool:
+    normalized_user = normalize_text(latest_user_text)
+    normalized_assistant = normalize_text(assistant_text)
+    if _is_song_request(latest_user_text):
+        return True
+    if any(token in normalized_user for token in ["sing", "song", "hum", "humming", "la la"]):
+        return True
+    return any(token in normalized_assistant for token in ["la la", "humming", "hum", "sings", "singing"])
+
+
+def _user_prefers_companion_led_calls(user: User | None) -> bool:
+    if user is None or not isinstance(user.profile_json, dict):
+        return False
+    profile = user.profile_json or {}
+    return bool(
+        profile.get("prefers_companion_led_calls")
+        or profile.get("low_verbal")
+        or profile.get("prefers_fewer_questions")
+    )
+
+
+def _user_has_speech_support_needs(user: User | None) -> bool:
+    if user is None or not isinstance(user.profile_json, dict):
+        return False
+    profile = user.profile_json or {}
+    return bool(
+        profile.get("speech_support")
+        or profile.get("speech_recognition_support")
+        or profile.get("speech_difficulty")
+    )
+
+
+def _transcription_prompt(
+    *,
+    user: User | None,
+    persona: Persona | None,
+    transcript_entries: list[tuple[str, str]],
+    dictionary_entries: list[dict[str, str]] | None = None,
+) -> str:
+    persona_name = persona.display_name if persona else "Companion"
+    parts = [
+        "Phone call speech transcription.",
+        "Return only the caller's spoken words.",
+        "Do not add labels, punctuation flourishes, or invented context.",
+        "If the audio is short, imperfect, or hard to understand, keep the best-effort literal words you can hear.",
+        "Do not over-correct into a more polished sentence than the caller actually said.",
+    ]
+    if _user_has_speech_support_needs(user):
+        parts.extend(
+            [
+                "The caller may have speech differences or speak in short, unclear bursts.",
+                "Prefer preserving short literal fragments over guessing a whole new sentence.",
+                "If you only hear one or two likely words, return just those words.",
+                "Use recent call context only to disambiguate likely words or names, not to invent meaning.",
+            ]
+        )
+    recent_user_bits = [text.strip() for speaker, text in transcript_entries[-8:] if speaker == "user" and text.strip()]
+    if recent_user_bits:
+        joined = " | ".join(recent_user_bits[-4:])
+        parts.append(f"Recent caller phrases: {joined}")
+    if dictionary_entries:
+        mappings = " ; ".join(
+            f'"{entry["spoken"]}" -> "{entry["canonical"]}"'
+            for entry in dictionary_entries[:8]
+            if entry.get("spoken") and entry.get("canonical")
+        )
+        if mappings:
+            parts.append(f"Known speech dictionary: {mappings}")
+    if user and user.display_name:
+        parts.append(f"Caller name: {user.display_name}")
+    parts.append(f"Companion name: {persona_name}")
+    return " ".join(parts)
 
 
 def _event_value(payload: dict[str, Any], *keys: str) -> str:
