@@ -183,6 +183,8 @@ async def upsert_persona(
         session.add(persona)
     data = payload.model_dump()
     elevenlabs_voice_id = str(data.pop("elevenlabs_voice_id") or "").strip()
+    elevenlabs_call_model = str(data.pop("elevenlabs_call_model") or "").strip()
+    elevenlabs_creative_model = str(data.pop("elevenlabs_creative_model") or "").strip()
     for key, value in data.items():
         setattr(persona, key, value)
     persona.prompt_overrides = dict(persona.prompt_overrides or {})
@@ -190,6 +192,14 @@ async def upsert_persona(
         persona.prompt_overrides["elevenlabs_voice_id"] = elevenlabs_voice_id
     else:
         persona.prompt_overrides.pop("elevenlabs_voice_id", None)
+    if elevenlabs_call_model:
+        persona.prompt_overrides["elevenlabs_call_model"] = elevenlabs_call_model
+    else:
+        persona.prompt_overrides.pop("elevenlabs_call_model", None)
+    if elevenlabs_creative_model:
+        persona.prompt_overrides["elevenlabs_creative_model"] = elevenlabs_creative_model
+    else:
+        persona.prompt_overrides.pop("elevenlabs_creative_model", None)
     if payload.is_active:
         for other in (await session.execute(select(Persona).where(Persona.id != persona.id))).scalars().all():
             other.is_active = False

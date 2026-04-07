@@ -23,7 +23,17 @@ from app.routers.api import router as api_router
 from app.services.daily_life import DailyLifeService
 from app.services.memory import MemoryService
 from app.services.prompt import PromptService
-from app.services.voice import VoiceService
+from app.services.voice import (
+    VoiceService,
+    _clean_spoken_call_text,
+    _format_call_turn_prompt,
+    _is_song_request,
+    _speech_events_from_text,
+    _should_use_creative_call_tts,
+    _transcription_prompt,
+    _user_prefers_companion_led_calls,
+    _merge_string_tags,
+)
 
 
 class FakeTwilioProvider:
@@ -309,8 +319,8 @@ async def test_voice_service_stream_and_finalize_realtime_call(sqlite_session, s
     greeting = fake_ws.sent[1]
     assert greeting["type"] == "response.create"
     assert "Stay fully in character for this entire call." in greeting["response"]["instructions"]
-    assert 'Say exactly this first spoken line and nothing else yet: "hello?".' in greeting["response"]["instructions"]
-    assert "Do not add a follow-up question." in greeting["response"]["instructions"]
+    assert "Start with one tiny natural pickup line like a real person answering the phone." in greeting["response"]["instructions"]
+    assert "Keep it very short, like one brief greeting, and then wait." in greeting["response"]["instructions"]
 
     await openai_provider.client.aclose()
 
@@ -425,6 +435,92 @@ async def test_voice_service_handles_inbound_twilio_voice_webhook_for_media_stre
     record = (await sqlite_session.execute(select(CallRecord).where(CallRecord.provider_call_sid == "CA999"))).scalar_one()
     assert str(record.persona_id) == str(persona.id)
     await openai_provider.client.aclose()
+
+
+def test_clean_spoken_call_text_strips_leading_speaker_labels():
+    assert _clean_spoken_call_text("Sabrina: hey there", persona_name="Sabrina") == "hey there"
+    assert _clean_spoken_call_text("assistant: hi", persona_name="Sabrina") == "hi"
+    assert _clean_spoken_call_text("Sabrina: Sabrina: okay wait", persona_name="Sabrina") == "okay wait"
+    assert _clean_spoken_call_text("Sabrina: Hey there!!! 😊", persona_name="Sabrina") == "Hey there!"
+
+
+def test_format_call_turn_prompt_bans_name_prefixes():
+    prompt = _format_call_turn_prompt(
+        [("assistant", "hey"), ("user", "hi")],
+        "what's up",
+        persona_name="Sabrina",
+    )
+
+    assert "Do not prepend 'Sabrina:' or your name to the reply." in prompt
+    assert "Return only the spoken words." in prompt
+
+
+def test_format_call_turn_prompt_companion_led_mode_reduces_questions():
+    prompt = _format_call_turn_prompt(
+        [("assistant", "hey"), ("user", "hi")],
+        "yeah",
+        persona_name="Sabrina",
+        companion_led=True,
+    )
+
+    assert "carry more of the conversation yourself" in prompt
+    assert "Ask at most one short concrete question, and often ask none." in prompt
+
+
+def test_user_prefers_companion_led_calls_from_profile():
+    user = User(phone_number="+15555550199", profile_json={"low_verbal": True})
+    assert _user_prefers_companion_led_calls(user) is True
+
+
+def test_transcription_prompt_supports_speech_difficulty():
+    user = User(phone_number="+15555550198", display_name="Katie", profile_json={"speech_support": True})
+    persona = Persona(key="sabrina", display_name="Sabrina", is_active=True)
+    prompt = _transcription_prompt(
+        user=user,
+        persona=persona,
+        transcript_entries=[("user", "hello"), ("assistant", "hey"), ("user", "birthday party")],
+        dictionary_entries=[{"spoken": "saanay", "canonical": "sunday"}],
+    )
+
+    assert "speech differences" in prompt
+    assert "Recent caller phrases:" in prompt
+    assert "Caller name: Katie" in prompt
+    assert 'Known speech dictionary: "saanay" -> "sunday"' in prompt
+
+
+def test_merge_string_tags_deduplicates():
+    assert _merge_string_tags(["speech_dictionary"], ["Speech_Dictionary", "language_assist"]) == [
+        "speech_dictionary",
+        "language_assist",
+    ]
+
+
+def test_speech_events_detect_laughter_and_singing():
+    assert _speech_events_from_text("hehe okay wait that made me laugh") == ["laughter"]
+    assert _speech_events_from_text("la la la, tiny little song") == ["singing"]
+
+
+def test_should_use_creative_call_tts_for_singing_requests():
+    assert _should_use_creative_call_tts("can you sing me something", "okay, la la la") is True
+    assert _should_use_creative_call_tts("hey", "totally normal reply") is False
+
+
+def test_is_song_request_detects_song_ask():
+    assert _is_song_request("hey sabrina can you sing a song for me") is True
+    assert _is_song_request("tell me about your day") is False
+
+
+def test_format_call_turn_prompt_song_mode():
+    prompt = _format_call_turn_prompt(
+        [("assistant", "hey"), ("user", "hi")],
+        "can you sing a song for me",
+        persona_name="Sabrina",
+        song_mode=True,
+    )
+
+    assert "The caller asked you to sing." in prompt
+    assert "sing an original song for them in character" in prompt
+    assert "longer than a normal reply" in prompt
 
 
 async def _async_return(value):

@@ -96,6 +96,7 @@ class ServiceContainer:
             daily_life_service,
             image_service,
             memory_service,
+            voice_service,
         )
         return cls(
             settings=actual_settings,
