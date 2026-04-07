@@ -8,9 +8,9 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.communication import MediaAsset, Message
+from app.models.communication import CallRecord, MediaAsset, Message
 from app.models.configuration import ScheduleRule
-from app.models.enums import Direction, ScheduleRuleType
+from app.models.enums import CallDirection, Direction, ScheduleRuleType
 from app.models.user import User
 from app.utils.time import in_time_range, local_today, now_in_timezone, parse_clock, utc_now
 
@@ -131,6 +131,19 @@ class ScheduleService:
         )
         return int((await session.scalar(stmt)) or 0)
 
+    async def call_count_today(self, session: AsyncSession, *, user_id, timezone_name: str) -> int:
+        today = local_today(timezone_name)
+        tomorrow = today + timedelta(days=1)
+        start = datetime.combine(today, datetime.min.time(), tzinfo=now_in_timezone(timezone_name).tzinfo)
+        end = datetime.combine(tomorrow, datetime.min.time(), tzinfo=now_in_timezone(timezone_name).tzinfo)
+        stmt = select(func.count()).select_from(CallRecord).where(
+            CallRecord.user_id == user_id,
+            CallRecord.direction == CallDirection.outbound,
+            CallRecord.created_at >= start,
+            CallRecord.created_at < end,
+        )
+        return int((await session.scalar(stmt)) or 0)
+
     def is_quiet_hours(self, now: datetime, safety_config: dict[str, Any]) -> bool:
         start = parse_clock(safety_config["quiet_hours_start"])
         end = parse_clock(safety_config["quiet_hours_end"])
@@ -245,11 +258,99 @@ class ScheduleService:
         if factor <= 0.0:
             return SendDecision(False, "no_contact_factor_too_low")
         chance = self._chance_from_no_contact_factor(factor)
-        if factor < 1.0 and not self._window_probability_allows(
+        if chance < 1.0 and not self._window_probability_allows(
             user=user,
             effective_now=effective_now,
             window=active_window,
             chance=chance,
         ):
             return SendDecision(False, "no_contact_probability_skip")
+        return SendDecision(True, "ok")
+
+    async def should_send_proactive_call(
+        self,
+        session: AsyncSession,
+        *,
+        user: User,
+        persona_id,
+        config: dict[str, Any],
+        now: datetime | None = None,
+    ) -> SendDecision:
+        effective_now = now or now_in_timezone(user.timezone)
+        basic = await self.can_send_message(session, user=user, config=config, now=effective_now)
+        if not basic.allowed:
+            return basic
+
+        safety = config["safety"]
+        voice = config["voice"]
+        daily_count = await self.call_count_today(session, user_id=user.id, timezone_name=user.timezone)
+        if daily_count >= int(safety["daily_call_cap"]):
+            return SendDecision(False, "daily_call_cap")
+        if user.last_inbound_at and user.last_inbound_at > utc_now() - timedelta(minutes=int(safety["proactive_min_gap_minutes"])):
+            return SendDecision(False, "recent_user_activity")
+        if user.last_outbound_at and user.last_outbound_at > utc_now() - timedelta(minutes=int(safety["proactive_min_gap_minutes"])):
+            return SendDecision(False, "recent_outbound")
+
+        rules = await self.proactive_rules_for_user(
+            session,
+            user_id=user.id,
+            persona_id=persona_id,
+            weekday=effective_now.weekday(),
+        )
+        active_window: _WindowSpec | None = None
+        if rules:
+            for rule in sorted(rules, key=lambda item: item.priority):
+                if rule.start_time and rule.end_time and in_time_range(
+                    effective_now.timetz().replace(tzinfo=None),
+                    rule.start_time,
+                    rule.end_time,
+                ):
+                    active_window = _WindowSpec(
+                        name=f"rule:{rule.id}:call",
+                        start=rule.start_time,
+                        end=rule.end_time,
+                        probability_multiplier=float(rule.probability) if rule.probability is not None else 1.0,
+                    )
+                    break
+            if active_window is None:
+                return SendDecision(False, "outside_schedule_window")
+        else:
+            active_window = next(
+                (
+                    window
+                    for window in self._default_proactive_windows(safety)
+                    if in_time_range(
+                        effective_now.timetz().replace(tzinfo=None),
+                        window.start,
+                        window.end,
+                    )
+                ),
+                None,
+            )
+            if active_window is None:
+                return SendDecision(False, "outside_default_proactive_windows")
+
+        if not self._window_target_reached(user=user, window=active_window, effective_now=effective_now):
+            return SendDecision(False, "before_window_target")
+
+        factor = self._no_contact_factor(user, safety_config=safety)
+        if factor <= 0.0:
+            return SendDecision(False, "no_contact_factor_too_low")
+
+        base_chance = self._chance_from_no_contact_factor(factor)
+        call_multiplier = (
+            float(voice["proactive_second_call_probability"])
+            if daily_count >= 1
+            else float(voice["proactive_call_probability"])
+        )
+        chance = min(base_chance * max(call_multiplier, 0.0), 0.95)
+        if chance <= 0.0:
+            return SendDecision(False, "call_probability_disabled")
+        if chance < 1.0 and not self._window_probability_allows(
+            user=user,
+            effective_now=effective_now,
+            window=active_window,
+            chance=chance,
+        ):
+            return SendDecision(False, "call_probability_skip")
         return SendDecision(True, "ok")

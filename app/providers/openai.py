@@ -169,7 +169,7 @@ class OpenAIProvider:
             payload["instructions"] = instructions
         if temperature is not None and _supports_temperature(chosen_model, self.settings.openai.reasoning_effort):
             payload["temperature"] = temperature
-        if self.settings.openai.reasoning_effort:
+        if _supports_reasoning(chosen_model, self.settings.openai.reasoning_effort):
             payload["reasoning"] = {"effort": self.settings.openai.reasoning_effort}
 
         data = await self._post_json("responses", payload)
@@ -468,6 +468,13 @@ def _supports_temperature(model: str, reasoning_effort: str | None) -> bool:
     if normalized.startswith("gpt-5") and reasoning_effort not in (None, "", "none"):
         return False
     return True
+
+
+def _supports_reasoning(model: str, reasoning_effort: str | None) -> bool:
+    normalized = model.strip().lower()
+    if reasoning_effort in (None, "", "none"):
+        return False
+    return normalized.startswith("gpt-5")
 
 
 def _preview_text(value: Any, limit: int = 220) -> str | None:

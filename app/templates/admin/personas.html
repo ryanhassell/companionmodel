@@ -22,6 +22,8 @@
       <label>Speech Style<textarea name="speech_style"></textarea></label>
       <label>Calling Numbers (comma separated)<input type="text" name="calling_numbers"></label>
       <label>ElevenLabs Voice ID<input type="text" name="elevenlabs_voice_id"></label>
+      <label>ElevenLabs Call Model<input type="text" name="elevenlabs_call_model" placeholder="eleven_flash_v2_5"></label>
+      <label>ElevenLabs Creative Model<input type="text" name="elevenlabs_creative_model" placeholder="eleven_v3"></label>
       <label>Realtime Voice
         <select name="realtime_voice">
           {% for voice_value, voice_label in realtime_voice_options %}
@@ -63,7 +65,7 @@
   <section class="card">
     <h2>Current Personas</h2>
     <table>
-      <thead><tr><th>Name</th><th>Key</th><th>Active</th><th>ElevenLabs Voice</th><th>Realtime Voice</th><th>Calling Numbers</th><th>Reference</th><th>Topics</th></tr></thead>
+      <thead><tr><th>Name</th><th>Key</th><th>Active</th><th>ElevenLabs Voice</th><th>Call Model</th><th>Creative Model</th><th>Realtime Voice</th><th>Calling Numbers</th><th>Reference</th><th>Topics</th></tr></thead>
       <tbody>
         {% for persona in personas %}
         <tr>
@@ -71,6 +73,8 @@
           <td>{{ persona.key }}</td>
           <td>{{ "yes" if persona.is_active else "no" }}</td>
           <td>{{ ((persona.prompt_overrides or {}).get("elevenlabs_voice_id")) or "—" }}</td>
+          <td>{{ ((persona.prompt_overrides or {}).get("elevenlabs_call_model")) or "app default" }}</td>
+          <td>{{ ((persona.prompt_overrides or {}).get("elevenlabs_creative_model")) or "app default" }}</td>
           <td>{{ ((persona.prompt_overrides or {}).get("realtime_voice")) or "app default" }}</td>
           <td>{{ ((persona.prompt_overrides or {}).get("calling_numbers")) | join(", ") if (persona.prompt_overrides or {}).get("calling_numbers") else "—" }}</td>
           <td>

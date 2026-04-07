@@ -52,7 +52,7 @@ scheduling:
 safety:
   daily_message_cap: 60
   daily_image_cap: 3
-  daily_call_cap: 1
+  daily_call_cap: 2
   cooldown_minutes: 8
   obsessive_window_minutes: 20
   obsessive_message_threshold: 10
@@ -119,11 +119,14 @@ voice:
   stt_model: gpt-4o-transcribe
   text_model: gpt-4o-mini
   elevenlabs_default_voice_id:
-  elevenlabs_tts_model: eleven_flash_v2_5
-  stream_chunk_ms: 120
-  vad_rms_threshold: 450
-  vad_min_speech_ms: 240
-  vad_silence_ms: 720
+  elevenlabs_call_tts_model: eleven_flash_v2_5
+  elevenlabs_creative_tts_model: eleven_v3
+  proactive_call_probability: 0.12
+  proactive_second_call_probability: 0.015
+  stream_chunk_ms: 40
+  vad_rms_threshold: 320
+  vad_min_speech_ms: 80
+  vad_silence_ms: 120
   sideband_connect_timeout_seconds: 20
   sideband_idle_timeout_seconds: 900
   max_tool_roundtrips: 12
