@@ -1,3 +1,13 @@
+import {
+  RequestFailureCode,
+  createPortalBanner,
+  currentPathWithQuery,
+  fetchJson,
+  publishSessionEvent,
+  retryWithBackoff,
+  watchConnectivity,
+} from "/static/portal-resilience.js";
+
 (function () {
   const root = document.querySelector("[data-portal-initialize]");
   if (!root) {
@@ -19,6 +29,7 @@
   }
 
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const banner = createPortalBanner();
   const form = document.getElementById("portal-initialize-form");
   const saveIndicator = document.getElementById("initialization-save-indicator");
   const currentMeta = document.getElementById("initialization-step-meta");
@@ -47,6 +58,7 @@
   );
   const previewTimers = new WeakMap();
   const aiPreviewCache = new Map();
+  const DRAFT_TTL_MS = 1000 * 60 * 90;
 
   let activeStep = payload.current_step || root.getAttribute("data-current-step") || "welcome";
   let completedSteps = new Set(Array.isArray(payload.completed_steps) ? payload.completed_steps : []);
@@ -54,8 +66,12 @@
   let summary = payload.summary || {};
   let billingStatus = payload.billing_status || "incomplete";
   let inFlight = false;
+  let billingInFlight = false;
   let autosaveTimer = null;
-  let lastSavedAt = new Date();
+  let pendingAutosaveStep = "";
+  let previewPendingOnReconnect = false;
+  let pendingPreviewPayload = null;
+  let lastSavedAt = payload.server_saved_at ? new Date(payload.server_saved_at) : new Date();
   let previewRequestTimer = null;
   let pendingPreviewKey = "";
 
@@ -77,6 +93,140 @@
       "communication_notes",
     ],
     plan: ["selected_plan_key"],
+  };
+
+  const draftStorageKey = () => `resona:portal:init-draft:${payload.account_scope || "account"}`;
+
+  const allDraftFields = Array.from(new Set(Object.values(stepFields).flat()));
+
+  const reportDraftEvent = async (eventType) => {
+    if (!payload.draft_event_url || !payload.csrf_token) {
+      return;
+    }
+    try {
+      await fetchJson(payload.draft_event_url, {
+        method: "POST",
+        credentials: "same-origin",
+        timeoutMs: 4000,
+        resumeUrl: payload.resume_url || currentPathWithQuery(),
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          csrf_token: payload.csrf_token,
+          event_type: eventType,
+        }),
+      });
+    } catch {
+      // Draft event logging should never interrupt setup recovery.
+    }
+  };
+
+  const readStoredDraft = () => {
+    try {
+      const raw = window.sessionStorage.getItem(draftStorageKey());
+      if (!raw) {
+        return null;
+      }
+      const draft = JSON.parse(raw);
+      const savedAt = Number(draft?.saved_at || 0);
+      if (!savedAt || Date.now() - savedAt > DRAFT_TTL_MS) {
+        window.sessionStorage.removeItem(draftStorageKey());
+        return null;
+      }
+      if (draft?.account_scope && draft.account_scope !== payload.account_scope) {
+        return null;
+      }
+      return draft;
+    } catch {
+      return null;
+    }
+  };
+
+  const clearStoredDraft = () => {
+    try {
+      window.sessionStorage.removeItem(draftStorageKey());
+    } catch {
+      // Ignore private browsing storage failures.
+    }
+  };
+
+  const serverSavedAtMs = () => {
+    const value = Date.parse(payload.server_saved_at || "");
+    return Number.isFinite(value) ? value : 0;
+  };
+
+  const collectDraftSnapshot = () => {
+    const next = { ...snapshot };
+    allDraftFields.forEach((name) => {
+      next[name] = readFieldValue(name);
+    });
+    return next;
+  };
+
+  const persistDraft = () => {
+    try {
+      window.sessionStorage.setItem(
+        draftStorageKey(),
+        JSON.stringify({
+          step: activeStep,
+          snapshot: collectDraftSnapshot(),
+          saved_at: Date.now(),
+          resume_url: payload.resume_url || currentPathWithQuery(),
+          account_scope: payload.account_scope || "",
+        })
+      );
+    } catch {
+      // Ignore private browsing storage failures.
+    }
+  };
+
+  const discardRecoveredDraft = () => {
+    clearStoredDraft();
+    banner.hide();
+    reportDraftEvent("discarded");
+  };
+
+  const restoreStoredDraftIfNewer = () => {
+    const draft = readStoredDraft();
+    if (!draft) {
+      return;
+    }
+    if (serverSavedAtMs() && Number(draft.saved_at || 0) <= serverSavedAtMs()) {
+      clearStoredDraft();
+      return;
+    }
+    snapshot = {
+      ...snapshot,
+      ...(typeof draft.snapshot === "object" && draft.snapshot ? draft.snapshot : {}),
+    };
+    if (draft.step && stepMap.has(draft.step) && draft.step !== "complete") {
+      activeStep = draft.step;
+    }
+    reportDraftEvent("restored");
+    banner.show({
+      tone: "success",
+      title: "Recovered your in-progress setup",
+      message: "Your changes are safe in this tab, and we restored the latest draft we found here.",
+      actions: [
+        { label: "Discard recovered draft", onClick: () => discardRecoveredDraft(), variant: "ghost" },
+      ],
+    });
+  };
+
+  const redirectToLogin = (loginUrl, reasonMessage) => {
+    persistDraft();
+    publishSessionEvent("session_expired", {
+      path: payload.resume_url || currentPathWithQuery(),
+    });
+    banner.show({
+      tone: "warning",
+      title: "Session expired",
+      message: reasonMessage,
+    });
+    window.setTimeout(() => {
+      window.location.assign(loginUrl || `/app/login?reason=invalid_session&resume=${encodeURIComponent(payload.resume_url || currentPathWithQuery())}`);
+    }, 500);
   };
 
   const humanize = (value) =>
@@ -103,6 +253,9 @@
   };
 
   const summaryValue = (field, value) => {
+    if (Array.isArray(value)) {
+      return value.length > 0 ? value.map((item) => humanize(item)).join(", ") : "Not set yet";
+    }
     if (field === "selected_plan_key") {
       return planLabel(value);
     }
@@ -211,8 +364,18 @@
     const childNameRaw = String(readFieldValue("profile_name") || snapshot.profile_name || "").trim();
     const childName = childNameRaw || "there";
     const childLabel = childNameRaw || "your child";
-    const preferredPacing = String(readFieldValue("preferred_pacing") || snapshot.preferred_pacing || "");
-    const responseStyle = String(readFieldValue("response_style") || snapshot.response_style || "");
+    const preferredPacingValues = Array.isArray(readFieldValue("preferred_pacing"))
+      ? readFieldValue("preferred_pacing")
+      : Array.isArray(snapshot.preferred_pacing)
+        ? snapshot.preferred_pacing
+        : [];
+    const responseStyleValues = Array.isArray(readFieldValue("response_style"))
+      ? readFieldValue("response_style")
+      : Array.isArray(snapshot.response_style)
+        ? snapshot.response_style
+        : [];
+    const preferredPacing = String(preferredPacingValues[0] || "");
+    const responseStyle = String(responseStyleValues[0] || "");
     const proactiveCheckIns = Boolean(readFieldValue("proactive_check_ins"));
     const parentVisibilityMode = String(readFieldValue("parent_visibility_mode") || snapshot.parent_visibility_mode || "");
     const alertThreshold = String(readFieldValue("alert_threshold") || snapshot.alert_threshold || "");
@@ -684,24 +847,50 @@
     setAiPreviewState(loadingPreviewState());
     const fallback = buildLocalExamplePreview(previewPayload);
     try {
-      const result = await requestJson(payload.preview_url, {
-        method: "POST",
-        credentials: "same-origin",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          csrf_token: payload.csrf_token,
-          data: previewPayload,
-        }),
+      const runPreview = () =>
+        fetchJson(payload.preview_url, {
+          method: "POST",
+          credentials: "same-origin",
+          timeoutMs: 9000,
+          resumeUrl: payload.resume_url || currentPathWithQuery(),
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            csrf_token: payload.csrf_token,
+            data: previewPayload,
+          }),
+        });
+      const result = await retryWithBackoff(runPreview, {
+        retries: 1,
+        baseDelayMs: 900,
+        shouldRetry: (next) =>
+          next.code === RequestFailureCode.timeout || next.code === RequestFailureCode.serverError,
       });
-      if (!result) {
-        return;
-      }
-      const { response, data } = result;
-      if (!response.ok) {
+      if (!result.ok) {
+        if (result.code === RequestFailureCode.authExpired || result.data?.code === "auth_expired") {
+          redirectToLogin(
+            result.data?.login_url,
+            "Your session expired while we were generating an example. Your setup draft is still safe in this tab."
+          );
+          return;
+        }
+        if (result.code === RequestFailureCode.offline) {
+          previewPendingOnReconnect = true;
+          pendingPreviewPayload = previewPayload;
+          if (currentPreferencePreviewKey() !== cacheKey) {
+            return;
+          }
+          setAiPreviewState({
+            message: "Preview unavailable while offline.",
+            caption: "We’ll try again automatically when your connection returns.",
+            pending: true,
+          });
+          return;
+        }
+        const data = result.data || {};
         const errorCaption =
-          response.status === 429
+          result.response?.status === 429
             ? "Preview limit reached for now, so we’re showing the local example instead."
             : data.detail || fallback.caption;
         if (currentPreferencePreviewKey() !== cacheKey) {
@@ -714,6 +903,9 @@
         });
         return;
       }
+      const data = result.data || {};
+      previewPendingOnReconnect = false;
+      pendingPreviewPayload = null;
       if (!String(data.source || "").startsWith("fallback")) {
         aiPreviewCache.set(cacheKey, { message: data.message, caption: data.caption });
       }
@@ -727,13 +919,15 @@
       });
     } catch (error) {
       console.error("Initialization preview failed", error);
+      previewPendingOnReconnect = true;
+      pendingPreviewPayload = previewPayload;
       if (currentPreferencePreviewKey() !== cacheKey) {
         return;
       }
       setAiPreviewState({
-        message: fallback.message,
-        caption: "Instant example based on your selections while the live AI preview reconnects.",
-        pending: false,
+        message: "Trying again...",
+        caption: "We’ll keep this example area warm and retry when the connection is steady again.",
+        pending: true,
       });
     } finally {
       if (pendingPreviewKey === cacheKey) {
@@ -880,27 +1074,17 @@
     snapshot = responsePayload.snapshot || snapshot;
     summary = responsePayload.summary || summary;
     billingStatus = responsePayload.billing_status || billingStatus;
+    payload.server_saved_at = responsePayload.server_saved_at || payload.server_saved_at || null;
     completedSteps = new Set(Array.isArray(responsePayload.completed_steps) ? responsePayload.completed_steps : []);
     syncForm();
     renderSummary();
     if (!preserveStep && responsePayload.current_step) {
       activeStep = responsePayload.current_step;
     }
-    renderStep();
-  };
-
-  const requestJson = async (url, options) => {
-    const response = await fetch(url, options);
-    const contentType = response.headers.get("content-type") || "";
-    if (!contentType.includes("application/json")) {
-      if (response.redirected) {
-        window.location.href = response.url;
-        return null;
-      }
-      throw new Error("Unexpected response from server");
+    if (responsePayload.completion_ready) {
+      clearStoredDraft();
     }
-    const data = await response.json();
-    return { response, data };
+    renderStep();
   };
 
   const saveStep = async (step, mode) => {
@@ -912,37 +1096,89 @@
       inFlight = true;
       renderStep();
     }
+    persistDraft();
     setSaveState("saving", "Saving...");
     try {
-      const result = await requestJson(payload.save_url, {
-        method: "POST",
-        credentials: "same-origin",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Resona-Step-Mode": mode,
-        },
-        body: JSON.stringify({
-          step,
-          data: collectStepData(step),
-          csrf_token: payload.csrf_token,
-        }),
-      });
-      if (!result) {
-        return { ok: false };
+      const runSave = () =>
+        fetchJson(payload.save_url, {
+          method: "POST",
+          credentials: "same-origin",
+          timeoutMs: 9000,
+          resumeUrl: payload.resume_url || currentPathWithQuery(),
+          headers: {
+            "Content-Type": "application/json",
+            "X-Resona-Step-Mode": mode,
+          },
+          body: JSON.stringify({
+            step,
+            data: collectStepData(step),
+            csrf_token: payload.csrf_token,
+          }),
+        });
+      const result = isAutosave
+        ? await retryWithBackoff(runSave, {
+            retries: 2,
+            baseDelayMs: 800,
+            shouldRetry: (next) =>
+              next.code === RequestFailureCode.timeout || next.code === RequestFailureCode.serverError,
+          })
+        : await runSave();
+      if (!result.ok) {
+        const detail = result.data?.detail || "Unable to save setup right now.";
+        if (result.code === RequestFailureCode.authExpired || result.data?.code === "auth_expired") {
+          setSaveState("error", "Session expired");
+          redirectToLogin(
+            result.data?.login_url,
+            "Your session expired while we were saving setup. Your changes are still safe in this tab."
+          );
+          return { ok: false, data: result.data };
+        }
+        if (result.code === RequestFailureCode.offline) {
+          pendingAutosaveStep = step;
+          setSaveState("error", "Waiting to reconnect");
+          banner.show({
+            tone: "warning",
+            title: "Connection lost",
+            message: "Your changes are safe in this tab and will resume saving when your connection returns.",
+          });
+          return { ok: false, data: result.data };
+        }
+        if (isAutosave) {
+          pendingAutosaveStep = step;
+          setSaveState("error", result.code === RequestFailureCode.timeout ? "Timed out" : "Save paused");
+          banner.show({
+            tone: "warning",
+            title: "We’re still trying to save",
+            message: "Your changes are safe in this tab. We’ll keep the latest draft here while the connection settles.",
+          });
+          return { ok: false, data: result.data };
+        }
+        renderErrors(result.data?.validation_errors || { [step]: detail });
+        setSaveState("error", "Needs attention");
+        return { ok: false, data: result.data };
       }
-      const { response, data } = result;
+      const data = result.data || {};
       applyServerState(data, isAutosave);
       renderErrors(data.validation_errors || {});
-      if (!response.ok) {
+      if (!data.ok) {
         setSaveState("error", "Needs attention");
         return { ok: false, data };
       }
-      lastSavedAt = new Date();
+      pendingAutosaveStep = "";
+      lastSavedAt = data.server_saved_at ? new Date(data.server_saved_at) : new Date();
+      persistDraft();
       setSaveState("saved", formatSavedAt(lastSavedAt));
+      banner.hide();
       return { ok: true, data };
     } catch (error) {
       console.error("Initialization save failed", error);
+      pendingAutosaveStep = step;
       setSaveState("error", "Save failed");
+      banner.show({
+        tone: "warning",
+        title: "We’re still trying to save",
+        message: "Your changes are safe in this tab, even though the last save did not finish.",
+      });
       return { ok: false };
     } finally {
       if (!isAutosave) {
@@ -956,6 +1192,7 @@
     if (!["household", "child", "preferences", "plan"].includes(activeStep)) {
       return;
     }
+    persistDraft();
     if (autosaveTimer) {
       window.clearTimeout(autosaveTimer);
     }
@@ -1030,6 +1267,12 @@
 
   if (billingButton) {
     billingButton.addEventListener("click", async () => {
+      if (billingInFlight) {
+        return;
+      }
+      billingInFlight = true;
+      billingButton.disabled = true;
+      persistDraft();
       setSaveState("saving", "Redirecting");
       try {
         const selectedPlanKey =
@@ -1037,33 +1280,111 @@
           snapshot.selected_plan_key ||
           summary.selected_plan_key ||
           "";
-        const result = await requestJson(payload.billing_url, {
+        const result = await fetchJson(payload.billing_url, {
           method: "POST",
           credentials: "same-origin",
+          timeoutMs: 10000,
+          resumeUrl: payload.resume_url || currentPathWithQuery(),
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             csrf_token: payload.csrf_token,
             selected_plan_key: selectedPlanKey,
           }),
         });
-        if (!result) {
-          return;
-        }
-        const { response, data } = result;
-        if (!response.ok) {
-          renderErrors(data.validation_errors || { billing: data.detail || "Unable to start checkout." });
+        if (!result.ok) {
+          if (result.code === RequestFailureCode.authExpired || result.data?.code === "auth_expired") {
+            setSaveState("error", "Session expired");
+            redirectToLogin(
+              result.data?.login_url,
+              "Your session expired before checkout started. Your setup draft is still safe in this tab."
+            );
+            return;
+          }
+          if (result.code === RequestFailureCode.offline || result.code === RequestFailureCode.timeout) {
+            banner.show({
+              tone: "warning",
+              title: "No new checkout was started",
+              message: "Your connection dropped before Stripe checkout could begin.",
+            });
+            renderErrors({ billing: "No new checkout was started. Check your connection and try again." });
+            setSaveState("error", "Checkout paused");
+            return;
+          }
+          banner.show({
+            tone: "warning",
+            title: "No new checkout was started",
+            message: result.data?.detail || "We couldn’t start Stripe checkout just yet.",
+          });
+          renderErrors(result.data?.validation_errors || { billing: result.data?.detail || "Unable to start checkout." });
           setSaveState("error", "Needs attention");
           return;
+        }
+        const data = result.data || {};
+        if (data.already_active) {
+          clearStoredDraft();
         }
         window.location.href = data.url;
       } catch (error) {
         console.error("Billing checkout failed", error);
+        banner.show({
+          tone: "warning",
+          title: "No new checkout was started",
+          message: "We hit a browser or network problem before Stripe checkout could open.",
+        });
         renderErrors({ billing: "Unable to start checkout right now." });
         setSaveState("error", "Checkout failed");
+      } finally {
+        billingInFlight = false;
+        billingButton.disabled = false;
       }
     });
   }
 
+  window.addEventListener("resona:auth-expired", () => {
+    persistDraft();
+  });
+  window.addEventListener("beforeunload", () => {
+    persistDraft();
+  });
+
+  watchConnectivity({
+    immediate: false,
+    onOffline: () => {
+      banner.show({
+        tone: "warning",
+        title: "Connection lost",
+        message: "Your changes are safe in this tab while the connection is down.",
+      });
+    },
+    onOnline: () => {
+      if (pendingAutosaveStep) {
+        banner.show({
+          tone: "success",
+          title: "Connection restored",
+          message: "We’re saving the latest setup draft again now.",
+        });
+        const stepToRetry = pendingAutosaveStep;
+        pendingAutosaveStep = "";
+        saveStep(stepToRetry, "autosave");
+        return;
+      }
+      if (previewPendingOnReconnect && pendingPreviewPayload) {
+        banner.show({
+          tone: "success",
+          title: "Connection restored",
+          message: "We’re generating the example reply again now.",
+        });
+        previewPendingOnReconnect = false;
+        const previewPayload = pendingPreviewPayload;
+        pendingPreviewPayload = null;
+        requestPreferencePreview(previewPayload);
+        return;
+      }
+      banner.hide();
+    },
+  });
+
+  restoreStoredDraftIfNewer();
   syncForm();
   renderSummary();
   renderStep();

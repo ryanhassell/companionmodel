@@ -239,6 +239,7 @@ class ClerkConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     enabled: bool = False
+    secret_key: str | None = None
     publishable_key: str | None = None
     frontend_api_url: str | None = None
     issuer: str | None = None
@@ -463,6 +464,7 @@ def _apply_flat_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
         ("customer_portal", "max_login_failures"): os.getenv("PORTAL_MAX_LOGIN_FAILURES"),
         ("customer_portal", "lockout_minutes"): os.getenv("PORTAL_LOCKOUT_MINUTES"),
         ("clerk", "enabled"): os.getenv("CLERK_ENABLED"),
+        ("clerk", "secret_key"): os.getenv("CLERK_SECRET_KEY"),
         ("clerk", "publishable_key"): os.getenv("CLERK_PUBLISHABLE_KEY"),
         ("clerk", "frontend_api_url"): os.getenv("CLERK_FRONTEND_API_URL"),
         ("clerk", "issuer"): os.getenv("CLERK_ISSUER"),

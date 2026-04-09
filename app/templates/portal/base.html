@@ -23,7 +23,8 @@
     class="{{ body_class or 'portal-body' }}"
     data-clerk-enabled="{{ 'true' if clerk_enabled and clerk_publishable_key else 'false' }}"
     data-clerk-publishable-key="{{ clerk_publishable_key or '' }}"
-    data-clerk-frontend-api-url="{{ clerk_frontend_api_url or '' }}">
+    data-clerk-frontend-api-url="{{ clerk_frontend_api_url or '' }}"
+    data-current-path="{{ request.url.path }}">
     <div class="portal-layout">
       <aside class="portal-sidebar">
         <div class="portal-brand-lockup">
@@ -35,8 +36,15 @@
         </div>
         <nav class="nav">
           {% if customer_user and not portal_locked %}
-            {% for item in portal_nav_items %}
+            {% for section in portal_nav_sections %}
+            <section class="portal-nav-group">
+              <p class="portal-nav-heading">{{ section.label }}</p>
+              <div class="portal-nav-links">
+                {% for item in section.items %}
           <a href="{{ item.href }}" class="{{ 'active' if active_nav == item.key else '' }}">{{ item.label }}</a>
+                {% endfor %}
+              </div>
+            </section>
             {% endfor %}
           {% elif customer_user and portal_locked %}
           <div class="portal-lock-card">
@@ -53,10 +61,17 @@
         <p class="subtle">{{ support_email }}</p>
       </aside>
       <main class="content">
+        <div id="portal-global-banner" class="portal-global-banner" hidden aria-live="polite" aria-atomic="true">
+          <div class="portal-global-banner-copy">
+            <strong data-portal-banner-title></strong>
+            <p data-portal-banner-message></p>
+          </div>
+          <div class="portal-global-banner-actions" data-portal-banner-actions></div>
+        </div>
         {% block content %}{% endblock %}
       </main>
     </div>
-    <script src="/static/portal-shell.js" defer></script>
+    <script type="module" src="/static/portal-shell.js"></script>
     {% block body_scripts %}{% endblock %}
   </body>
 </html>

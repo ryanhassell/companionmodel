@@ -6,7 +6,9 @@ import secrets
 import re
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
+import httpx
 import jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +22,7 @@ from app.utils.time import utc_now
 logger = get_logger(__name__)
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _CLERK_LOCAL_EMAIL_RE = re.compile(r"^[^@\s]+@clerk\.local$", re.IGNORECASE)
+_CLERK_API_BASE_URL = "https://api.clerk.com/v1"
 
 
 @dataclass(slots=True)
@@ -186,6 +189,64 @@ class ClerkAuthService:
         payload = f"{clerk_user_id}:{clerk_org_id}".encode("utf-8")
         key = self.settings.app.secret_key.encode("utf-8")
         return hmac.new(key, payload, hashlib.sha256).hexdigest()
+
+    async def verify_current_password(self, *, clerk_user_id: str, password: str) -> bool:
+        secret_key = str(self.settings.clerk.secret_key or "").strip()
+        if not secret_key:
+            raise RuntimeError("Clerk secret key is not configured")
+        if not clerk_user_id or not password:
+            return False
+
+        endpoint = f"{_CLERK_API_BASE_URL}/users/{quote(clerk_user_id, safe='')}/verify_password"
+        headers = {
+            "Authorization": f"Bearer {secret_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {"password": password}
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(endpoint, headers=headers, json=payload)
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "clerk_password_verify_transport_error",
+                clerk_user_id=clerk_user_id,
+                error=str(exc),
+            )
+            raise RuntimeError("Clerk password verification failed") from exc
+
+        if response.status_code == 200:
+            data = response.json() if response.content else {}
+            verified = data.get("verified", True)
+            return bool(verified)
+
+        if response.status_code in {400, 404, 422}:
+            logger.info(
+                "clerk_password_verify_rejected",
+                clerk_user_id=clerk_user_id,
+                status_code=response.status_code,
+            )
+            return False
+
+        if response.status_code in {401, 403, 429}:
+            logger.warning(
+                "clerk_password_verify_unavailable",
+                clerk_user_id=clerk_user_id,
+                status_code=response.status_code,
+            )
+            raise RuntimeError("Clerk password verification is temporarily unavailable")
+
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "clerk_password_verify_failed",
+                clerk_user_id=clerk_user_id,
+                status_code=response.status_code,
+                error=str(exc),
+            )
+            raise RuntimeError("Clerk password verification failed") from exc
+        return False
 
     def _extract_email(self, claims: dict[str, Any]) -> str | None:
         email = claims.get("email")

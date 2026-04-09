@@ -1,32 +1,53 @@
-(function () {
-  const body = document.body;
-  const clerkEnabled = body?.dataset.clerkEnabled === "true";
-  const signOutLinks = document.querySelectorAll("[data-portal-signout]");
+import { createPortalBanner, currentPathWithQuery, publishSessionEvent, subscribeSessionEvents, wait } from "/static/portal-resilience.js";
+import { loadClerkClient } from "/static/portal-clerk.js";
 
-  if (!clerkEnabled || signOutLinks.length === 0) {
+const body = document.body;
+const clerkEnabled = body?.dataset.clerkEnabled === "true";
+const signOutLinks = document.querySelectorAll("[data-portal-signout]");
+const banner = createPortalBanner();
+const currentPath = body?.dataset.currentPath || window.location.pathname;
+const isAuthSurface = /^\/app\/(login|signup|session\/callback|logout)/.test(currentPath);
+const resumeUrl = currentPathWithQuery();
+const sessionLossRedirect = `/app/login?reason=invalid_session&resume=${encodeURIComponent(resumeUrl)}`;
+
+let inFlight = false;
+let redirectingForSessionLoss = false;
+
+const redirectForSessionLoss = (message) => {
+  if (redirectingForSessionLoss || isAuthSurface) {
     return;
   }
+  redirectingForSessionLoss = true;
+  window.dispatchEvent(
+    new CustomEvent("resona:auth-expired", {
+      detail: { loginUrl: sessionLossRedirect, reason: "invalid_session" },
+    })
+  );
+  banner.show({
+    tone: "warning",
+    title: "Session ended",
+    message,
+  });
+  window.setTimeout(() => {
+    window.location.assign(sessionLossRedirect);
+  }, 700);
+};
 
-  const waitForClerk = () =>
-    new Promise((resolve, reject) => {
-      let attempts = 0;
-      const timer = window.setInterval(() => {
-        attempts += 1;
-        if (window.Clerk) {
-          window.clearInterval(timer);
-          resolve(window.Clerk);
-          return;
-        }
-        if (attempts > 120) {
-          window.clearInterval(timer);
-          reject(new Error("Clerk script did not load"));
-        }
-      }, 50);
-    });
+subscribeSessionEvents((event) => {
+  if (!event?.type) {
+    return;
+  }
+  if (event.type === "signed_out") {
+    redirectForSessionLoss("This portal session ended in another tab, so we’re reopening sign-in here too.");
+  }
+  if (event.type === "session_expired") {
+    redirectForSessionLoss("Your secure session needs to be refreshed before the portal can continue.");
+  }
+});
 
-  const wait = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
-  let inFlight = false;
-
+if (!clerkEnabled || signOutLinks.length === 0) {
+  // We still keep the cross-tab listener above active on auth pages and stale tabs.
+} else {
   signOutLinks.forEach((link) => {
     link.addEventListener("click", async (event) => {
       if (inFlight) {
@@ -48,16 +69,14 @@
         // Continue through Clerk sign-out even if backend cookie cleanup fails.
       }
 
+      publishSessionEvent("signed_out", { path: resumeUrl });
+
       try {
-        const clerk = await waitForClerk();
-        if (!clerk.loaded) {
-          await clerk.load({
-            publishableKey: body?.dataset.clerkPublishableKey || "",
-            ...(body?.dataset.clerkFrontendApiUrl
-              ? { frontendApi: body.dataset.clerkFrontendApiUrl }
-              : {}),
-          });
-        }
+        const clerk = await loadClerkClient({
+          publishableKey: body?.dataset.clerkPublishableKey || "",
+          frontendApiUrl: body?.dataset.clerkFrontendApiUrl || "",
+          includeUi: false,
+        });
         await Promise.race([
           clerk.signOut({ redirectUrl: "/app/login?logged_out=1" }),
           wait(1600),
@@ -73,4 +92,4 @@
       }
     });
   });
-})();
+}

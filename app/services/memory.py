@@ -1,18 +1,27 @@
 from __future__ import annotations
 
 import math
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import desc, select, text
+from sqlalchemy import delete, desc, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.core.settings import RuntimeSettings
 from app.models.communication import Message
-from app.models.enums import Direction, MemoryType
-from app.models.memory import MemoryItem
+from app.models.enums import Direction, MemoryRelationshipType, MemoryType
+from app.models.memory import MemoryItem, MemoryRelationship
 from app.models.persona import Persona
+from app.schemas.site import (
+    MemoryDeletePreview,
+    MemoryDeletePreviewEntry,
+    MemoryGraphEdge,
+    MemoryGraphNode,
+    MemoryInspector,
+    MemoryLinkedMemory,
+)
 from app.models.user import User
 from app.providers.openai import OpenAIProvider
 from app.services.prompt import PromptService
@@ -20,12 +29,28 @@ from app.utils.time import utc_now
 
 logger = get_logger(__name__)
 
+_DERIVED_RELATIONSHIP_TYPES = (
+    MemoryRelationshipType.consolidated_into,
+    MemoryRelationshipType.supersedes,
+)
+_CASCADE_RELATIONSHIP_TYPES = (
+    MemoryRelationshipType.manual_child,
+    MemoryRelationshipType.consolidated_into,
+)
+
 
 @dataclass(slots=True)
 class RetrievedMemory:
     memory: MemoryItem
     score: float
     explanation: str
+
+
+@dataclass(slots=True)
+class MemoryGraphResult:
+    nodes: list[MemoryGraphNode]
+    structural_edges: list[MemoryGraphEdge]
+    similarity_edges: list[MemoryGraphEdge]
 
 
 class MemoryService:
@@ -93,6 +118,7 @@ class MemoryService:
         await session.flush()
         if created:
             await self.embed_items(session, created, config=config)
+            await self.sync_relationships_for_user(session, user_id=user.id)
             for memory in created:
                 logger.info(
                     "memory_saved",
@@ -251,7 +277,7 @@ class MemoryService:
     ) -> list[RetrievedMemory]:
         scored = []
         for item in items:
-            if not item.embedding_vector:
+            if not _has_embedding(item.embedding_vector):
                 continue
             score = cosine_similarity(item.embedding_vector, query_embedding)
             if score >= threshold:
@@ -299,7 +325,446 @@ class MemoryService:
         session.add(memory)
         await session.flush()
         await self.embed_items(session, [memory], config=config)
+        await self.sync_relationships_for_user(session, user_id=user_id)
         return 1
+
+    async def sync_relationships_for_user(self, session: AsyncSession, *, user_id: uuid.UUID | str) -> None:
+        normalized_user_id = _normalize_uuid(user_id)
+        if normalized_user_id is None:
+            return
+
+        items = list(
+            (
+                await session.execute(
+                    select(MemoryItem.id, MemoryItem.consolidated_into_id, MemoryItem.metadata_json).where(
+                        MemoryItem.user_id == normalized_user_id
+                    )
+                )
+            ).all()
+        )
+        known_ids = {row.id for row in items}
+        desired: list[tuple[uuid.UUID, uuid.UUID, MemoryRelationshipType]] = []
+        seen: set[tuple[uuid.UUID, uuid.UUID, MemoryRelationshipType]] = set()
+        for row in items:
+            if row.consolidated_into_id and row.consolidated_into_id in known_ids and row.consolidated_into_id != row.id:
+                edge = (row.consolidated_into_id, row.id, MemoryRelationshipType.consolidated_into)
+                if edge not in seen:
+                    desired.append(edge)
+                    seen.add(edge)
+            supersedes_id = _normalize_uuid((row.metadata_json or {}).get("supersedes_id"))
+            if supersedes_id and supersedes_id in known_ids and supersedes_id != row.id:
+                edge = (supersedes_id, row.id, MemoryRelationshipType.supersedes)
+                if edge not in seen:
+                    desired.append(edge)
+                    seen.add(edge)
+
+        await session.execute(
+            delete(MemoryRelationship).where(
+                MemoryRelationship.user_id == normalized_user_id,
+                MemoryRelationship.relationship_type.in_(_DERIVED_RELATIONSHIP_TYPES),
+            )
+        )
+        for parent_id, child_id, relationship_type in desired:
+            session.add(
+                MemoryRelationship(
+                    user_id=normalized_user_id,
+                    parent_memory_id=parent_id,
+                    child_memory_id=child_id,
+                    relationship_type=relationship_type,
+                )
+            )
+        await session.flush()
+
+    async def list_memories_for_user(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: uuid.UUID | str,
+        include_archived: bool = False,
+        search: str | None = None,
+        memory_type: str | None = None,
+        limit: int = 120,
+    ) -> list[MemoryItem]:
+        normalized_user_id = _normalize_uuid(user_id)
+        if normalized_user_id is None:
+            return []
+
+        stmt = select(MemoryItem).where(MemoryItem.user_id == normalized_user_id)
+        if not include_archived:
+            stmt = stmt.where(MemoryItem.disabled.is_(False))
+        normalized_search = str(search or "").strip()
+        if normalized_search:
+            search_term = f"%{normalized_search}%"
+            stmt = stmt.where(
+                or_(
+                    MemoryItem.title.ilike(search_term),
+                    MemoryItem.summary.ilike(search_term),
+                    MemoryItem.content.ilike(search_term),
+                )
+            )
+        normalized_type = str(memory_type or "").strip()
+        if normalized_type:
+            try:
+                stmt = stmt.where(MemoryItem.memory_type == MemoryType(normalized_type))
+            except ValueError:
+                return []
+        stmt = stmt.order_by(desc(MemoryItem.pinned), desc(MemoryItem.importance_score), desc(MemoryItem.updated_at)).limit(
+            max(limit, 1)
+        )
+        return list((await session.execute(stmt)).scalars().all())
+
+    async def graph_snapshot(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: uuid.UUID | str,
+        include_archived: bool = False,
+        limit: int = 60,
+        similarity_limit: int = 2,
+    ) -> MemoryGraphResult:
+        normalized_user_id = _normalize_uuid(user_id)
+        if normalized_user_id is None:
+            return MemoryGraphResult(nodes=[], structural_edges=[], similarity_edges=[])
+
+        await self.sync_relationships_for_user(session, user_id=normalized_user_id)
+        memories = await self.list_memories_for_user(
+            session,
+            user_id=normalized_user_id,
+            include_archived=include_archived,
+            limit=limit,
+        )
+        if not memories:
+            return MemoryGraphResult(nodes=[], structural_edges=[], similarity_edges=[])
+
+        memory_ids = [memory.id for memory in memories]
+        by_id = {memory.id: memory for memory in memories}
+        structural_rows = list(
+            (
+                await session.execute(
+                    select(MemoryRelationship).where(
+                        MemoryRelationship.user_id == normalized_user_id,
+                        MemoryRelationship.parent_memory_id.in_(memory_ids),
+                        MemoryRelationship.child_memory_id.in_(memory_ids),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        nodes = [self._graph_node(memory) for memory in memories]
+        structural_edges = [self._graph_edge(row) for row in structural_rows]
+        structural_pairs = {
+            frozenset((row.parent_memory_id, row.child_memory_id))
+            for row in structural_rows
+        }
+        similarity_edges = self._similarity_edges(
+            memories,
+            structural_pairs=structural_pairs,
+            per_node_limit=similarity_limit,
+        )
+        return MemoryGraphResult(
+            nodes=nodes,
+            structural_edges=structural_edges,
+            similarity_edges=similarity_edges,
+        )
+
+    async def memory_inspector(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: uuid.UUID | str,
+        memory_id: uuid.UUID | str,
+    ) -> MemoryInspector | None:
+        normalized_user_id = _normalize_uuid(user_id)
+        normalized_memory_id = _normalize_uuid(memory_id)
+        if normalized_user_id is None or normalized_memory_id is None:
+            return None
+
+        await self.sync_relationships_for_user(session, user_id=normalized_user_id)
+        memory = await session.scalar(
+            select(MemoryItem).where(
+                MemoryItem.id == normalized_memory_id,
+                MemoryItem.user_id == normalized_user_id,
+            )
+        )
+        if memory is None:
+            return None
+
+        relationship_rows = list(
+            (
+                await session.execute(
+                    select(MemoryRelationship).where(
+                        MemoryRelationship.user_id == normalized_user_id,
+                        or_(
+                            MemoryRelationship.parent_memory_id == normalized_memory_id,
+                            MemoryRelationship.child_memory_id == normalized_memory_id,
+                        ),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        linked_ids = {
+            row.child_memory_id if row.parent_memory_id == normalized_memory_id else row.parent_memory_id
+            for row in relationship_rows
+        }
+        linked_items = {}
+        if linked_ids:
+            linked_items = {
+                item.id: item
+                for item in (
+                    await session.execute(select(MemoryItem).where(MemoryItem.id.in_(list(linked_ids))))
+                )
+                .scalars()
+                .all()
+            }
+
+        linked_memories: list[MemoryLinkedMemory] = []
+        for row in relationship_rows:
+            linked_id = row.child_memory_id if row.parent_memory_id == normalized_memory_id else row.parent_memory_id
+            linked = linked_items.get(linked_id)
+            if linked is None:
+                continue
+            linked_memories.append(
+                MemoryLinkedMemory(
+                    id=str(linked.id),
+                    title=_memory_display_title(linked),
+                    summary=_memory_display_summary(linked),
+                    kind="structural",
+                    relationship_label=_relationship_label(row, focus_memory_id=normalized_memory_id),
+                    archived=bool(linked.disabled),
+                    pinned=bool(linked.pinned),
+                )
+            )
+
+        similar_memories = await self._similar_memories_for_inspector(
+            session,
+            memory=memory,
+            user_id=normalized_user_id,
+            exclude_ids={normalized_memory_id, *linked_ids},
+        )
+        linked_memories.extend(similar_memories)
+
+        return MemoryInspector(
+            id=str(memory.id),
+            title=_memory_display_title(memory),
+            memory_type=memory.memory_type.value,
+            memory_type_label=_memory_type_label(memory.memory_type),
+            content=memory.content,
+            summary=memory.summary,
+            tags=list(memory.tags or []),
+            pinned=bool(memory.pinned),
+            archived=bool(memory.disabled),
+            importance_score=float(memory.importance_score or 0.0),
+            updated_at=memory.updated_at.isoformat() if memory.updated_at else None,
+            linked_memories=linked_memories,
+        )
+
+    async def update_memory_for_parent(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: uuid.UUID | str,
+        memory_id: uuid.UUID | str,
+        data: dict[str, Any],
+        config: dict[str, Any],
+    ) -> MemoryInspector | None:
+        normalized_user_id = _normalize_uuid(user_id)
+        normalized_memory_id = _normalize_uuid(memory_id)
+        if normalized_user_id is None or normalized_memory_id is None:
+            return None
+
+        memory = await session.scalar(
+            select(MemoryItem).where(
+                MemoryItem.id == normalized_memory_id,
+                MemoryItem.user_id == normalized_user_id,
+            )
+        )
+        if memory is None:
+            return None
+
+        text_changed = False
+        title = _normalize_optional_text(data.get("title"))
+        content = _normalize_required_text(data.get("content"))
+        summary = _normalize_optional_text(data.get("summary"))
+        tags = _normalize_tags(data.get("tags"))
+        pinned = _coerce_bool(data.get("pinned"), default=False)
+        archived = _coerce_bool(data.get("archived"), default=False)
+
+        if content is None:
+            raise ValueError("Memory text can't be blank.")
+
+        if memory.title != title:
+            memory.title = title
+            text_changed = True
+        if memory.content != content:
+            memory.content = content
+            text_changed = True
+        if memory.summary != summary:
+            memory.summary = summary
+            text_changed = True
+        if list(memory.tags or []) != tags:
+            memory.tags = tags
+            text_changed = True
+        memory.pinned = pinned
+        memory.disabled = archived
+
+        await session.flush()
+        if text_changed:
+            await self.embed_items(session, [memory], config=config)
+        await self.sync_relationships_for_user(session, user_id=normalized_user_id)
+        return await self.memory_inspector(session, user_id=normalized_user_id, memory_id=normalized_memory_id)
+
+    async def delete_preview_for_parent(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: uuid.UUID | str,
+        memory_id: uuid.UUID | str,
+    ) -> MemoryDeletePreview | None:
+        normalized_user_id = _normalize_uuid(user_id)
+        normalized_memory_id = _normalize_uuid(memory_id)
+        if normalized_user_id is None or normalized_memory_id is None:
+            return None
+
+        await self.sync_relationships_for_user(session, user_id=normalized_user_id)
+        memories = list(
+            (
+                await session.execute(select(MemoryItem).where(MemoryItem.user_id == normalized_user_id))
+            )
+            .scalars()
+            .all()
+        )
+        by_id = {memory.id: memory for memory in memories}
+        if normalized_memory_id not in by_id:
+            return None
+
+        relationship_rows = list(
+            (
+                await session.execute(
+                    select(MemoryRelationship).where(
+                        MemoryRelationship.user_id == normalized_user_id,
+                        MemoryRelationship.relationship_type.in_(_CASCADE_RELATIONSHIP_TYPES),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        children_by_parent: dict[uuid.UUID, list[tuple[uuid.UUID, MemoryRelationshipType]]] = {}
+        parents_by_child: dict[uuid.UUID, set[uuid.UUID]] = {}
+        for row in relationship_rows:
+            children_by_parent.setdefault(row.parent_memory_id, []).append((row.child_memory_id, row.relationship_type))
+            parents_by_child.setdefault(row.child_memory_id, set()).add(row.parent_memory_id)
+
+        ordered_ids: list[uuid.UUID] = [normalized_memory_id]
+        reasons: dict[uuid.UUID, str] = {
+            normalized_memory_id: "Selected memory",
+        }
+        queued: list[uuid.UUID] = [normalized_memory_id]
+        to_delete: set[uuid.UUID] = {normalized_memory_id}
+
+        while queued:
+            current_id = queued.pop(0)
+            for child_id, relationship_type in children_by_parent.get(current_id, []):
+                if child_id in to_delete:
+                    continue
+                surviving_parents = {
+                    parent_id
+                    for parent_id in parents_by_child.get(child_id, set())
+                    if parent_id not in to_delete
+                }
+                if surviving_parents:
+                    continue
+                to_delete.add(child_id)
+                ordered_ids.append(child_id)
+                reasons[child_id] = _cascade_reason(
+                    relationship_type,
+                    parent_title=_memory_display_title(by_id.get(current_id)),
+                )
+                queued.append(child_id)
+
+        affected = [
+            MemoryDeletePreviewEntry(
+                id=str(item_id),
+                title=_memory_display_title(by_id[item_id]),
+                reason=reasons[item_id],
+            )
+            for item_id in ordered_ids
+            if item_id in by_id
+        ]
+        return MemoryDeletePreview(
+            memory_id=str(normalized_memory_id),
+            deleted_count=len(affected),
+            affected=affected,
+        )
+
+    async def delete_memory_for_parent(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: uuid.UUID | str,
+        memory_id: uuid.UUID | str,
+    ) -> MemoryDeletePreview | None:
+        normalized_user_id = _normalize_uuid(user_id)
+        if normalized_user_id is None:
+            return None
+        preview = await self.delete_preview_for_parent(session, user_id=normalized_user_id, memory_id=memory_id)
+        if preview is None:
+            return None
+
+        deletion_ids = {_normalize_uuid(entry.id) for entry in preview.affected}
+        deletion_ids.discard(None)
+        if not deletion_ids:
+            return preview
+
+        survivors = list(
+            (
+                await session.execute(
+                    select(MemoryItem).where(
+                        MemoryItem.user_id == normalized_user_id,
+                        MemoryItem.id.not_in(list(deletion_ids)),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for item in survivors:
+            metadata_json = dict(item.metadata_json or {})
+            changed = False
+            if item.consolidated_into_id in deletion_ids:
+                item.consolidated_into_id = None
+                changed = True
+            if _normalize_uuid(metadata_json.get("supersedes_id")) in deletion_ids:
+                metadata_json.pop("supersedes_id", None)
+                changed = True
+            if _normalize_uuid(metadata_json.get("superseded_by_id")) in deletion_ids:
+                metadata_json.pop("superseded_by_id", None)
+                changed = True
+            if changed:
+                item.metadata_json = metadata_json
+
+        await session.execute(
+            delete(MemoryRelationship).where(
+                MemoryRelationship.user_id == normalized_user_id,
+                or_(
+                    MemoryRelationship.parent_memory_id.in_(list(deletion_ids)),
+                    MemoryRelationship.child_memory_id.in_(list(deletion_ids)),
+                ),
+            )
+        )
+        await session.execute(
+            delete(MemoryItem).where(
+                MemoryItem.user_id == normalized_user_id,
+                MemoryItem.id.in_(list(deletion_ids)),
+            )
+        )
+        await session.flush()
+        await self.sync_relationships_for_user(session, user_id=normalized_user_id)
+        return preview
 
     def _embedding_text(self, item: MemoryItem) -> str:
         tags = ", ".join(item.tags or [])
@@ -591,6 +1056,124 @@ class MemoryService:
         )
         return adjusted
 
+    def _graph_node(self, memory: MemoryItem) -> MemoryGraphNode:
+        return MemoryGraphNode(
+            id=str(memory.id),
+            label=_memory_graph_label(memory),
+            memory_type=memory.memory_type.value,
+            memory_type_label=_memory_type_label(memory.memory_type),
+            summary=_memory_display_summary(memory),
+            pinned=bool(memory.pinned),
+            archived=bool(memory.disabled),
+            updated_at=memory.updated_at.isoformat() if memory.updated_at else None,
+        )
+
+    def _graph_edge(self, relationship: MemoryRelationship) -> MemoryGraphEdge:
+        return MemoryGraphEdge(
+            id=f"structural:{relationship.id}",
+            source=str(relationship.parent_memory_id),
+            target=str(relationship.child_memory_id),
+            kind="structural",
+            relationship_type=relationship.relationship_type.value,
+            label=_relationship_type_label(relationship.relationship_type),
+            cascades=relationship.relationship_type in _CASCADE_RELATIONSHIP_TYPES,
+        )
+
+    def _similarity_edges(
+        self,
+        memories: list[MemoryItem],
+        *,
+        structural_pairs: set[frozenset[uuid.UUID]],
+        per_node_limit: int,
+    ) -> list[MemoryGraphEdge]:
+        if per_node_limit <= 0:
+            return []
+
+        pair_candidates: list[tuple[float, MemoryItem, MemoryItem]] = []
+        for left_index, left in enumerate(memories):
+            if not _has_embedding(left.embedding_vector):
+                continue
+            for right in memories[left_index + 1 :]:
+                if not _has_embedding(right.embedding_vector):
+                    continue
+                pair_key = frozenset((left.id, right.id))
+                if pair_key in structural_pairs:
+                    continue
+                score = cosine_similarity(left.embedding_vector, right.embedding_vector)
+                if score < max(0.72, float(self.settings.memory.similarity_threshold)):
+                    continue
+                pair_candidates.append((score, left, right))
+
+        pair_candidates.sort(key=lambda item: item[0], reverse=True)
+        counts: dict[uuid.UUID, int] = {}
+        edges: list[MemoryGraphEdge] = []
+        for score, left, right in pair_candidates:
+            if counts.get(left.id, 0) >= per_node_limit or counts.get(right.id, 0) >= per_node_limit:
+                continue
+            edge_id = f"similarity:{min(str(left.id), str(right.id))}:{max(str(left.id), str(right.id))}"
+            edges.append(
+                MemoryGraphEdge(
+                    id=edge_id,
+                    source=str(left.id),
+                    target=str(right.id),
+                    kind="similarity",
+                    label=f"{score:.2f}",
+                )
+            )
+            counts[left.id] = counts.get(left.id, 0) + 1
+            counts[right.id] = counts.get(right.id, 0) + 1
+        return edges
+
+    async def _similar_memories_for_inspector(
+        self,
+        session: AsyncSession,
+        *,
+        memory: MemoryItem,
+        user_id: uuid.UUID,
+        exclude_ids: set[uuid.UUID],
+        limit: int = 4,
+    ) -> list[MemoryLinkedMemory]:
+        if not _has_embedding(memory.embedding_vector):
+            return []
+        candidates = list(
+            (
+                await session.execute(
+                    select(MemoryItem)
+                    .where(
+                        MemoryItem.user_id == user_id,
+                        MemoryItem.disabled.is_(False),
+                    )
+                    .order_by(desc(MemoryItem.pinned), desc(MemoryItem.importance_score), desc(MemoryItem.updated_at))
+                    .limit(80)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        scored: list[tuple[float, MemoryItem]] = []
+        for candidate in candidates:
+            if candidate.id in exclude_ids or candidate.id == memory.id:
+                continue
+            if not _has_embedding(candidate.embedding_vector):
+                continue
+            score = cosine_similarity(memory.embedding_vector, candidate.embedding_vector)
+            if score < max(0.72, float(self.settings.memory.similarity_threshold)):
+                continue
+            scored.append((score, candidate))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [
+            MemoryLinkedMemory(
+                id=str(candidate.id),
+                title=_memory_display_title(candidate),
+                summary=_memory_display_summary(candidate),
+                kind="similarity",
+                relationship_label="Similar theme",
+                archived=bool(candidate.disabled),
+                pinned=bool(candidate.pinned),
+            )
+            for _, candidate in scored[:limit]
+        ]
+
 
 def cosine_similarity(left: list[float], right: list[float]) -> float:
     dot = sum(a * b for a, b in zip(left, right))
@@ -599,6 +1182,15 @@ def cosine_similarity(left: list[float], right: list[float]) -> float:
     if left_norm == 0 or right_norm == 0:
         return 0.0
     return dot / (left_norm * right_norm)
+
+
+def _has_embedding(vector: Any) -> bool:
+    if vector is None:
+        return False
+    try:
+        return len(vector) > 0
+    except TypeError:
+        return True
 
 
 def _merge_tags(*tag_groups: list[str] | Any) -> list[str]:
@@ -623,3 +1215,107 @@ def _merge_text(existing: str, new: str) -> str:
     if new_clean in existing_clean:
         return existing_clean
     return f"{existing_clean} {new_clean}".strip()
+
+
+def _normalize_uuid(value: Any) -> uuid.UUID | None:
+    if isinstance(value, uuid.UUID):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return uuid.UUID(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_optional_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _normalize_required_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _normalize_tags(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return _merge_tags(value)
+    text = str(value or "").strip()
+    if not text:
+        return []
+    return _merge_tags([part.strip() for part in text.split(",")])
+
+
+def _coerce_bool(value: Any, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _memory_type_label(memory_type: MemoryType | str) -> str:
+    return str(memory_type).replace("_", " ").strip().title()
+
+
+def _memory_display_title(memory: MemoryItem | None) -> str:
+    if memory is None:
+        return "Memory"
+    title = (memory.title or "").strip()
+    if title:
+        return title
+    summary = (memory.summary or "").strip()
+    if summary:
+        return summary[:72]
+    return (memory.content or "").strip()[:72] or "Memory"
+
+
+def _memory_display_summary(memory: MemoryItem) -> str:
+    summary = (memory.summary or "").strip()
+    if summary:
+        return summary
+    content = (memory.content or "").strip()
+    if len(content) <= 180:
+        return content
+    return f"{content[:177].rstrip()}..."
+
+
+def _memory_graph_label(memory: MemoryItem) -> str:
+    title = _memory_display_title(memory)
+    if len(title) <= 36:
+        return title
+    return f"{title[:33].rstrip()}..."
+
+
+def _relationship_type_label(relationship_type: MemoryRelationshipType) -> str:
+    labels = {
+        MemoryRelationshipType.manual_child: "Child memory",
+        MemoryRelationshipType.consolidated_into: "Consolidated memory",
+        MemoryRelationshipType.supersedes: "Replaced memory",
+    }
+    return labels.get(relationship_type, relationship_type.value.replace("_", " ").title())
+
+
+def _relationship_label(relationship: MemoryRelationship, *, focus_memory_id: uuid.UUID) -> str:
+    if relationship.relationship_type == MemoryRelationshipType.manual_child:
+        return "Parent memory" if relationship.child_memory_id == focus_memory_id else "Child memory"
+    if relationship.relationship_type == MemoryRelationshipType.consolidated_into:
+        return "Consolidated into this memory" if relationship.child_memory_id == focus_memory_id else "Built from this memory"
+    if relationship.relationship_type == MemoryRelationshipType.supersedes:
+        return "Supersedes this earlier memory" if relationship.child_memory_id == focus_memory_id else "Superseded by this newer memory"
+    return _relationship_type_label(relationship.relationship_type)
+
+
+def _cascade_reason(relationship_type: MemoryRelationshipType, *, parent_title: str) -> str:
+    if relationship_type == MemoryRelationshipType.consolidated_into:
+        return f"Only connected through {parent_title} as a consolidated memory"
+    if relationship_type == MemoryRelationshipType.manual_child:
+        return f"Only connected through {parent_title} as a child memory"
+    return f"Only connected through {parent_title}"

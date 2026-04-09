@@ -128,6 +128,16 @@ class BillingService:
         )
 
     @staticmethod
+    def subscription_blocks_new_checkout(subscription: Subscription | None) -> bool:
+        if subscription is None:
+            return False
+        return subscription.status in {
+            SubscriptionStatus.active,
+            SubscriptionStatus.trialing,
+            SubscriptionStatus.past_due,
+        }
+
+    @staticmethod
     def can_access_path(status: SubscriptionStatus, path: str) -> bool:
         exempt_prefixes = {
             "/app/landing",
@@ -169,15 +179,24 @@ class BillingService:
 
         stripe = self._stripe
         assert stripe is not None
+        metadata = {
+            "account_id": str(account.id),
+            "clerk_org_id": clerk_org_id or "",
+            "selected_plan_key": (plan_key or "").strip(),
+        }
         create_kwargs: dict[str, Any] = {
             "mode": "subscription",
             "success_url": success_url,
             "cancel_url": cancel_url,
             "line_items": [{"price": price_id, "quantity": 1}],
-            "metadata": {
-                "account_id": str(account.id),
-                "clerk_org_id": clerk_org_id or "",
-                "selected_plan_key": (plan_key or "").strip(),
+            # Keep onboarding checkout on the most reliable recurring method.
+            # Stripe's automatic mix can surface one-time or region-specific
+            # methods that fail during subscription confirmation.
+            "payment_method_types": ["card"],
+            "client_reference_id": str(account.id),
+            "metadata": metadata,
+            "subscription_data": {
+                "metadata": metadata,
             },
             "allow_promotion_codes": True,
         }

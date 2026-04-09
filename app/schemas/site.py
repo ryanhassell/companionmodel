@@ -31,6 +31,70 @@ class PortalNavItem(BaseModel):
     key: str
 
 
+class PortalNavSection(BaseModel):
+    key: str
+    label: str
+    items: list[PortalNavItem]
+
+
+class MemoryGraphNode(BaseModel):
+    id: str
+    label: str
+    memory_type: str
+    memory_type_label: str
+    summary: str
+    pinned: bool = False
+    archived: bool = False
+    updated_at: str | None = None
+
+
+class MemoryGraphEdge(BaseModel):
+    id: str
+    source: str
+    target: str
+    kind: str
+    relationship_type: str | None = None
+    label: str | None = None
+    cascades: bool = False
+
+
+class MemoryLinkedMemory(BaseModel):
+    id: str
+    title: str
+    summary: str
+    kind: str
+    relationship_label: str
+    archived: bool = False
+    pinned: bool = False
+
+
+class MemoryInspector(BaseModel):
+    id: str
+    title: str
+    memory_type: str
+    memory_type_label: str
+    content: str
+    summary: str | None = None
+    tags: list[str]
+    pinned: bool = False
+    archived: bool = False
+    importance_score: float = 0.0
+    updated_at: str | None = None
+    linked_memories: list[MemoryLinkedMemory]
+
+
+class MemoryDeletePreviewEntry(BaseModel):
+    id: str
+    title: str
+    reason: str
+
+
+class MemoryDeletePreview(BaseModel):
+    memory_id: str
+    deleted_count: int
+    affected: list[MemoryDeletePreviewEntry]
+
+
 class PortalInitializationStep(BaseModel):
     key: str
     label: str

@@ -31,7 +31,7 @@
       data-clerk-auth-page="sign-in"
       data-clerk-status-id="clerk-sign-in-status"
       data-clerk-callback-url="{{ clerk_callback_url }}"
-      data-clerk-alternate-url="/app/signup"></div>
+      data-clerk-alternate-url="{{ auth_alternate_url }}"></div>
     <p class="pill auth-launch-status" id="clerk-sign-in-status">Loading secure sign-in…</p>
     <p class="subtle auth-back-link"><a href="/">Back to home</a></p>
     {% else %}
@@ -46,15 +46,15 @@
     <p class="eyebrow">Inside The Portal</p>
     <h3>Pick up right where your family left off.</h3>
     <ul class="auth-benefit-list">
-      <li>Review full conversation history and recent check-ins.</li>
-      <li>See safety events, severity, and what action was taken.</li>
-      <li>Adjust pacing, tone, routines, and parent visibility anytime.</li>
+      <li>Review the full relationship, not just isolated messages.</li>
+      <li>See what Resona is remembering and carrying forward over time.</li>
+      <li>Adjust tone, pacing, routines, and visibility whenever needs change.</li>
     </ul>
   </section>
   <section class="card auth-mini-card">
-    <p class="eyebrow">Security</p>
-    <h3>Protected with Clerk-backed sign-in.</h3>
-    <p class="subtle">Your account session is isolated from the child experience and scoped to your household data.</p>
+    <p class="eyebrow">Why Resona</p>
+    <h3>Built for continuity, not just answers.</h3>
+    <p class="subtle">Resona is designed to feel more like an ongoing companion with memory, routine, and parent visibility than a general chatbot session.</p>
   </section>
 </aside>
 </div>

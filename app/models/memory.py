@@ -9,7 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 from app.db.types import EmbeddingVectorType
-from app.models.enums import MemoryType
+from app.models.enums import MemoryRelationshipType, MemoryType
 
 if TYPE_CHECKING:
     from app.models.communication import Message
@@ -51,3 +51,43 @@ class MemoryItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     user: Mapped[User | None] = relationship("User", back_populates="memory_items")
     persona: Mapped[Persona | None] = relationship("Persona", back_populates="memory_items")
     source_message: Mapped[Message | None] = relationship("Message")
+
+
+class MemoryRelationship(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "memory_relationships"
+    __table_args__ = (
+        Index("ix_memory_relationships_user_parent", "user_id", "parent_memory_id"),
+        Index("ix_memory_relationships_user_child", "user_id", "child_memory_id"),
+        Index(
+            "ix_memory_relationships_unique",
+            "user_id",
+            "parent_memory_id",
+            "child_memory_id",
+            "relationship_type",
+            unique=True,
+        ),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    parent_memory_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("memory_items.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    child_memory_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("memory_items.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    relationship_type: Mapped[MemoryRelationshipType] = mapped_column(
+        Enum(
+            MemoryRelationshipType,
+            values_callable=enum_values,
+            native_enum=False,
+            length=24,
+        ),
+        nullable=False,
+    )
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+    user: Mapped[User | None] = relationship("User")
+    parent_memory: Mapped[MemoryItem | None] = relationship("MemoryItem", foreign_keys=[parent_memory_id])
+    child_memory: Mapped[MemoryItem | None] = relationship("MemoryItem", foreign_keys=[child_memory_id])

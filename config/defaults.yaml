@@ -187,6 +187,7 @@ customer_portal:
 
 clerk:
   enabled: false
+  secret_key:
   issuer:
   audience:
   jwks_url:

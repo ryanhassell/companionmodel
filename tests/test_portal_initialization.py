@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import httpx
+from fastapi import FastAPI
+from httpx import ASGITransport
 from sqlalchemy import select
 
-from app.models.enums import SubscriptionStatus
+from app.db.session import get_db_session
+from app.models.enums import HouseholdRole, SubscriptionStatus
 from app.models.portal import ChildProfile, Household, Subscription
 from app.providers.base import GeneratedText
 from app.models.user import User
+from app.portal.dependencies import PortalRequestContext, require_portal_context
+from app.routers import portal
 from app.services.billing import BillingService
 from app.services.customer_auth import CustomerAuthService
 from app.services.portal_initialization import PortalInitializationService
@@ -38,6 +44,52 @@ async def test_initialization_new_account_starts_at_welcome(sqlite_session, sett
     assert result.context.current_step == "welcome"
     assert result.context.completed_steps == []
     assert result.context.completion_ready is False
+
+
+async def test_initialize_page_renders_without_missing_greenlet(sqlite_session, settings):
+    user = await _register_customer(sqlite_session, settings, email="route@example.com")
+    billing_service = BillingService(settings)
+    init_service = PortalInitializationService(settings, billing_service)
+
+    class _FakeClerkAuthService:
+        enabled = True
+
+    class _FakeContainer:
+        def __init__(self) -> None:
+            self.settings = settings
+            self.billing_service = billing_service
+            self.portal_initialization_service = init_service
+            self.clerk_auth_service = _FakeClerkAuthService()
+
+    container = _FakeContainer()
+    app = FastAPI()
+    app.include_router(portal.router)
+    app.state.container = container
+
+    async def _context_override():
+        return PortalRequestContext(
+            customer_user=user,
+            account_id=str(user.account_id),
+            role=HouseholdRole.owner,
+            clerk_user_id="user_route",
+            clerk_org_id="org_route",
+            mfa_verified=True,
+            csrf_token="csrf-route",
+            container=container,
+        )
+
+    async def _session_override():
+        return sqlite_session
+
+    app.dependency_overrides[require_portal_context] = _context_override
+    app.dependency_overrides[get_db_session] = _session_override
+
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/app/initialize")
+
+    assert response.status_code == 200
+    assert "Let’s finish your parent portal setup." in response.text
+    assert "portal-initialize-data" in response.text
 
 
 async def test_initialization_autosave_resumes_same_step(sqlite_session, settings):

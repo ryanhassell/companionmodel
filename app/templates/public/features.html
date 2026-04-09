@@ -1,35 +1,180 @@
 {% extends "public/base.html" %}
 {% block content %}
 <section class="marketing-section">
-  <h1 class="page-title">Parent-focused feature set</h1>
-  <p class="subtle">Resona combines human-like companionship with explicit parent controls and visibility.</p>
+  <article class="card marketing-intro-card">
+    <p class="eyebrow">Features</p>
+    <h1 class="page-title">A companion built for continuity, personality, and parent visibility.</h1>
+    <p class="subtle">Resona is meant to feel more like returning to the same caring friend than opening a blank chatbot. It remembers the relationship, settles into everyday rhythm, stays expressive across text and voice, and keeps parents meaningfully informed.</p>
+  </article>
 </section>
+
 <section class="marketing-section">
-  <div class="feature-grid">
-    <article class="feature-card">
-      <h3>Conversation timeline</h3>
-      <p class="subtle">Review complete message history by timestamp, direction, and channel.</p>
+  <div class="feature-jump-grid">
+    <a class="feature-jump-card" href="#memory-story">
+      <span class="eyebrow">01</span>
+      <strong>Memory</strong>
+      <p class="subtle">It carries forward the details that make a relationship feel real.</p>
+    </a>
+    <a class="feature-jump-card" href="#rhythm-story">
+      <span class="eyebrow">02</span>
+      <strong>Rhythm</strong>
+      <p class="subtle">It can feel more ongoing and familiar, not just prompt-driven.</p>
+    </a>
+    <a class="feature-jump-card" href="#friend-story">
+      <span class="eyebrow">03</span>
+      <strong>Friend Feel</strong>
+      <p class="subtle">It is designed to feel warm, steady, and emotionally recognizable.</p>
+    </a>
+    <a class="feature-jump-card" href="#voice-story">
+      <span class="eyebrow">04</span>
+      <strong>Voice</strong>
+      <p class="subtle">It can laugh, giggle, sing, and become far more expressive.</p>
+    </a>
+    <a class="feature-jump-card" href="#portal-story">
+      <span class="eyebrow">05</span>
+      <strong>Parent Portal</strong>
+      <p class="subtle">Parents can actually understand what is happening and why.</p>
+    </a>
+    <a class="feature-jump-card" href="#safety-story">
+      <span class="eyebrow">06</span>
+      <strong>Safety</strong>
+      <p class="subtle">Warmth and companionship stay paired with visibility and guardrails.</p>
+    </a>
+  </div>
+</section>
+
+<section class="marketing-section feature-reading-layout">
+  <aside class="card feature-side-nav">
+    <p class="eyebrow">On This Page</p>
+    <a href="#memory-story">Memory over time</a>
+    <a href="#rhythm-story">Daily rhythm</a>
+    <a href="#friend-story">What feels different</a>
+    <a href="#voice-story">Expressive voice</a>
+    <a href="#portal-story">Parent portal</a>
+    <a href="#safety-story">Safety and visibility</a>
+    <a href="/pricing" class="button ghost">See pricing</a>
+  </aside>
+
+  <div class="feature-story-stack">
+    <article id="memory-story" class="card feature-story-block">
+      <div class="feature-story-divider"><span>Memory over time</span></div>
+      <h2>Resona remembers the relationship, not just the latest message.</h2>
+      <p>General chatbots can feel smart in the moment and still feel brand-new the next day. Resona is designed to hold onto the details that make someone feel known: favorite topics, reassuring phrases, routines, sensitivities, little wins, hard days, and the emotional patterns that matter.</p>
+      <p>That means the interaction can become more personal over time. Instead of constantly reintroducing context, your child can return to something that feels familiar and already aware of what helps.</p>
+      <div class="feature-story-notes">
+        <div>
+          <h3>What that can feel like</h3>
+          <ul class="clean-list">
+            <li>Remembering that after-school check-ins work better than long conversations.</li>
+            <li>Bringing back a favorite topic, song, or shared joke naturally.</li>
+            <li>Responding with a style that reflects what has already been comforting in the past.</li>
+          </ul>
+        </div>
+      </div>
     </article>
-    <article class="feature-card">
-      <h3>Safety event stream</h3>
-      <p class="subtle">See severity, detector source, and intervention details in one feed.</p>
+
+    <article id="rhythm-story" class="card feature-story-block">
+      <div class="feature-story-divider"><span>Daily rhythm</span></div>
+      <h2>It can feel like part of everyday life, not just a tool waiting for commands.</h2>
+      <p>One of the biggest differences families notice is rhythm. Resona is meant to feel more ongoing than a question box. It can fit into recurring moments of the day, support familiar check-in habits, and create a steadier emotional cadence instead of feeling random or purely reactive.</p>
+      <p>That rhythm matters because companionship often lives in the small repeated moments. It is not only about answering something correctly. It is about showing up in a way that feels recognizable.</p>
+      <div class="feature-story-notes">
+        <div>
+          <h3>Examples</h3>
+          <ul class="clean-list">
+            <li>Gentle morning or after-school check-ins.</li>
+            <li>A more familiar pace around stressful parts of the day.</li>
+            <li>A sense that the companion remembers the flow of the week, not just the current message.</li>
+          </ul>
+        </div>
+      </div>
     </article>
-    <article class="feature-card">
-      <h3>Memory highlights</h3>
-      <p class="subtle">Understand which preferences and episodic details guide responses.</p>
+
+    <article id="friend-story" class="card feature-story-block">
+      <div class="feature-story-divider"><span>What feels different</span></div>
+      <h2>It is designed to feel more like the same friend returning than a generic assistant generating another answer.</h2>
+      <p>ChatGPT is great when you want help, information, or quick answers. Resona is aimed at something different: emotional continuity. The goal is not just intelligence in a single exchange. The goal is a presence that feels familiar, steady, and supportive across many interactions.</p>
+      <p>That is why the experience emphasizes memory, tone stability, routine, and relationship continuity. The result should feel less like opening a tool and more like returning to someone who already knows the emotional shape of the conversation.</p>
+      <div class="feature-story-notes two-up">
+        <div>
+          <h3>General chatbot</h3>
+          <ul class="clean-list">
+            <li>Great at solving in-the-moment tasks.</li>
+            <li>Often feels session-based.</li>
+            <li>Usually behaves like something you open when needed.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Resona</h3>
+          <ul class="clean-list">
+            <li>Built around continuity and familiarity.</li>
+            <li>Designed to carry emotional and relational context forward.</li>
+            <li>Shaped to feel like an ongoing companion experience.</li>
+          </ul>
+        </div>
+      </div>
     </article>
-    <article class="feature-card">
-      <h3>Voice + text continuity</h3>
-      <p class="subtle">Calls and texts remain linked so context is never fragmented.</p>
+
+    <article id="voice-story" class="card feature-story-block">
+      <div class="feature-story-divider"><span>Expressive voice</span></div>
+      <h2>The Voice version can be playful, expressive, musical, and deeply customizable.</h2>
+      <p>Resona Voice is not just text read aloud. It can laugh, giggle, soften, brighten, sing, and carry far more emotional nuance than a flat assistant voice. For families who care about warmth, playfulness, and personality, that makes a huge difference.</p>
+      <p>It is also highly customizable. Families can shape the overall feel of the voice experience so it better matches the kind of companion they want. If singing matters, that can be part of the experience. If a calmer, gentler tone matters more, that can be shaped too.</p>
+      <div class="feature-story-notes">
+        <div>
+          <h3>Why Voice feels special</h3>
+          <ul class="clean-list">
+            <li>It can sound more alive and less robotic.</li>
+            <li>It keeps the same relationship continuity as text.</li>
+            <li>It opens up playful moments like laughter, singing, and more expressive emotional range.</li>
+          </ul>
+        </div>
+      </div>
     </article>
-    <article class="feature-card">
-      <h3>Co-guardian access</h3>
-      <p class="subtle">Coordinate oversight with authorized family members.</p>
+
+    <article id="portal-story" class="card feature-story-block">
+      <div class="feature-story-divider"><span>Parent portal</span></div>
+      <h2>Parents can understand the relationship without needing to decode product language.</h2>
+      <p>The portal is there so families can actually make sense of what is happening. Instead of guessing, parents can review conversation history, memory highlights, routines, boundaries, and the moments that mattered.</p>
+      <p>That visibility is part of what makes Resona workable for real families. The experience can feel warm and friend-like for the child while still staying interpretable, adjustable, and accountable for the adults involved.</p>
+      <div class="feature-story-notes">
+        <div>
+          <h3>Inside the portal</h3>
+          <ul class="clean-list">
+            <li>Conversation timeline with full context.</li>
+            <li>Memory highlights that explain what is being carried forward.</li>
+            <li>Routines, communication preferences, and boundaries in one place.</li>
+            <li>Billing and usage that are easy to follow.</li>
+          </ul>
+        </div>
+      </div>
     </article>
-    <article class="feature-card">
-      <h3>Billing transparency</h3>
-      <p class="subtle">Track plan status, included credits, and metered overage behavior.</p>
+
+    <article id="safety-story" class="card feature-story-block">
+      <div class="feature-story-divider"><span>Safety and visibility</span></div>
+      <h2>Companionship stays paired with adult visibility and clear guardrails.</h2>
+      <p>Resona is meant to feel warm, but not secretive. If a conversation starts sounding more concerning, the experience becomes more careful and parents can see that context later in the portal. The goal is support with accountability, not support that hides itself.</p>
+      <p>That balance matters. Families are not choosing between something emotionally flat and something emotionally unsafe. Resona is trying to offer a third option: caring companionship with parent visibility built in from the start.</p>
+      <div class="feature-story-notes">
+        <div>
+          <h3>What parents can review</h3>
+          <ul class="clean-list">
+            <li>When concern or distress showed up.</li>
+            <li>How Resona responded in that moment.</li>
+            <li>What boundaries and visibility settings are currently shaping the experience.</li>
+          </ul>
+        </div>
+      </div>
     </article>
+  </div>
+</section>
+
+<section class="marketing-section card cta-band">
+  <h2>See which plan fits your family</h2>
+  <p class="subtle">Choose between a text-first experience or the more expressive Voice experience, both with the same parent portal and continuity model.</p>
+  <div class="hero-actions">
+    <a class="button" href="/pricing">View Pricing</a>
+    <a class="button ghost" href="/app/signup">Get Started</a>
   </div>
 </section>
 {% endblock %}

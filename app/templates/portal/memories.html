@@ -1,0 +1,181 @@
+{% extends "portal/base.html" %}
+{% block head_extras %}
+<script src="https://cdn.jsdelivr.net/npm/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+{% endblock %}
+{% block content %}
+<section class="page-header memory-page-header">
+  <div>
+    <p class="eyebrow">Memories</p>
+    <h2>{% if memory_view == 'map' %}Memory Map{% else %}Memory Library{% endif %}</h2>
+    <p class="subtle">Explore what Resona remembers, how those memories connect, and update anything that needs a parent’s touch.</p>
+  </div>
+</section>
+
+<nav class="portal-subnav" aria-label="Memories section">
+  <a href="/app/memories/map{% if show_archived %}?archived=1{% endif %}" class="{{ 'active' if memory_view == 'map' else '' }}">Memory Map</a>
+  <a href="/app/memories/library" class="{{ 'active' if memory_view == 'library' else '' }}">Memory Library</a>
+</nav>
+
+{% if child and child.companion_user_id %}
+<div class="memory-shell">
+  <section class="memory-main-column">
+    {% if memory_view == 'map' %}
+    <article class="card memory-map-card">
+      <div class="memory-toolbar">
+        <div>
+          <h3>Spiderweb View</h3>
+          <p class="subtle">Solid lines show structural links. Dashed lines show softer similarity between memories.</p>
+        </div>
+        <label class="memory-toggle">
+          <input id="memory-show-archived" type="checkbox" {% if show_archived %}checked{% endif %}>
+          <span>Show archived memories</span>
+        </label>
+      </div>
+      <div class="memory-legend" aria-hidden="true">
+        <span><i class="memory-legend-line memory-legend-line-structural"></i>Structural link</span>
+        <span><i class="memory-legend-line memory-legend-line-similarity"></i>Similarity link</span>
+      </div>
+      <div id="memory-graph" class="memory-graph" data-view="map"></div>
+      <div id="memory-graph-empty" class="portal-inline-alert" hidden>
+        <strong>No connected memories to draw yet.</strong>
+        <p>Your child’s memory map will appear here once Resona has enough stored context to connect.</p>
+      </div>
+    </article>
+    {% else %}
+    <article class="card memory-library-card">
+      <form class="memory-library-toolbar" method="get" action="/app/memories/library">
+        <label>
+          <span>Search memories</span>
+          <input type="search" name="q" value="{{ search_query }}" placeholder="Search by title, summary, or memory text">
+        </label>
+        <label>
+          <span>Type</span>
+          <select name="type">
+            {% for option in memory_filter_options %}
+            <option value="{{ option.value }}" {% if type_filter == option.value %}selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="memory-toggle">
+          <input type="checkbox" name="archived" value="1" {% if show_archived %}checked{% endif %}>
+          <span>Show archived</span>
+        </label>
+        <button class="button secondary" type="submit">Apply</button>
+      </form>
+      <div class="memory-library-meta subtle">{{ memory_total }} memories shown{% if search_query %} for “{{ search_query }}”{% endif %}.</div>
+      {% if memory_items %}
+      <div class="memory-library-list">
+        {% for item in memory_items %}
+        <button type="button" class="memory-library-item" data-memory-id="{{ item.id }}">
+          <div class="memory-library-item-head">
+            <div>
+              <strong>{{ item.title }}</strong>
+              <p class="subtle">{{ item.memory_type_label }} · {{ item.updated_label }}</p>
+            </div>
+            <div class="memory-library-badges">
+              {% if item.pinned %}<span class="pill">Pinned</span>{% endif %}
+              {% if item.archived %}<span class="pill memory-pill-archived">Archived</span>{% endif %}
+            </div>
+          </div>
+          <p>{{ item.summary }}</p>
+          {% if item.tags %}
+          <div class="memory-tags">
+            {% for tag in item.tags %}<span>{{ tag }}</span>{% endfor %}
+          </div>
+          {% endif %}
+        </button>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="portal-inline-alert">
+        <strong>No memories match those filters yet.</strong>
+        <p>Try a wider search, or switch back to the map to browse everything visually.</p>
+      </div>
+      {% endif %}
+    </article>
+    {% endif %}
+  </section>
+
+  <aside class="memory-inspector-column">
+    <article class="card memory-inspector-card" id="memory-inspector-card">
+      <div id="memory-inspector-empty" class="memory-inspector-empty">
+        <p class="eyebrow">Inspector</p>
+        <h3>Select a memory</h3>
+        <p class="subtle">Click a node in the map or open a memory from the library to review it, adjust it, or remove it safely.</p>
+      </div>
+
+      <div id="memory-inspector-body" hidden>
+        <div class="memory-inspector-status" id="memory-inspector-status" hidden></div>
+        <div class="memory-inspector-head">
+          <div>
+            <p class="eyebrow">Selected Memory</p>
+            <h3 id="memory-inspector-title"></h3>
+            <p class="subtle" id="memory-inspector-meta"></p>
+          </div>
+        </div>
+        <form id="memory-inspector-form" class="memory-inspector-form">
+          <label>
+            <span>Title</span>
+            <input type="text" name="title" id="memory-field-title" maxlength="120">
+          </label>
+          <label>
+            <span>Memory text</span>
+            <textarea name="content" id="memory-field-content" rows="6"></textarea>
+          </label>
+          <label>
+            <span>Short summary</span>
+            <textarea name="summary" id="memory-field-summary" rows="3"></textarea>
+          </label>
+          <label>
+            <span>Tags</span>
+            <input type="text" name="tags" id="memory-field-tags" placeholder="favorite songs, after-school routine, calming topic">
+          </label>
+          <div class="memory-inspector-checks">
+            <label class="memory-toggle"><input type="checkbox" name="pinned" id="memory-field-pinned"><span>Pin this memory</span></label>
+            <label class="memory-toggle"><input type="checkbox" name="archived" id="memory-field-archived"><span>Archive this memory</span></label>
+          </div>
+          <div class="portal-inline-actions">
+            <button class="button" type="submit" id="memory-save-button">Save changes</button>
+            <button class="button ghost" type="button" id="memory-preview-delete-button">Preview delete</button>
+          </div>
+        </form>
+
+        <section class="memory-linked-section">
+          <div class="memory-linked-head">
+            <h4>Linked memories</h4>
+            <p class="subtle">These are the memories most directly connected to the one you selected.</p>
+          </div>
+          <div id="memory-linked-list" class="memory-linked-list"></div>
+        </section>
+
+        <section id="memory-delete-preview" class="memory-delete-preview" hidden>
+          <div class="memory-linked-head">
+            <h4>Delete preview</h4>
+            <p class="subtle">Anything shown here would be removed because it would be orphaned after this memory is deleted.</p>
+          </div>
+          <div id="memory-delete-preview-list" class="memory-delete-preview-list"></div>
+          <div class="portal-inline-actions">
+            <button class="button danger" type="button" id="memory-confirm-delete-button">Delete selected memories</button>
+            <button class="button ghost" type="button" id="memory-cancel-delete-button">Keep memory</button>
+          </div>
+        </section>
+      </div>
+    </article>
+  </aside>
+</div>
+{% else %}
+<article class="card">
+  <h3>Memories will appear once this profile is connected.</h3>
+  <p class="subtle">Finish profile setup and link a companion profile to unlock the full memory map and library.</p>
+  <div class="hero-actions">
+    <a class="button" href="/app/initialize">Finish Setup</a>
+    <a class="button ghost" href="/app/child">View Child Profile</a>
+  </div>
+</article>
+{% endif %}
+
+<script id="portal-memories-data" type="application/json">{{ memory_payload|tojson }}</script>
+{% endblock %}
+{% block body_scripts %}
+<script type="module" src="/static/portal-memories.js"></script>
+{% endblock %}

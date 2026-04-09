@@ -1,28 +1,95 @@
 {% extends "public/base.html" %}
 {% block content %}
 <section class="marketing-section">
-  <h1 class="page-title">Pricing</h1>
-  <p class="subtle">Simple plans with included credits and usage-based overage after credits are used.</p>
+  <article class="card marketing-intro-card">
+    <p class="eyebrow">Pricing</p>
+    <h1 class="page-title">Two plans, one parent-visible companion model.</h1>
+    <p class="subtle">Both plans include the same core idea: continuity, memory, routines, safety visibility, and a parent portal that explains what is happening. The difference is how much of the experience you want to happen through expressive voice.</p>
+  </article>
 </section>
+
 <section class="marketing-section">
-  <div class="grid two">
-    <article class="card">
-      <h3>Resona Chat</h3>
+  <div class="pricing-story-grid">
+    <article class="card plan-story-card">
+      <p class="eyebrow">Text-first</p>
+      <h2>Resona Chat</h2>
       <p class="price">$29<span>/month</span></p>
       <p><strong>Includes:</strong> $10 in monthly usage credits</p>
-      <p class="subtle">Supportive AI texting, transcript monitoring, safety events, and parent controls.</p>
+      <p class="subtle">For families who want the full Resona relationship model in a text-centered format.</p>
+      <ul class="clean-list">
+        <li>Memory that carries forward over time.</li>
+        <li>Daily rhythm, routines, and familiarity.</li>
+        <li>Parent visibility through transcript, memory, safety, and billing.</li>
+        <li>A strong fit if text is the main way your family wants to use Resona.</li>
+      </ul>
+      <a class="button" href="/app/signup">Get Started with Chat</a>
     </article>
-    <article class="card">
-      <h3>Resona Voice</h3>
+
+    <article class="card plan-story-card plan-story-card-highlight">
+      <p class="eyebrow">Most expressive</p>
+      <h2>Resona Voice</h2>
       <p class="price">$59<span>/month</span></p>
       <p><strong>Includes:</strong> $30 in monthly usage credits</p>
-      <p class="subtle">Everything in Chat, plus voice calls and voice-to-text continuity.</p>
+      <p class="subtle">Everything in Chat, plus a much more expressive voice experience that can feel playful, musical, warm, and highly alive.</p>
+      <ul class="clean-list">
+        <li>Voice and text stay part of the same ongoing relationship.</li>
+        <li>Can laugh, giggle, sing, and carry far more emotional range than a flat assistant voice.</li>
+        <li>Highly customizable for families who want the voice to feel a certain way.</li>
+        <li>Ideal if voice is a meaningful part of how connection happens.</li>
+      </ul>
+      <a class="button" href="/app/signup">Get Started with Voice</a>
     </article>
   </div>
 </section>
-<section class="marketing-section card">
-  <h3>Overage billing</h3>
-  <p>After included credits are consumed, usage is billed by configured meters (SMS, AI text tokens, voice usage).</p>
-  <p class="subtle">Exact meter rates are shown in checkout and billing statements.</p>
+
+<section class="marketing-section">
+  <div class="grid two">
+    <article class="card">
+      <p class="eyebrow">How to choose</p>
+      <h3>Choose Chat if...</h3>
+      <ul class="clean-list">
+        <li>You mainly want a texting companion experience.</li>
+        <li>You want the relationship, memory, and parent portal without prioritizing voice.</li>
+        <li>You want a lower monthly starting point.</li>
+      </ul>
+    </article>
+    <article class="card">
+      <p class="eyebrow">How to choose</p>
+      <h3>Choose Voice if...</h3>
+      <ul class="clean-list">
+        <li>Voice expression would make the relationship much more meaningful.</li>
+        <li>Your child would enjoy a companion that can sound playful, musical, or emotionally expressive.</li>
+        <li>You want the fullest version of the Resona experience.</li>
+      </ul>
+    </article>
+  </div>
+</section>
+
+<section class="marketing-section">
+  <article class="card">
+    <div class="section-head">
+      <h2>How billing works</h2>
+      <p class="subtle">Each plan includes monthly credits. Once those are used, additional usage is billed based on what was actually used.</p>
+    </div>
+    <div class="grid two">
+      <div>
+        <h3>Included monthly credits</h3>
+        <p class="subtle">Chat includes $10 in monthly credits. Voice includes $30. Those credits help cover the ongoing companion experience before overage kicks in.</p>
+      </div>
+      <div>
+        <h3>Usage after credits</h3>
+        <p class="subtle">If your family uses more than the included amount, billing continues based on usage. The billing area shows progress clearly so parents are not left guessing.</p>
+      </div>
+    </div>
+  </article>
+</section>
+
+<section class="marketing-section card cta-band">
+  <h2>Start with the version that fits your family best</h2>
+  <p class="subtle">You are not choosing between “smart” and “not smart.” You are choosing between a text-first experience and the more expressive Voice experience.</p>
+  <div class="hero-actions">
+    <a class="button" href="/app/signup">Create Parent Account</a>
+    <a class="button ghost" href="/features">Explore Features</a>
+  </div>
 </section>
 {% endblock %}

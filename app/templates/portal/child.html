@@ -1,17 +1,60 @@
 {% extends "portal/base.html" %}
 {% set active_nav = 'child' %}
 {% block content %}
-<section class="page-header"><div><h2>Child Profile</h2><p class="subtle">Boundaries, routines, and profile data for the selected household.</p></div></section>
-<article class="card">
-{% if child %}
-  <p><strong>Name:</strong> {{ child.display_name or child.first_name }}</p>
-  <p><strong>Birth year:</strong> {{ child.birth_year or '-' }}</p>
-  <p><strong>Linked companion user:</strong> {{ child.companion_user_id or '-' }}</p>
-  <p><strong>Preferences:</strong></p><pre>{{ child.preferences_json }}</pre>
-  <p><strong>Boundaries:</strong></p><pre>{{ child.boundaries_json }}</pre>
-  <p><strong>Routines:</strong></p><pre>{{ child.routines_json }}</pre>
+<section class="page-header">
+  <div>
+    <h2>Child Profile</h2>
+    <p class="subtle">A clear view of profile details, communication preferences, boundaries, and routines for this household.</p>
+  </div>
+</section>
+
+{% if child and child_overview %}
+<section class="child-profile-layout">
+  <article class="card child-profile-overview-card">
+    <div class="child-profile-overview-head">
+      <div>
+        <p class="eyebrow">Profile Overview</p>
+        <h3>{{ child_overview.name }}</h3>
+      </div>
+      <span class="pill">{{ child_overview.companion_status }}</span>
+    </div>
+
+    <dl class="child-profile-overview-grid">
+      <div>
+        <dt>Birth year</dt>
+        <dd>{{ child_overview.birth_year }}</dd>
+      </div>
+      <div>
+        <dt>Companion connection</dt>
+        <dd>{{ child_overview.companion_status }}</dd>
+      </div>
+    </dl>
+
+    <div class="child-profile-notes">
+      <h4>Notes</h4>
+      <p class="subtle">{{ child_overview.notes }}</p>
+    </div>
+  </article>
+
+  <div class="child-profile-section-grid">
+    {% for section in child_profile_sections %}
+    <article class="card child-profile-section-card">
+      <h3>{{ section["title"] }}</h3>
+      <dl class="child-profile-detail-list">
+        {% for item in section["items"] %}
+        <div>
+          <dt>{{ item["label"] }}</dt>
+          <dd>{{ item["value"] }}</dd>
+        </div>
+        {% endfor %}
+      </dl>
+    </article>
+    {% endfor %}
+  </div>
+</section>
 {% else %}
-  <p class="subtle">No child profile exists yet. Complete onboarding first.</p>
-{% endif %}
+<article class="card">
+  <p class="subtle">No child profile exists yet. Complete setup first and this page will organize everything here for you.</p>
 </article>
+{% endif %}
 {% endblock %}

@@ -293,9 +293,17 @@
               <p class="meta-label">Subscription status</p>
               <p class="meta-value" id="billing-subscription-status">{{ initialization.billing_status|replace('_', ' ')|title }}</p>
             </div>
+            {% if billing_already_active %}
+            <p class="subtle">Billing is already active for this account, so you do not need to subscribe again.</p>
+            <div class="hero-actions">
+              <a class="button" href="/app/dashboard">Open Dashboard</a>
+              <a class="button ghost" href="/app/billing">View Billing</a>
+            </div>
+            {% else %}
             <div class="hero-actions">
               <button type="button" class="button" id="initialization-billing-button">Continue to Stripe</button>
             </div>
+            {% endif %}
             <small class="field-error" data-error-for="billing"></small>
           </div>
         </section>
@@ -366,5 +374,5 @@
 <script id="portal-initialize-data" type="application/json">{{ initialization_payload | tojson }}</script>
 {% endblock %}
 {% block body_scripts %}
-<script src="/static/portal-init.js" defer></script>
+<script type="module" src="/static/portal-init.js"></script>
 {% endblock %}

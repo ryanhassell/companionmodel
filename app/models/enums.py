@@ -41,6 +41,12 @@ class MemoryType(StrEnum):
     safety = "safety"
 
 
+class MemoryRelationshipType(StrEnum):
+    manual_child = "manual_child"
+    consolidated_into = "consolidated_into"
+    supersedes = "supersedes"
+
+
 class SafetySeverity(StrEnum):
     low = "low"
     medium = "medium"

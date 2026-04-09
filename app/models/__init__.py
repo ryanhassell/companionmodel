@@ -12,6 +12,7 @@ from app.models.enums import (
     HouseholdRole,
     JobStatus,
     MediaRole,
+    MemoryRelationshipType,
     MemoryType,
     MessageStatus,
     SafetySeverity,
@@ -19,7 +20,7 @@ from app.models.enums import (
     SubscriptionStatus,
     VerificationCaseStatus,
 )
-from app.models.memory import MemoryItem
+from app.models.memory import MemoryItem, MemoryRelationship
 from app.models.portal import (
     Account,
     AccountInitialization,
@@ -70,6 +71,8 @@ __all__ = [
     "MediaAsset",
     "MediaRole",
     "MemoryItem",
+    "MemoryRelationship",
+    "MemoryRelationshipType",
     "MemoryType",
     "Message",
     "MessageStatus",

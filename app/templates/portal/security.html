@@ -4,11 +4,10 @@
 <section class="page-header">
   <div>
     <h2>Account Security</h2>
-    <p class="subtle">Security controls are managed in Clerk for this account.</p>
   </div>
 </section>
+{% if legacy_auth_enabled %}
 <article class="card">
-  {% if legacy_auth_enabled %}
   <table>
     <thead><tr><th>Last Seen</th><th>IP</th><th>Device</th><th>Trusted</th><th>Expires</th><th></th></tr></thead>
     <tbody>
@@ -29,10 +28,55 @@
       {% endfor %}
     </tbody>
   </table>
-  {% else %}
-  <p><strong>MFA verified for current session:</strong> {{ 'yes' if mfa_verified else 'no' }}</p>
-  <p class="subtle">For password reset, MFA settings, and session revocation, use Clerk account security.</p>
-  <p><a class="button-link" href="/app/logout">Sign out</a></p>
-  {% endif %}
 </article>
+{% elif not security_unlocked %}
+<div class="grid two security-grid">
+  <article class="card security-card">
+    <div class="security-card-head">
+      <div>
+        <p class="eyebrow">Confirm Before Opening</p>
+        <h3>Enter your current password</h3>
+      </div>
+      <span class="pill">Required</span>
+    </div>
+    <p class="subtle">Before anyone changes password reset, MFA, or session options, we ask for the current Clerk password again. This unlock lasts about {{ security_unlock_minutes }} minutes.</p>
+    {% if security_unlock_error %}
+    <div class="portal-inline-alert portal-inline-alert-danger" role="alert">
+      <strong>We couldn't unlock account security.</strong>
+      <p>{{ security_unlock_error }}</p>
+    </div>
+    {% endif %}
+    <form method="post" action="/app/security/confirm" class="security-confirm-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="security-password">Current password *</label>
+      <input id="security-password" name="password" type="password" autocomplete="current-password" required autofocus>
+    <div class="security-actions">
+      <button type="submit">Continue to security</button>
+      <a class="button ghost" href="/app/landing">Back to portal</a>
+    </div>
+  </form>
+</article>
+  <aside class="card security-card security-summary-card">
+    <h3>Before you continue</h3>
+    <ul class="security-summary-list">
+      <li>Password reset and recovery settings</li>
+      <li>MFA setup and authenticator changes</li>
+      <li>Session review and sign-out across devices</li>
+    </ul>
+    <p><strong>MFA verified for current session:</strong> {{ 'yes' if mfa_verified else 'no' }}</p>
+    <p class="subtle">For password reset, MFA settings, and session revocation, use Clerk account security.</p>
+    <p><a class="button secondary" href="/app/logout" data-portal-signout>Sign out</a></p>
+  </aside>
+</div>
+{% else %}
+<section class="security-page-shell">
+  <div id="clerk-user-profile-root" class="security-profile-root" data-clerk-user-profile-root></div>
+</section>
+{% endif %}
+{% endblock %}
+{% block body_scripts %}
+{{ super() }}
+{% if not legacy_auth_enabled and security_unlocked %}
+<script type="module" src="/static/portal-security.js"></script>
+{% endif %}
 {% endblock %}

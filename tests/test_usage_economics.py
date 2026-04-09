@@ -107,6 +107,74 @@ async def test_billing_summary_uses_finalized_usage(sqlite_session, settings):
     assert summary.used_usd == 2.5
 
 
+class _FakeStripeCheckoutSession:
+    created_kwargs = None
+
+    @classmethod
+    def create(cls, **kwargs):
+        cls.created_kwargs = kwargs
+        return {"id": "cs_test_123", "url": "https://checkout.stripe.test/session"}
+
+
+class _FakeStripeCheckout:
+    Session = _FakeStripeCheckoutSession
+
+
+class _FakeStripe:
+    checkout = _FakeStripeCheckout()
+
+
+async def test_create_checkout_session_uses_card_only(sqlite_session, settings):
+    settings.stripe.enabled = True
+    settings.stripe.chat_price_id = "price_chat_123"
+    service = BillingService(settings)
+    service._stripe = _FakeStripe()
+
+    account = Account(name="Billing Home", slug="billing-home")
+    sqlite_session.add(account)
+    await sqlite_session.flush()
+
+    url = await service.create_checkout_session(
+        sqlite_session,
+        account=account,
+        customer_email="parent@example.com",
+        clerk_org_id="org_123",
+        plan_key="chat",
+        success_url="https://resona.chat/app/initialize/return?checkout=success",
+        cancel_url="https://resona.chat/app/initialize/return?checkout=cancel",
+    )
+
+    assert url == "https://checkout.stripe.test/session"
+    assert _FakeStripeCheckoutSession.created_kwargs["payment_method_types"] == ["card"]
+    assert _FakeStripeCheckoutSession.created_kwargs["customer_email"] == "parent@example.com"
+    assert _FakeStripeCheckoutSession.created_kwargs["client_reference_id"] == str(account.id)
+    assert _FakeStripeCheckoutSession.created_kwargs["subscription_data"]["metadata"]["account_id"] == str(account.id)
+    assert _FakeStripeCheckoutSession.created_kwargs["subscription_data"]["metadata"]["selected_plan_key"] == "chat"
+
+
+async def test_create_checkout_session_omits_placeholder_email(sqlite_session, settings):
+    settings.stripe.enabled = True
+    settings.stripe.chat_price_id = "price_chat_123"
+    service = BillingService(settings)
+    service._stripe = _FakeStripe()
+
+    account = Account(name="Placeholder Email", slug="placeholder-email")
+    sqlite_session.add(account)
+    await sqlite_session.flush()
+
+    await service.create_checkout_session(
+        sqlite_session,
+        account=account,
+        customer_email="user_123@clerk.local",
+        clerk_org_id="org_123",
+        plan_key="chat",
+        success_url="https://resona.chat/app/initialize/return?checkout=success",
+        cancel_url="https://resona.chat/app/initialize/return?checkout=cancel",
+    )
+
+    assert "customer_email" not in _FakeStripeCheckoutSession.created_kwargs
+
+
 class _FakeClerk:
     enabled = True
 

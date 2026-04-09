@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 
 from app.models.enums import SubscriptionStatus
+from app.models.portal import Subscription
 from app.services.billing import BillingService
 from app.services.rate_limiter import RateLimiterService
 
@@ -34,3 +35,13 @@ async def test_account_status_defaults_incomplete(sqlite_session, settings):
     service = BillingService(settings)
     status = await service.account_status(sqlite_session, account_id=uuid.uuid4())
     assert status == SubscriptionStatus.incomplete
+
+
+def test_subscription_blocks_new_checkout_for_allowed_statuses(settings):
+    service = BillingService(settings)
+    assert service.subscription_blocks_new_checkout(None) is False
+    assert service.subscription_blocks_new_checkout(Subscription(status=SubscriptionStatus.incomplete)) is False
+    assert service.subscription_blocks_new_checkout(Subscription(status=SubscriptionStatus.canceled)) is False
+    assert service.subscription_blocks_new_checkout(Subscription(status=SubscriptionStatus.active)) is True
+    assert service.subscription_blocks_new_checkout(Subscription(status=SubscriptionStatus.trialing)) is True
+    assert service.subscription_blocks_new_checkout(Subscription(status=SubscriptionStatus.past_due)) is True

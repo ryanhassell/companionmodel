@@ -13,6 +13,7 @@ from app.core.logging import configure_logging
 from app.core.settings import get_settings
 from app.db.session import get_sessionmaker
 from app.jobs.scheduler import SchedulerService
+from app.portal.http import is_portal_interactive_request, portal_json_error_response
 from app.routers import admin, api, auth, health, portal, public, webhooks
 from app.schemas.site import AdminAccessPolicy
 from app.services.container import ServiceContainer
@@ -157,6 +158,7 @@ async def portal_entitlement_middleware(request: Request, call_next):
     path = request.url.path
     if not path.startswith("/app"):
         return await call_next(request)
+    wants_json = is_portal_interactive_request(request)
 
     public_prefixes = {
         "/app/login",
@@ -182,11 +184,29 @@ async def portal_entitlement_middleware(request: Request, call_next):
     if not container.clerk_auth_service.enabled:
         token = request.cookies.get(container.settings.customer_portal.session_cookie_name)
         if not token:
+            if wants_json:
+                return portal_json_error_response(
+                    request,
+                    status_code=401,
+                    code="auth_expired",
+                    detail="A portal session is required to continue.",
+                    login_reason="auth_required",
+                )
             return RedirectResponse(url="/app/login?reason=auth_required", status_code=303)
         sessionmaker = get_sessionmaker()
         async with sessionmaker() as session:
             authd = await container.customer_auth_service.resolve_portal_session(session, raw_token=token)
             if authd is None:
+                if wants_json:
+                    response = portal_json_error_response(
+                        request,
+                        status_code=401,
+                        code="auth_expired",
+                        detail="Your portal session expired.",
+                        login_reason="invalid_session",
+                    )
+                    response.delete_cookie(container.settings.customer_portal.session_cookie_name)
+                    return response
                 response = RedirectResponse(url="/app/login?reason=invalid_session", status_code=303)
                 response.delete_cookie(container.settings.customer_portal.session_cookie_name)
                 return response
@@ -208,6 +228,14 @@ async def portal_entitlement_middleware(request: Request, call_next):
                 account_id=authd.customer_user.account_id,
             )
             if not container.billing_service.can_access_path(sub_status, path):
+                if wants_json:
+                    return portal_json_error_response(
+                        request,
+                        status_code=403,
+                        code="entitlement_required",
+                        detail="Billing access is required before this action can continue.",
+                        login_reason="auth_required",
+                    )
                 return RedirectResponse(
                     url=f"/app/billing?entitlement=required&status={sub_status.value}",
                     status_code=303,
@@ -221,6 +249,14 @@ async def portal_entitlement_middleware(request: Request, call_next):
         request.cookies.get(container.settings.clerk.session_cookie_name),
     )
     if not token:
+        if wants_json:
+            return portal_json_error_response(
+                request,
+                status_code=401,
+                code="auth_expired",
+                detail="A Clerk session is required to continue.",
+                login_reason="auth_required",
+            )
         return RedirectResponse(url="/app/login?reason=auth_required", status_code=303)
 
     sessionmaker = get_sessionmaker()
@@ -230,6 +266,17 @@ async def portal_entitlement_middleware(request: Request, call_next):
             tenant = await container.clerk_auth_service.resolve_tenant_context(session, claims)
         except Exception:
             await session.rollback()
+            if wants_json:
+                response = portal_json_error_response(
+                    request,
+                    status_code=401,
+                    code="auth_expired",
+                    detail="Your secure session expired.",
+                    login_reason="invalid_session",
+                )
+                response.delete_cookie(container.settings.clerk.session_cookie_name)
+                response.delete_cookie(container.settings.clerk.backend_session_cookie_name)
+                return response
             response = RedirectResponse(url="/app/login?reason=invalid_session", status_code=303)
             response.delete_cookie(container.settings.clerk.session_cookie_name)
             return response
@@ -237,6 +284,14 @@ async def portal_entitlement_middleware(request: Request, call_next):
 
         if not tenant.clerk_org_id:
             await session.rollback()
+            if wants_json:
+                return portal_json_error_response(
+                    request,
+                    status_code=403,
+                    code="no_org",
+                    detail="Select or create an organization to continue.",
+                    login_reason="no_org",
+                )
             return RedirectResponse(url="/app/login?reason=no_org", status_code=303)
 
         init_result = await container.portal_initialization_service.load_context(
@@ -254,7 +309,6 @@ async def portal_entitlement_middleware(request: Request, call_next):
             return await call_next(request)
 
         sensitive_prefixes = {
-            "/app/security",
             "/app/team",
         }
         if (
@@ -264,6 +318,14 @@ async def portal_entitlement_middleware(request: Request, call_next):
             and not tenant.mfa_verified
         ):
             await session.commit()
+            if wants_json:
+                return portal_json_error_response(
+                    request,
+                    status_code=403,
+                    code="mfa_required",
+                    detail="Multi-factor authentication is required for this action.",
+                    login_reason="mfa_required",
+                )
             return RedirectResponse(url="/app/login?reason=mfa_required", status_code=303)
 
         sub_status = await container.billing_service.account_status(
@@ -271,6 +333,14 @@ async def portal_entitlement_middleware(request: Request, call_next):
             account_id=tenant.account.id,
         )
         if not container.billing_service.can_access_path(sub_status, path):
+            if wants_json:
+                return portal_json_error_response(
+                    request,
+                    status_code=403,
+                    code="entitlement_required",
+                    detail="Billing access is required before this action can continue.",
+                    login_reason="auth_required",
+                )
             return RedirectResponse(
                 url=f"/app/billing?entitlement=required&status={sub_status.value}",
                 status_code=303,

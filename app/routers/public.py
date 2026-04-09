@@ -32,28 +32,28 @@ def _shared_context(request: Request) -> dict[str, object]:
 async def home_page(request: Request):
     features = [
         MarketingFeatureCard(
-            title="Conversation Monitoring",
-            summary="Parents can review full text timelines with clear direction, channel, and timestamps.",
+            title="A companion that remembers",
+            summary="Resona carries context from one conversation to the next, so it can remember routines, favorite topics, sensitivities, and important moments over time.",
             icon="timeline",
         ),
         MarketingFeatureCard(
-            title="Safety Signals",
-            summary="Events are surfaced with severity, detector reason, and the exact action taken by the system.",
+            title="More like a familiar friend than a blank chatbot",
+            summary="Instead of acting like a brand-new assistant every time, Resona is designed to feel steady, warm, and recognizable from day to day.",
             icon="shield",
         ),
         MarketingFeatureCard(
-            title="Memory and Continuity",
-            summary="Resona keeps context across days so replies stay coherent and less repetitive.",
+            title="Daily rhythm and routine awareness",
+            summary="Resona can fit into everyday life with gentle check-ins, recurring patterns, and a more natural sense of timing.",
             icon="memory",
         ),
         MarketingFeatureCard(
-            title="Voice Continuity",
-            summary="Voice calls and text sessions stay linked so families can follow one complete narrative.",
+            title="One relationship across text and voice",
+            summary="A voice call does not reset the experience. The same personality, tone, and continuity carry across both formats.",
             icon="phone",
         ),
         MarketingFeatureCard(
-            title="Billing Transparency",
-            summary="Included monthly credits and overage behavior are visible in one billing surface.",
+            title="Parent visibility without guesswork",
+            summary="Parents can see what was said, what mattered, what was remembered, and when safety support stepped in.",
             icon="billing",
         ),
     ]
@@ -75,18 +75,18 @@ async def features_page(request: Request):
 async def safety_page(request: Request):
     capabilities = [
         SafetyCapabilityCard(
-            title="Boundary Enforcement",
-            summary="The assistant blocks manipulative, exclusive, or inappropriate relationship framing.",
+            title="Supportive, not possessive",
+            summary="Resona is designed to avoid unhealthy dependence and keep conversations grounded, appropriate, and family-safe.",
             icon="shield",
         ),
         SafetyCapabilityCard(
-            title="Distress Escalation",
-            summary="High-risk language triggers stricter response handling and emergency-support guidance.",
+            title="Extra care when distress shows up",
+            summary="If a conversation starts sounding more serious, Resona shifts into a more protective mode and surfaces that context for parents.",
             icon="alert",
         ),
         SafetyCapabilityCard(
-            title="Transparent Event Logging",
-            summary="Parents can inspect safety events with severity, detector source, and interventions.",
+            title="Clear parent visibility",
+            summary="Parents are not left guessing. The portal shows when concern came up and how Resona responded.",
             icon="log",
         ),
     ]

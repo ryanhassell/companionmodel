@@ -30,7 +30,7 @@
       data-clerk-auth-page="sign-up"
       data-clerk-status-id="clerk-sign-up-status"
       data-clerk-callback-url="{{ clerk_callback_url }}"
-      data-clerk-alternate-url="/app/login"></div>
+      data-clerk-alternate-url="{{ auth_alternate_url }}"></div>
     <p class="pill auth-launch-status" id="clerk-sign-up-status">Loading secure account creation…</p>
     <p class="subtle auth-back-link"><a href="/">Back to home</a></p>
     {% else %}
@@ -45,15 +45,15 @@
     <p class="eyebrow">What You’re Setting Up</p>
     <h3>A parent portal built for ongoing visibility.</h3>
     <ul class="auth-benefit-list">
-      <li>Guided first-time setup for household, child profile, and boundaries.</li>
-      <li>Clear billing and usage tracking once the plan is active.</li>
-      <li>One place for memory highlights, safety signals, and conversation review.</li>
+      <li>Guided setup for tone, routines, boundaries, and visibility.</li>
+      <li>One place to review conversations, memory, safety context, and billing.</li>
+      <li>A companion experience designed to grow more familiar over time.</li>
     </ul>
   </section>
   <section class="card auth-mini-card">
-    <p class="eyebrow">Secure Start</p>
-    <h3>Account creation stays separated from your child’s experience.</h3>
-    <p class="subtle">We use Clerk for customer identity and keep household access scoped to the signed-in parent account.</p>
+    <p class="eyebrow">What Makes It Different</p>
+    <h3>Resona is built around relationship continuity.</h3>
+    <p class="subtle">Instead of acting like a blank AI window each time, Resona is meant to remember, adapt, and feel more like the same caring presence from one day to the next.</p>
   </section>
 </aside>
 </div>

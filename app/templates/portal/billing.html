@@ -14,7 +14,12 @@
   <p><strong>Estimated used:</strong> ${{ '%.2f'|format(usage_summary.used_usd) }}</p>
   <p><strong>Estimated remaining:</strong> ${{ '%.2f'|format(usage_summary.remaining_usd) }}</p>
   <p class="subtle">{{ usage_summary.overage_note }}</p>
-  {% if stripe_enabled %}
+  {% if request.query_params.get('already_active') %}
+  <p class="subtle">This account already has an active subscription, so no new checkout was started.</p>
+  {% endif %}
+  {% if stripe_enabled and billing_already_active %}
+  <p class="subtle">Billing is already active for this account. You do not need to start another subscription checkout.</p>
+  {% elif stripe_enabled %}
   <form method="post" action="/app/billing/checkout" class="grid">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="plan_key" value="{{ selected_plan_key or 'chat' }}">
