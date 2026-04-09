@@ -12,7 +12,7 @@ from app.ai.schemas import ParentChatResponse
 from app.db.session import get_db_session
 from app.models.enums import HouseholdRole, MemoryRelationshipType, MemoryType
 from app.models.memory import MemoryItem, MemoryRelationship
-from app.models.portal import Account, ChildProfile, CustomerUser, Household, PortalChatMessage
+from app.models.portal import Account, ChildProfile, CustomerUser, Household, PortalChatMessage, PortalChatThread
 from app.models.user import User
 from app.portal.dependencies import PortalRequestContext, require_portal_context
 from app.routers import portal
@@ -139,7 +139,14 @@ async def _portal_fixture(sqlite_session, settings):
 
 
 async def test_parent_chat_page_renders(settings, sqlite_session):
-    app, _, _, _ = await _portal_fixture(sqlite_session, settings)
+    app, context, child, container = await _portal_fixture(sqlite_session, settings)
+    await container.parent_chat_service.get_or_create_thread(
+        sqlite_session,
+        account_id=context.customer_user.account_id,
+        customer_user=context.customer_user,
+        child_profile=child,
+    )
+    await sqlite_session.commit()
 
     async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/app/parent-chat")
@@ -147,6 +154,8 @@ async def test_parent_chat_page_renders(settings, sqlite_session):
     assert response.status_code == 200
     assert "Parent Chat" in response.text
     assert "Katie" in response.text
+    assert "New chat" in response.text
+    assert "Clear chat history" in response.text
     assert "Shape how Resona shows up" not in response.text
     assert "Good Uses" not in response.text
 
@@ -360,7 +369,86 @@ async def test_parent_chat_send_form_fallback_redirects_back_to_chat(settings, s
         )
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/app/parent-chat?sent=1"
+    assert response.headers["location"].startswith("/app/parent-chat?thread=")
+    assert response.headers["location"].endswith("&sent=1")
+
+
+async def test_parent_chat_can_create_new_thread_and_switch_between_threads(settings, sqlite_session):
+    app, context, child, container = await _portal_fixture(sqlite_session, settings)
+
+    first_thread = await container.parent_chat_service.get_or_create_thread(
+        sqlite_session,
+        account_id=context.customer_user.account_id,
+        customer_user=context.customer_user,
+        child_profile=child,
+    )
+    await container.parent_chat_service.send_message(
+        sqlite_session,
+        account_id=context.customer_user.account_id,
+        customer_user=context.customer_user,
+        child_profile=child,
+        text="Keep things gentle after school.",
+        thread=first_thread,
+    )
+    await sqlite_session.commit()
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        follow_redirects=False,
+    ) as client:
+        created = await client.post(
+            "/app/parent-chat/new",
+            data={"csrf_token": context.csrf_token},
+        )
+
+    assert created.status_code == 303
+    location = created.headers["location"]
+    assert location.startswith("/app/parent-chat?thread=")
+
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        switched = await client.get(location)
+
+    assert switched.status_code == 200
+    assert "Keep things gentle after school." not in switched.text
+    assert "Parent conversations" in switched.text
+
+    thread_count = await sqlite_session.scalar(select(func.count()).select_from(PortalChatThread))
+    assert thread_count == 2
+
+
+async def test_parent_chat_can_clear_current_thread_history(settings, sqlite_session):
+    app, context, child, container = await _portal_fixture(sqlite_session, settings)
+
+    thread = await container.parent_chat_service.get_or_create_thread(
+        sqlite_session,
+        account_id=context.customer_user.account_id,
+        customer_user=context.customer_user,
+        child_profile=child,
+    )
+    await container.parent_chat_service.send_message(
+        sqlite_session,
+        account_id=context.customer_user.account_id,
+        customer_user=context.customer_user,
+        child_profile=child,
+        text="Katie loves birthdays.",
+        thread=thread,
+    )
+    await sqlite_session.commit()
+
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        cleared = await client.post(
+            f"/app/parent-chat/{thread.id}/clear",
+            json={"csrf_token": context.csrf_token},
+        )
+
+    assert cleared.status_code == 200
+    payload = cleared.json()
+    assert payload["ok"] is True
+    assert payload["messages"] == []
+
+    message_count = await sqlite_session.scalar(select(func.count()).select_from(PortalChatMessage))
+    assert message_count == 0
 
 
 async def test_parent_chat_send_returns_structured_unavailable_when_ai_is_disabled(settings, sqlite_session):

@@ -117,7 +117,7 @@ class ChildProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 class PortalChatThread(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "portal_chat_threads"
     __table_args__ = (
-        Index("ix_portal_chat_threads_customer_child", "customer_user_id", "child_profile_id", unique=True),
+        Index("ix_portal_chat_threads_customer_child", "customer_user_id", "child_profile_id"),
         Index("ix_portal_chat_threads_account_updated", "account_id", "updated_at"),
     )
 

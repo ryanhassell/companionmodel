@@ -7,6 +7,7 @@ if (payloadNode) {
   const input = document.getElementById("parent-chat-input");
   const submit = document.getElementById("parent-chat-submit");
   const status = document.getElementById("parent-chat-status");
+  const threadIdInput = document.getElementById("parent-chat-thread-id");
 
   const formatTime = (value) => {
     if (!value) return "";
@@ -45,58 +46,27 @@ if (payloadNode) {
 
     article.appendChild(meta);
     article.appendChild(body);
-    if (message.memory_saved) {
-      const flags = document.createElement("div");
-      flags.className = "parent-chat-bubble-flags";
-      const chip = document.createElement("button");
-      chip.className = "parent-chat-memory-chip";
-      chip.type = "button";
-      chip.dataset.parentChatMemoryToggle = "";
-      chip.setAttribute("aria-expanded", "false");
-      chip.textContent = message.memory_saved_label || "Saved to memory";
-      flags.appendChild(chip);
-      if ((message.memory_saved_details || []).length) {
-        const popover = document.createElement("div");
-        popover.className = "parent-chat-memory-popover";
-        popover.dataset.parentChatMemoryPopover = "";
-        popover.hidden = true;
+    if ((message.memory_saved_details || []).length) {
+      const log = document.createElement("div");
+      log.className = "parent-chat-tool-log";
+      (message.memory_saved_details || []).forEach((detail) => {
+        const row = document.createElement("div");
+        row.className = "parent-chat-tool-row";
 
-        const title = document.createElement("p");
-        title.className = "parent-chat-memory-popover-title";
-        title.textContent = "Created memories";
-        popover.appendChild(title);
+        const badge = document.createElement("span");
+        badge.className = "parent-chat-tool-badge";
+        badge.textContent = "Tool";
+        row.appendChild(badge);
 
-        const list = document.createElement("ul");
-        list.className = "parent-chat-memory-list";
-        (message.memory_saved_details || []).forEach((detail) => {
-          const item = document.createElement("li");
-          item.className = "parent-chat-memory-list-item";
+        const label = document.createElement("span");
+        label.textContent = `Added Memory: ${detail.title || "Saved memory"}`;
+        row.appendChild(label);
 
-          const strong = document.createElement("strong");
-          strong.textContent = detail.title || "Saved memory";
-          item.appendChild(strong);
-
-          const span = document.createElement("span");
-          span.textContent = detail.content || "";
-          item.appendChild(span);
-
-          list.appendChild(item);
-        });
-        popover.appendChild(list);
-        flags.appendChild(popover);
-      }
-      article.appendChild(flags);
+        log.appendChild(row);
+      });
+      article.appendChild(log);
     }
     thread.appendChild(article);
-  };
-
-  const closeMemoryPopovers = (exceptToggle = null) => {
-    document.querySelectorAll("[data-parent-chat-memory-toggle]").forEach((toggle) => {
-      const popover = toggle.parentElement?.querySelector("[data-parent-chat-memory-popover]");
-      if (!popover || toggle === exceptToggle) return;
-      toggle.setAttribute("aria-expanded", "false");
-      popover.hidden = true;
-    });
   };
 
   document.querySelectorAll("[data-parent-chat-timestamp]").forEach((node) => {
@@ -155,8 +125,12 @@ if (payloadNode) {
           body: JSON.stringify({
             csrf_token: payload.csrf_token,
             message,
+            thread_id: threadIdInput?.value || payload.thread_id || "",
           }),
         });
+        if (threadIdInput && response.thread_id) {
+          threadIdInput.value = response.thread_id;
+        }
         (response.messages || []).forEach((item) => renderMessage(item));
         input.value = "";
         setStatus("Sent and added to memory.", "success");
@@ -170,22 +144,6 @@ if (payloadNode) {
       }
     });
   }
-
-  document.addEventListener("click", (event) => {
-    const toggle = event.target.closest("[data-parent-chat-memory-toggle]");
-    if (toggle) {
-      const popover = toggle.parentElement?.querySelector("[data-parent-chat-memory-popover]");
-      if (!popover) return;
-      const isOpen = toggle.getAttribute("aria-expanded") === "true";
-      closeMemoryPopovers(toggle);
-      toggle.setAttribute("aria-expanded", isOpen ? "false" : "true");
-      popover.hidden = isOpen;
-      return;
-    }
-    if (!event.target.closest("[data-parent-chat-memory-popover]")) {
-      closeMemoryPopovers();
-    }
-  });
 
   if (payload.status_message) {
     setStatus(payload.status_message, payload.status_tone || "muted");

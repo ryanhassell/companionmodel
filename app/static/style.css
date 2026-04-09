@@ -1258,13 +1258,14 @@ pre {
 .parent-chat-shell {
   display: grid;
   width: 100%;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 0;
+  grid-template-columns: minmax(240px, 280px) minmax(0, 1fr);
+  gap: 18px;
   align-items: start;
   min-height: 0;
   height: calc(100dvh - 132px);
 }
 
+.parent-chat-history,
 .parent-chat-main,
 .parent-chat-side {
   display: grid;
@@ -1272,6 +1273,7 @@ pre {
 }
 
 .parent-chat-toolbar h2,
+.parent-chat-history-toolbar h3,
 .parent-chat-side-card h3 {
   margin: 2px 0 0;
   font-family: "Fraunces", "Iowan Old Style", serif;
@@ -1279,9 +1281,65 @@ pre {
 }
 
 .parent-chat-toolbar p,
+.parent-chat-history-toolbar p,
 .parent-chat-side-card p,
 .parent-chat-guidance-list {
   margin: 0;
+}
+
+.parent-chat-history {
+  align-self: stretch;
+  min-height: 0;
+  height: 100%;
+  padding: 16px 14px;
+  background: rgba(252, 250, 245, 0.9);
+}
+
+.parent-chat-history-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.parent-chat-thread-list {
+  display: grid;
+  gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
+  align-content: start;
+}
+
+.parent-chat-thread-link {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(118, 104, 79, 0.16);
+  background: rgba(255, 252, 247, 0.92);
+  color: inherit;
+  text-decoration: none;
+  transition: border-color 0.16s ease, background 0.16s ease;
+}
+
+.parent-chat-thread-link:hover,
+.parent-chat-thread-link.active {
+  border-color: rgba(30, 95, 83, 0.3);
+  background: rgba(237, 244, 242, 0.86);
+}
+
+.parent-chat-thread-link strong {
+  font-size: 0.9rem;
+}
+
+.parent-chat-thread-link span,
+.parent-chat-thread-link small {
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
+.parent-chat-history-footer {
+  margin-top: auto;
 }
 
 .parent-chat-main {
@@ -1345,87 +1403,36 @@ pre {
   line-height: 1.45;
 }
 
-.parent-chat-bubble-flags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  position: relative;
+.parent-chat-tool-log {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
 }
 
-.parent-chat-memory-chip {
+.parent-chat-tool-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  padding: 5px 8px;
+  border: 1px dashed rgba(30, 95, 83, 0.22);
+  background: rgba(244, 248, 247, 0.9);
+  color: var(--accent);
+  font-size: 0.73rem;
+  line-height: 1.25;
+}
+
+.parent-chat-tool-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: auto;
-  padding: 4px 8px;
-  border: 1px solid rgba(30, 95, 83, 0.24);
-  background: rgba(237, 244, 242, 0.96);
+  min-width: 36px;
+  padding: 1px 6px;
+  background: rgba(30, 95, 83, 0.1);
   color: var(--accent);
-  font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  cursor: pointer;
-  box-shadow: none;
-  line-height: 1.1;
-  font-family: inherit;
-  transition: background 0.14s ease, border-color 0.14s ease;
-  transform: none;
-}
-
-.parent-chat-memory-chip:hover,
-.parent-chat-memory-chip[aria-expanded="true"] {
-  background: rgba(226, 239, 235, 0.98);
-  border-color: rgba(30, 95, 83, 0.34);
-  box-shadow: none;
-  transform: none;
-}
-
-.parent-chat-memory-popover {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + 8px);
-  width: min(340px, calc(100vw - 56px));
-  display: grid;
-  gap: 10px;
-  padding: 12px 14px;
-  border: 1px solid rgba(118, 104, 79, 0.18);
-  background: rgba(252, 250, 245, 0.99);
-  box-shadow: 0 18px 36px rgba(34, 40, 39, 0.14);
-  z-index: 6;
-}
-
-.parent-chat-memory-popover[hidden] {
-  display: none;
-}
-
-.parent-chat-memory-popover-title {
-  margin: 0;
-  font-size: 0.78rem;
-  font-weight: 700;
-  color: var(--text);
-}
-
-.parent-chat-memory-list {
-  display: grid;
-  gap: 10px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.parent-chat-memory-list-item {
-  display: grid;
-  gap: 4px;
-}
-
-.parent-chat-memory-list-item strong {
-  font-size: 0.76rem;
-}
-
-.parent-chat-memory-list-item span {
-  color: var(--muted);
-  font-size: 0.76rem;
-  line-height: 1.35;
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.68rem;
+  text-transform: uppercase;
 }
 
 .parent-chat-form {
@@ -3176,11 +3183,17 @@ pre {
   .parent-chat-shell {
     width: 100%;
     height: auto;
+    grid-template-columns: 1fr;
   }
 
+  .parent-chat-history,
   .parent-chat-main {
     min-height: auto;
     height: auto;
+  }
+
+  .parent-chat-history {
+    max-height: none;
   }
 
   .memory-shell {
@@ -3326,6 +3339,10 @@ pre {
 
   .parent-chat-thread {
     min-height: 320px;
+  }
+
+  .parent-chat-thread-list {
+    max-height: 220px;
   }
 
   .parent-chat-starters {

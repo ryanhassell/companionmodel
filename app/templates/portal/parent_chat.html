@@ -3,12 +3,40 @@
 {% block content %}
 {% if child and child.companion_user_id %}
 <section class="parent-chat-shell parent-chat-shell-full">
+  <aside class="card parent-chat-history">
+    <div class="parent-chat-history-toolbar">
+      <div>
+        <p class="eyebrow">Chats</p>
+        <h3>Parent conversations</h3>
+      </div>
+      <form method="post" action="/app/parent-chat/new">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button" type="submit">New chat</button>
+      </form>
+    </div>
+    <nav class="parent-chat-thread-list" aria-label="Previous parent chats">
+      {% for thread in chat_threads %}
+      <a class="parent-chat-thread-link {{ 'active' if thread.is_active else '' }}" href="{{ thread.href }}">
+        <strong>{{ thread.title }}</strong>
+        {% if thread.preview %}<span>{{ thread.preview }}</span>{% endif %}
+        {% if thread.updated_at %}<small data-parent-chat-timestamp="{{ thread.updated_at }}"></small>{% endif %}
+      </a>
+      {% endfor %}
+    </nav>
+    {% if active_thread_id %}
+    <form method="post" action="/app/parent-chat/{{ active_thread_id }}/clear" class="parent-chat-history-footer">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="button ghost" type="submit">Clear chat history</button>
+    </form>
+    {% endif %}
+  </aside>
+
   <article class="card parent-chat-main parent-chat-main-full">
     <div class="parent-chat-toolbar">
       <div>
         <p class="eyebrow">Parent Chat</p>
         <h2>Talk to Resona about how to show up</h2>
-        <p class="subtle">Use this space to tell Resona what to remember, what to avoid, and what helps {{ child.display_name or child.first_name }} feel more understood.</p>
+        <p class="subtle">Use this space to guide Resona, share lasting details, and help it understand what helps {{ child.display_name or child.first_name }} feel known.</p>
       </div>
     </div>
 
@@ -20,28 +48,14 @@
           {% if message.created_at %}<span data-parent-chat-timestamp="{{ message.created_at }}"></span>{% endif %}
         </div>
         <div class="parent-chat-bubble-body">{{ message.body }}</div>
-        {% if message.memory_saved %}
-        <div class="parent-chat-bubble-flags">
-          <button
-            class="parent-chat-memory-chip"
-            type="button"
-            data-parent-chat-memory-toggle
-            aria-expanded="false">
-            {{ message.memory_saved_label or 'Saved to memory' }}
-          </button>
-          {% if message.memory_saved_details %}
-          <div class="parent-chat-memory-popover" data-parent-chat-memory-popover hidden>
-            <p class="parent-chat-memory-popover-title">Created memories</p>
-            <ul class="parent-chat-memory-list">
-              {% for detail in message.memory_saved_details %}
-              <li class="parent-chat-memory-list-item">
-                <strong>{{ detail.title }}</strong>
-                <span>{{ detail.content }}</span>
-              </li>
-              {% endfor %}
-            </ul>
+        {% if message.memory_saved_details %}
+        <div class="parent-chat-tool-log">
+          {% for detail in message.memory_saved_details %}
+          <div class="parent-chat-tool-row">
+            <span class="parent-chat-tool-badge">Tool</span>
+            <span>Added Memory: {{ detail.title }}</span>
           </div>
-          {% endif %}
+          {% endfor %}
         </div>
         {% endif %}
       </article>
@@ -50,6 +64,7 @@
 
     <form id="parent-chat-form" class="parent-chat-form" method="post" action="/app/parent-chat/send">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" id="parent-chat-thread-id" name="thread_id" value="{{ active_thread_id }}">
       <div class="parent-chat-composer-row">
         <textarea
           id="parent-chat-input"

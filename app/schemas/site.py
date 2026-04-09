@@ -104,6 +104,17 @@ class PortalChatSavedMemoryView(BaseModel):
     memory_type: str | None = None
 
 
+class PortalChatThreadView(BaseModel):
+    id: str
+    title: str
+    preview: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    message_count: int = 0
+    href: str
+    is_active: bool = False
+
+
 class PortalChatMessageView(BaseModel):
     id: str
     sender: str

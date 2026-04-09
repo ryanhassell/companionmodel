@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import re
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import desc, select
+from sqlalchemy import delete, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai import AIUnavailableError, AiRuntime
@@ -17,7 +18,7 @@ from app.models.enums import Channel, MemoryRelationshipType, MemoryType
 from app.models.memory import MemoryItem, MemoryRelationship
 from app.models.portal import ChildProfile, CustomerUser, PortalChatMessage, PortalChatThread
 from app.models.user import User
-from app.schemas.site import PortalChatMessageView
+from app.schemas.site import PortalChatMessageView, PortalChatThreadView
 from app.services.config import ConfigService
 from app.services.conversation import ConversationService
 from app.services.memory import MemoryService
@@ -60,17 +61,34 @@ class ParentChatService:
         account_id,
         customer_user: CustomerUser,
         child_profile: ChildProfile,
+        thread_id=None,
     ) -> PortalChatThread:
-        thread = await session.scalar(
-            select(PortalChatThread).where(
-                PortalChatThread.account_id == account_id,
-                PortalChatThread.customer_user_id == customer_user.id,
-                PortalChatThread.child_profile_id == child_profile.id,
-            )
+        thread = await self.resolve_thread(
+            session,
+            account_id=account_id,
+            customer_user=customer_user,
+            child_profile=child_profile,
+            thread_id=thread_id,
+            create_if_missing=False,
         )
         if thread is not None:
             return thread
 
+        return await self.create_thread(
+            session,
+            account_id=account_id,
+            customer_user=customer_user,
+            child_profile=child_profile,
+        )
+
+    async def create_thread(
+        self,
+        session: AsyncSession,
+        *,
+        account_id,
+        customer_user: CustomerUser,
+        child_profile: ChildProfile,
+    ) -> PortalChatThread:
         thread = PortalChatThread(
             account_id=account_id,
             customer_user_id=customer_user.id,
@@ -79,11 +97,111 @@ class ParentChatService:
                 "kind": "parent_portal_chat",
                 "child_name": _child_name(child_profile),
                 "relationship_label": _relationship_label(customer_user),
+                "title": "New chat",
+                "preview": "",
+                "message_count": 0,
             },
         )
         session.add(thread)
         await session.flush()
         return thread
+
+    async def resolve_thread(
+        self,
+        session: AsyncSession,
+        *,
+        account_id,
+        customer_user: CustomerUser,
+        child_profile: ChildProfile,
+        thread_id=None,
+        create_if_missing: bool = True,
+    ) -> PortalChatThread | None:
+        if thread_id:
+            try:
+                normalized_thread_id = thread_id if isinstance(thread_id, uuid.UUID) else uuid.UUID(str(thread_id))
+            except (TypeError, ValueError):
+                normalized_thread_id = None
+        else:
+            normalized_thread_id = None
+
+        if normalized_thread_id:
+            candidate = await session.scalar(
+                select(PortalChatThread).where(
+                    PortalChatThread.id == normalized_thread_id,
+                    PortalChatThread.account_id == account_id,
+                    PortalChatThread.customer_user_id == customer_user.id,
+                    PortalChatThread.child_profile_id == child_profile.id,
+                )
+            )
+            if candidate is not None:
+                return candidate
+
+        thread = await session.scalar(
+            select(PortalChatThread)
+            .where(
+                PortalChatThread.account_id == account_id,
+                PortalChatThread.customer_user_id == customer_user.id,
+                PortalChatThread.child_profile_id == child_profile.id,
+            )
+            .order_by(
+                desc(func.coalesce(PortalChatThread.last_assistant_message_at, PortalChatThread.last_parent_message_at, PortalChatThread.updated_at)),
+                desc(PortalChatThread.updated_at),
+            )
+        )
+        if thread is not None or not create_if_missing:
+            return thread
+        return await self.create_thread(
+            session,
+            account_id=account_id,
+            customer_user=customer_user,
+            child_profile=child_profile,
+        )
+
+    async def list_threads(
+        self,
+        session: AsyncSession,
+        *,
+        account_id,
+        customer_user: CustomerUser,
+        child_profile: ChildProfile,
+        limit: int = 24,
+    ) -> list[PortalChatThread]:
+        return list(
+            (
+                await session.execute(
+                    select(PortalChatThread)
+                    .where(
+                        PortalChatThread.account_id == account_id,
+                        PortalChatThread.customer_user_id == customer_user.id,
+                        PortalChatThread.child_profile_id == child_profile.id,
+                    )
+                    .order_by(
+                        desc(func.coalesce(PortalChatThread.last_assistant_message_at, PortalChatThread.last_parent_message_at, PortalChatThread.updated_at)),
+                        desc(PortalChatThread.updated_at),
+                    )
+                    .limit(max(limit, 1))
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    async def clear_thread(
+        self,
+        session: AsyncSession,
+        *,
+        thread: PortalChatThread,
+    ) -> None:
+        await session.execute(delete(PortalChatMessage).where(PortalChatMessage.thread_id == thread.id))
+        thread.last_parent_message_at = None
+        thread.last_assistant_message_at = None
+        thread.metadata_json = {
+            **dict(thread.metadata_json or {}),
+            "title": "New chat",
+            "preview": "",
+            "message_count": 0,
+        }
+        await session.flush()
 
     async def list_messages(
         self,
@@ -120,6 +238,26 @@ class ParentChatService:
             for message in messages
         ]
 
+    def serialize_threads(
+        self,
+        threads: list[PortalChatThread],
+        *,
+        active_thread_id=None,
+    ) -> list[PortalChatThreadView]:
+        return [
+            PortalChatThreadView(
+                id=str(thread.id),
+                title=_thread_title(thread),
+                preview=_thread_preview(thread),
+                created_at=thread.created_at.isoformat() if thread.created_at else None,
+                updated_at=thread.updated_at.isoformat() if thread.updated_at else None,
+                message_count=int((thread.metadata_json or {}).get("message_count") or 0),
+                href=f"/app/parent-chat?thread={thread.id}",
+                is_active=str(thread.id) == str(active_thread_id),
+            )
+            for thread in threads
+        ]
+
     async def send_message(
         self,
         session: AsyncSession,
@@ -128,12 +266,13 @@ class ParentChatService:
         customer_user: CustomerUser,
         child_profile: ChildProfile,
         text: str,
+        thread: PortalChatThread | None = None,
     ) -> tuple[PortalChatThread, PortalChatMessage, PortalChatMessage]:
         cleaned = truncate_text(" ".join(str(text or "").split()), 2400)
         if not cleaned:
             raise ValueError("Write a message before sending.")
 
-        thread = await self.get_or_create_thread(
+        thread = thread or await self.get_or_create_thread(
             session,
             account_id=account_id,
             customer_user=customer_user,
@@ -147,6 +286,7 @@ class ParentChatService:
         )
         session.add(parent_message)
         thread.last_parent_message_at = utc_now()
+        self._update_thread_metadata_after_parent_message(thread, cleaned)
         await session.flush()
 
         assistant_text, model_name, usage, saved_memories = await self._respond_with_agent(
@@ -179,8 +319,25 @@ class ParentChatService:
         )
         session.add(assistant_message)
         thread.last_assistant_message_at = utc_now()
+        self._update_thread_metadata_after_assistant_message(thread, assistant_text)
         await session.flush()
         return thread, parent_message, assistant_message
+
+    def _update_thread_metadata_after_parent_message(self, thread: PortalChatThread, text: str) -> None:
+        metadata = dict(thread.metadata_json or {})
+        current_title = str(metadata.get("title") or "").strip()
+        if not current_title or current_title == "New chat":
+            metadata["title"] = _thread_title_from_text(text)
+        metadata["preview"] = truncate_text(text, 100)
+        metadata["message_count"] = int(metadata.get("message_count") or 0) + 1
+        thread.metadata_json = metadata
+
+    def _update_thread_metadata_after_assistant_message(self, thread: PortalChatThread, text: str) -> None:
+        metadata = dict(thread.metadata_json or {})
+        if text.strip():
+            metadata["preview"] = truncate_text(text, 120)
+        metadata["message_count"] = int(metadata.get("message_count") or 0) + 1
+        thread.metadata_json = metadata
 
     async def _respond_with_agent(
         self,
@@ -610,6 +767,26 @@ def _message_memory_details(message: PortalChatMessage) -> list[dict[str, str]]:
             }
         )
     return details
+
+
+def _thread_title(thread: PortalChatThread) -> str:
+    metadata = dict(thread.metadata_json or {})
+    title = str(metadata.get("title") or "").strip()
+    return title or "New chat"
+
+
+def _thread_preview(thread: PortalChatThread) -> str:
+    metadata = dict(thread.metadata_json or {})
+    preview = str(metadata.get("preview") or "").strip()
+    return preview
+
+
+def _thread_title_from_text(text: str) -> str:
+    cleaned = " ".join(str(text or "").split()).strip()
+    if not cleaned:
+        return "New chat"
+    title = truncate_text(cleaned, 54).rstrip(" .,!?:;")
+    return title or "New chat"
 
 
 def _split_parent_guidance_into_clauses(text: str) -> list[str]:

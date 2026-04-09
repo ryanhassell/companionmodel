@@ -1597,35 +1597,90 @@ async def portal_parent_chat(
 ):
     child = await _portal_child_profile(session, account_id=context.customer_user.account_id)
     chat_messages = []
+    chat_threads = []
+    thread = None
     if child and child.companion_user_id:
-        thread = await context.container.parent_chat_service.get_or_create_thread(
+        thread = await context.container.parent_chat_service.resolve_thread(
             session,
             account_id=context.customer_user.account_id,
             customer_user=context.customer_user,
             child_profile=child,
+            thread_id=request.query_params.get("thread"),
+            create_if_missing=False,
         )
-        chat_messages = context.container.parent_chat_service.serialize_messages(
-            await context.container.parent_chat_service.list_messages(session, thread_id=thread.id)
+        chat_threads = context.container.parent_chat_service.serialize_threads(
+            await context.container.parent_chat_service.list_threads(
+                session,
+                account_id=context.customer_user.account_id,
+                customer_user=context.customer_user,
+                child_profile=child,
+            ),
+            active_thread_id=thread.id if thread else None,
         )
+        if thread is not None:
+            chat_messages = context.container.parent_chat_service.serialize_messages(
+                await context.container.parent_chat_service.list_messages(session, thread_id=thread.id)
+            )
 
     payload = {
         "csrf_token": context.csrf_token,
         "send_url": "/app/parent-chat/send",
         "resume_url": request.url.path,
+        "thread_id": str(thread.id) if thread else "",
+        "new_chat_url": "/app/parent-chat/new",
+        "clear_chat_url": f"/app/parent-chat/{thread.id}/clear" if thread else "",
         "child_name": child.display_name if child and child.display_name else (child.first_name if child else "your child"),
         "status_message": "Parent chat is unavailable right now." if request.query_params.get("error") == "unavailable" else "",
         "status_tone": "danger" if request.query_params.get("error") == "unavailable" else "muted",
     }
+    if request.query_params.get("cleared") == "1":
+        payload["status_message"] = "Chat history cleared."
+        payload["status_tone"] = "success"
     return _portal_response(
         request,
         "portal/parent_chat.html",
         customer_user=context.customer_user,
         child=child,
         chat_messages=[message.model_dump(mode="json") for message in chat_messages],
+        chat_threads=[item.model_dump(mode="json") for item in chat_threads],
+        active_thread_id=str(thread.id) if thread else "",
         chat_payload=payload,
         chat_context_items=_portal_chat_context_items(context.customer_user, child),
         chat_starter_prompts=_portal_chat_starters(child),
     )
+
+
+@router.post("/parent-chat/new")
+async def portal_parent_chat_new(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    context: PortalRequestContext = Depends(require_portal_context),
+):
+    content_type = (request.headers.get("content-type") or "").lower()
+    expects_html_redirect = "application/x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type
+    if expects_html_redirect:
+        payload = await request.form()
+    else:
+        payload = await request.json()
+    csrf_token = str(payload.get("csrf_token") or "")
+    if not csrf_token or csrf_token != context.csrf_token:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+
+    child = await _portal_child_profile(session, account_id=context.customer_user.account_id)
+    if child is None or not child.companion_user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No child profile is linked yet.")
+
+    thread = await context.container.parent_chat_service.create_thread(
+        session,
+        account_id=context.customer_user.account_id,
+        customer_user=context.customer_user,
+        child_profile=child,
+    )
+    await session.commit()
+    redirect_url = f"/app/parent-chat?thread={thread.id}"
+    if expects_html_redirect:
+        return RedirectResponse(url=redirect_url, status_code=303)
+    return JSONResponse({"ok": True, "thread_id": str(thread.id), "redirect_url": redirect_url})
 
 
 @router.post("/parent-chat/send")
@@ -1647,6 +1702,15 @@ async def portal_parent_chat_send(
     child = await _portal_child_profile(session, account_id=context.customer_user.account_id)
     if child is None or not child.companion_user_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No child profile is linked yet.")
+    thread = await context.container.parent_chat_service.resolve_thread(
+        session,
+        account_id=context.customer_user.account_id,
+        customer_user=context.customer_user,
+        child_profile=child,
+        thread_id=str(payload.get("thread_id") or "").strip() or None,
+    )
+    if thread is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That chat could not be found.")
 
     await _enforce_rate_limit(
         request,
@@ -1661,6 +1725,7 @@ async def portal_parent_chat_send(
             customer_user=context.customer_user,
             child_profile=child,
             text=str(payload.get("message") or ""),
+            thread=thread,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -1681,17 +1746,57 @@ async def portal_parent_chat_send(
     await session.commit()
 
     if expects_html_redirect:
-        return RedirectResponse(url="/app/parent-chat?sent=1", status_code=303)
+        return RedirectResponse(url=f"/app/parent-chat?thread={thread.id}&sent=1", status_code=303)
 
     return JSONResponse(
         {
             "ok": True,
+            "thread_id": str(thread.id),
             "messages": [
                 message.model_dump(mode="json")
                 for message in context.container.parent_chat_service.serialize_messages([parent_message, assistant_message])
             ],
         }
     )
+
+
+@router.post("/parent-chat/{thread_id}/clear")
+async def portal_parent_chat_clear(
+    thread_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    context: PortalRequestContext = Depends(require_portal_context),
+):
+    content_type = (request.headers.get("content-type") or "").lower()
+    expects_html_redirect = "application/x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type
+    if expects_html_redirect:
+        payload = await request.form()
+    else:
+        payload = await request.json()
+    csrf_token = str(payload.get("csrf_token") or "")
+    if not csrf_token or csrf_token != context.csrf_token:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+
+    child = await _portal_child_profile(session, account_id=context.customer_user.account_id)
+    if child is None or not child.companion_user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No child profile is linked yet.")
+    thread = await context.container.parent_chat_service.resolve_thread(
+        session,
+        account_id=context.customer_user.account_id,
+        customer_user=context.customer_user,
+        child_profile=child,
+        thread_id=thread_id,
+        create_if_missing=False,
+    )
+    if thread is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That chat could not be found.")
+
+    await context.container.parent_chat_service.clear_thread(session, thread=thread)
+    await session.commit()
+    redirect_url = f"/app/parent-chat?thread={thread.id}&cleared=1"
+    if expects_html_redirect:
+        return RedirectResponse(url=redirect_url, status_code=303)
+    return JSONResponse({"ok": True, "thread_id": str(thread.id), "messages": []})
 
 
 async def _render_portal_memories_page(
