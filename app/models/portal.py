@@ -32,6 +32,11 @@ class Account(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     households: Mapped[list[Household]] = relationship("Household", back_populates="account")
     verification_cases: Mapped[list[VerificationCase]] = relationship("VerificationCase", back_populates="account")
     subscriptions: Mapped[list[Subscription]] = relationship("Subscription", back_populates="account")
+    initialization_state: Mapped[AccountInitialization | None] = relationship(
+        "AccountInitialization",
+        back_populates="account",
+        uselist=False,
+    )
 
 
 class CustomerUser(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -240,6 +245,25 @@ class Subscription(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     billing_events: Mapped[list[BillingEvent]] = relationship("BillingEvent", back_populates="subscription")
 
 
+class AccountInitialization(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "account_initializations"
+    __table_args__ = (
+        Index("ix_account_initializations_account", "account_id", unique=True),
+        Index("ix_account_initializations_status", "status", "updated_at"),
+    )
+
+    account_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("accounts.id"), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="in_progress")
+    current_step: Mapped[str] = mapped_column(String(40), nullable=False, default="welcome")
+    completed_steps_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    selected_plan_key: Mapped[str | None] = mapped_column(String(24))
+    snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    account: Mapped[Account] = relationship("Account", back_populates="initialization_state")
+
+
 class BillingEvent(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "billing_events"
     __table_args__ = (
@@ -253,6 +277,89 @@ class BillingEvent(UUIDPrimaryKeyMixin, Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     subscription: Mapped[Subscription | None] = relationship("Subscription", back_populates="billing_events")
+
+
+class UsageEvent(UUIDPrimaryKeyMixin, Base):
+    __tablename__ = "usage_events"
+    __table_args__ = (
+        Index("ix_usage_events_account_created", "account_id", "occurred_at"),
+        Index("ix_usage_events_provider_event", "provider", "event_type"),
+        Index("ix_usage_events_idempotency", "idempotency_key", unique=True),
+        Index("ix_usage_events_external", "provider", "external_id"),
+    )
+
+    account_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("accounts.id"), nullable=False)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("conversations.id"))
+    provider: Mapped[str] = mapped_column(String(40), nullable=False)
+    product_surface: Mapped[str] = mapped_column(String(40), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    external_id: Mapped[str | None] = mapped_column(String(120))
+    idempotency_key: Mapped[str] = mapped_column(String(180), nullable=False)
+    quantity: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    unit: Mapped[str] = mapped_column(String(32), nullable=False, default="unit")
+    cost_usd: Mapped[float | None] = mapped_column()
+    currency: Mapped[str] = mapped_column(String(8), nullable=False, default="usd")
+    pricing_state: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    estimated_cost_usd: Mapped[float | None] = mapped_column()
+    estimated_vs_final_delta: Mapped[float | None] = mapped_column()
+    source_ref: Mapped[str | None] = mapped_column(String(255))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class UsageReconciliationRun(UUIDPrimaryKeyMixin, Base):
+    __tablename__ = "usage_reconciliation_runs"
+    __table_args__ = (
+        Index("ix_usage_reconciliation_runs_created", "created_at"),
+        Index("ix_usage_reconciliation_runs_status", "status"),
+    )
+
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")
+    provider: Mapped[str] = mapped_column(String(40), nullable=False, default="all")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finalized_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pending_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    details_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PlanSimulationRun(UUIDPrimaryKeyMixin, Base):
+    __tablename__ = "plan_simulation_runs"
+    __table_args__ = (
+        Index("ix_plan_simulation_runs_created", "created_at"),
+    )
+
+    profile: Mapped[str] = mapped_column(String(40), nullable=False, default="real_family_usage")
+    actor_count: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    period_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    baseline_chat_price_usd: Mapped[float] = mapped_column(nullable=False, default=24.0)
+    baseline_voice_price_usd: Mapped[float] = mapped_column(nullable=False, default=59.0)
+    details_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PlanSimulationScenario(UUIDPrimaryKeyMixin, Base):
+    __tablename__ = "plan_simulation_scenarios"
+    __table_args__ = (
+        Index("ix_plan_simulation_scenarios_run", "simulation_run_id"),
+    )
+
+    simulation_run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("plan_simulation_runs.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    plan_chat_price_usd: Mapped[float] = mapped_column(nullable=False, default=24.0)
+    plan_voice_price_usd: Mapped[float] = mapped_column(nullable=False, default=59.0)
+    included_chat_credits_usd: Mapped[float] = mapped_column(nullable=False, default=8.0)
+    included_voice_credits_usd: Mapped[float] = mapped_column(nullable=False, default=28.0)
+    projected_revenue_usd: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    projected_cost_usd: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    projected_margin_pct: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    recommendation_band: Mapped[str] = mapped_column(String(20), nullable=False, default="tight")
+    details_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class AuthIdentityEvent(UUIDPrimaryKeyMixin, Base):

@@ -1,0 +1,25 @@
+{% extends "portal/base.html" %}
+{% set active_nav = 'landing' %}
+{% block content %}
+<section class="portal-landing">
+  <div class="portal-landing-art" aria-hidden="true"></div>
+  <article class="portal-landing-panel">
+    <p class="eyebrow">Parent Portal</p>
+    <h2>Welcome to your Resona control center.</h2>
+    <p class="subtle">
+      You're signed in securely. From here you can monitor conversation history, review safety events,
+      manage child settings, and track usage in one place.
+    </p>
+    {% if household %}
+    <p class="pill">Household ready: {{ household.name }}</p>
+    {% else %}
+    <p class="pill" style="background:#fff4e8;color:#7a4a1a;">Finish setup to create your household and child profile.</p>
+    {% endif %}
+    <div class="hero-actions">
+      <a class="button" href="/app/dashboard">Open Dashboard</a>
+      <a class="button ghost" href="/app/initialize">Complete Setup</a>
+      <a class="button ghost" href="/app/billing">View Billing</a>
+    </div>
+  </article>
+</section>
+{% endblock %}

@@ -1,0 +1,75 @@
+{% extends "portal/base.html" %}
+{% block content %}
+<section class="page-header">
+  <div>
+    <h2>Signing you in</h2>
+    <p class="subtle">We’re securely linking your Clerk session to the Resona parent portal.</p>
+  </div>
+</section>
+<article class="card" style="max-width:720px;">
+  <p class="subtle">Please wait a moment while we finish the secure handoff.</p>
+  <p class="pill" id="clerk-sync-status">Checking your session…</p>
+</article>
+{% if clerk_enabled and clerk_publishable_key %}
+<script>
+  window.addEventListener("load", async function () {
+    const statusNode = document.getElementById("clerk-sync-status");
+    const waitForClerk = () =>
+      new Promise((resolve, reject) => {
+        let attempts = 0;
+        const timer = window.setInterval(() => {
+          attempts += 1;
+          if (window.Clerk) {
+            window.clearInterval(timer);
+            resolve(window.Clerk);
+            return;
+          }
+          if (attempts > 120) {
+            window.clearInterval(timer);
+            reject(new Error("Clerk script did not load"));
+          }
+        }, 50);
+      });
+    const clerkPrimaryEmail = () =>
+      window.Clerk?.user?.primaryEmailAddress?.emailAddress ||
+      window.Clerk?.user?.emailAddresses?.[0]?.emailAddress ||
+      "";
+    const clerkDisplayName = () =>
+      window.Clerk?.user?.fullName ||
+      [window.Clerk?.user?.firstName, window.Clerk?.user?.lastName].filter(Boolean).join(" ").trim() ||
+      window.Clerk?.user?.username ||
+      "";
+    try {
+      const clerk = await waitForClerk();
+      await clerk.load({
+        publishableKey: "{{ clerk_publishable_key }}",
+        {% if clerk_frontend_api_url %}frontendApi: "{{ clerk_frontend_api_url }}",{% endif %}
+      });
+      if (!clerk.session) {
+        window.location.replace("/app/login");
+        return;
+      }
+      if (statusNode) statusNode.textContent = "Securing your portal session…";
+      const token = await clerk.session.getToken();
+      const response = await fetch("/app/auth/sync", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token: token || "",
+          email: clerkPrimaryEmail(),
+          display_name: clerkDisplayName(),
+        }),
+      });
+      if (!response.ok) {
+        throw new Error("Failed to sync Clerk session");
+      }
+      window.location.replace("{{ next_path }}");
+    } catch (err) {
+      console.error("Clerk callback failed", err);
+      if (statusNode) statusNode.textContent = "We couldn't finish sign-in. Please return to the sign-in screen and try again.";
+    }
+  });
+</script>
+{% endif %}
+{% endblock %}

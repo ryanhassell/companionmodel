@@ -1,4 +1,4 @@
-from app.models.admin import AdminUser, AuditEvent, JobRun
+from app.models.admin import AdminIdentity, AdminUser, AuditEvent, JobRun
 from app.models.communication import CallRecord, Conversation, DeliveryAttempt, MediaAsset, Message, SafetyEvent
 from app.models.conversation_state import ConversationState
 from app.models.configuration import AppSetting, PromptTemplate, ScheduleRule
@@ -22,6 +22,7 @@ from app.models.enums import (
 from app.models.memory import MemoryItem
 from app.models.portal import (
     Account,
+    AccountInitialization,
     AuthIdentityEvent,
     BillingEvent,
     ChildProfile,
@@ -30,9 +31,13 @@ from app.models.portal import (
     EmailVerificationToken,
     Household,
     PhoneOtpChallenge,
+    PlanSimulationRun,
+    PlanSimulationScenario,
     PortalSession,
     RoleAssignment,
     Subscription,
+    UsageEvent,
+    UsageReconciliationRun,
     VerificationCase,
 )
 from app.models.persona import Persona
@@ -40,6 +45,7 @@ from app.models.user import User
 
 __all__ = [
     "AdminUser",
+    "AdminIdentity",
     "AppSetting",
     "AppSettingScope",
     "AuthIdentityEvent",
@@ -81,6 +87,11 @@ __all__ = [
     "VerificationCase",
     "VerificationCaseStatus",
     "Account",
+    "AccountInitialization",
     "BillingEvent",
     "PhoneOtpChallenge",
+    "PlanSimulationRun",
+    "PlanSimulationScenario",
+    "UsageEvent",
+    "UsageReconciliationRun",
 ]

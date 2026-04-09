@@ -32,7 +32,7 @@
   {% else %}
   <p><strong>MFA verified for current session:</strong> {{ 'yes' if mfa_verified else 'no' }}</p>
   <p class="subtle">For password reset, MFA settings, and session revocation, use Clerk account security.</p>
-  <p><a class="button-link" href="{{ clerk_sign_out_url }}">Sign out</a></p>
+  <p><a class="button-link" href="/app/logout">Sign out</a></p>
   {% endif %}
 </article>
 {% endblock %}

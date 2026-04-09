@@ -9,7 +9,8 @@ router = APIRouter(tags=["public"])
 
 
 def _shared_context(request: Request) -> dict[str, object]:
-    settings = request.app.state.container.settings
+    container = request.app.state.container
+    settings = container.settings
     context = PublicSiteContext(
         brand_name=settings.web.brand_name,
         canonical_domain=settings.web.canonical_domain,
@@ -18,7 +19,13 @@ def _shared_context(request: Request) -> dict[str, object]:
         terms_url=settings.web.terms_url,
         safety_policy_url=settings.web.safety_policy_url,
     )
-    return {"request": request, "site": context}
+    return {
+        "request": request,
+        "site": context,
+        "clerk_enabled": container.clerk_auth_service.enabled,
+        "clerk_publishable_key": settings.clerk.publishable_key,
+        "clerk_frontend_api_url": settings.clerk.frontend_api_url,
+    }
 
 
 @router.get("/")

@@ -17,6 +17,7 @@
   {% if stripe_enabled %}
   <form method="post" action="/app/billing/checkout" class="grid">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="plan_key" value="{{ selected_plan_key or 'chat' }}">
     <button type="submit">Start or Manage Subscription</button>
   </form>
   {% else %}

@@ -1,0 +1,1071 @@
+(function () {
+  const root = document.querySelector("[data-portal-initialize]");
+  if (!root) {
+    return;
+  }
+
+  document.documentElement.classList.add("js");
+
+  const payloadNode = document.getElementById("portal-initialize-data");
+  if (!payloadNode) {
+    return;
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(payloadNode.textContent || "{}");
+  } catch {
+    return;
+  }
+
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const form = document.getElementById("portal-initialize-form");
+  const saveIndicator = document.getElementById("initialization-save-indicator");
+  const currentMeta = document.getElementById("initialization-step-meta");
+  const currentTitle = document.getElementById("initialization-step-title");
+  const currentDescription = document.getElementById("initialization-step-description");
+  const backButton = document.getElementById("initialization-back-button");
+  const nextButton = document.getElementById("initialization-next-button");
+  const billingButton = document.getElementById("initialization-billing-button");
+  const billingSelectedPlan = document.getElementById("billing-selected-plan");
+  const billingSubscriptionStatus = document.getElementById("billing-subscription-status");
+  const panels = Array.from(root.querySelectorAll("[data-step-panel]"));
+  const indicators = Array.from(root.querySelectorAll("[data-step-indicator]"));
+  const summaryNodes = Array.from(root.querySelectorAll("[data-summary-field]"));
+  const fieldErrors = Array.from(root.querySelectorAll("[data-error-for]"));
+  const previewBoxes = Array.from(root.querySelectorAll("[data-preview-box]"));
+  const aiPreviewBox = document.getElementById("initialization-ai-preview");
+  const aiPreviewMessage = document.getElementById("initialization-ai-preview-message");
+  const aiPreviewCaption = document.getElementById("initialization-ai-preview-caption");
+
+  const steps = Array.isArray(payload.steps) ? payload.steps : [];
+  const visibleSteps = steps.filter((step) => step.key !== "complete");
+  const stepOrder = Array.isArray(payload.step_order) ? payload.step_order : [];
+  const stepMap = new Map(steps.map((step) => [step.key, step]));
+  const planMap = new Map(
+    (Array.isArray(payload.plan_options) ? payload.plan_options : []).map((plan) => [plan.key, plan])
+  );
+  const previewTimers = new WeakMap();
+  const aiPreviewCache = new Map();
+
+  let activeStep = payload.current_step || root.getAttribute("data-current-step") || "welcome";
+  let completedSteps = new Set(Array.isArray(payload.completed_steps) ? payload.completed_steps : []);
+  let snapshot = payload.snapshot || {};
+  let summary = payload.summary || {};
+  let billingStatus = payload.billing_status || "incomplete";
+  let inFlight = false;
+  let autosaveTimer = null;
+  let lastSavedAt = new Date();
+  let previewRequestTimer = null;
+  let pendingPreviewKey = "";
+
+  const stepFields = {
+    household: ["mode", "relationship", "household_name", "timezone"],
+    child: ["profile_name", "child_phone_number", "birth_year", "notes"],
+    preferences: [
+      "preferred_pacing",
+      "preferred_pacing_custom",
+      "response_style",
+      "response_style_custom",
+      "voice_enabled",
+      "proactive_check_ins",
+      "parent_visibility_mode",
+      "alert_threshold",
+      "quiet_hours_start",
+      "quiet_hours_end",
+      "daily_cadence",
+      "communication_notes",
+    ],
+    plan: ["selected_plan_key"],
+  };
+
+  const humanize = (value) =>
+    String(value || "")
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (match) => match.toUpperCase());
+
+  const planLabel = (planKey) => {
+    const key = String(planKey || "").trim().toLowerCase();
+    if (!key) {
+      return "Not selected yet";
+    }
+    return planMap.get(key)?.label || humanize(key);
+  };
+
+  const visibilityLabel = (value) => {
+    if (value === "full_transcript") {
+      return "Full transcript + events";
+    }
+    if (value === "summary_with_alerts") {
+      return "Summary + alerts emphasis";
+    }
+    return humanize(value || "Not set yet");
+  };
+
+  const summaryValue = (field, value) => {
+    if (field === "selected_plan_key") {
+      return planLabel(value);
+    }
+    if (field === "subscription_status") {
+      return humanize(value || "incomplete");
+    }
+    if (field === "relationship_label") {
+      return humanize(value || "Not set yet");
+    }
+    if (field === "parent_visibility_mode") {
+      return visibilityLabel(value);
+    }
+    if (field === "preferred_pacing") {
+      return value || "Not set yet";
+    }
+    return value || "Not set yet";
+  };
+
+  const formatSavedAt = (date) => {
+    const formatted = new Intl.DateTimeFormat([], {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    })
+      .format(date)
+      .replace(/\s?(AM|PM)$/i, (match) => match.trim().toLowerCase());
+    return `Saved ${formatted}`;
+  };
+
+  const setSaveState = (state, label) => {
+    if (!saveIndicator) {
+      return;
+    }
+    saveIndicator.dataset.state = state;
+    saveIndicator.textContent = label;
+  };
+
+  const readFieldValue = (name) => {
+    const nodes = Array.from(form.querySelectorAll(`[name="${name}"]`));
+    if (nodes.length === 0) {
+      return "";
+    }
+    const first = nodes[0];
+    if (first.type === "radio") {
+      return form.querySelector(`[name="${name}"]:checked`)?.value || "";
+    }
+    if (first.type === "checkbox") {
+      if (nodes.length > 1) {
+        return nodes.filter((node) => node.checked).map((node) => node.value);
+      }
+      return first.checked;
+    }
+    return first.value;
+  };
+
+  const animatePreviewText = (node, text) => {
+    if (!node) {
+      return;
+    }
+    const nextText = String(text || "");
+    if (node.dataset.lastText === nextText) {
+      return;
+    }
+    node.dataset.lastText = nextText;
+    const existingTimer = previewTimers.get(node);
+    if (existingTimer) {
+      window.clearTimeout(existingTimer);
+      previewTimers.delete(node);
+    }
+    if (reduceMotion) {
+      node.textContent = nextText;
+      return;
+    }
+    node.textContent = "";
+    let index = 0;
+    const typeNext = () => {
+      index += 1;
+      node.textContent = nextText.slice(0, index);
+      if (index < nextText.length) {
+        const timer = window.setTimeout(typeNext, 8);
+        previewTimers.set(node, timer);
+      } else {
+        previewTimers.delete(node);
+      }
+    };
+    typeNext();
+  };
+
+  const variantIndexFor = (seed, length) => {
+    const text = String(seed || "");
+    let hash = 7;
+    for (let i = 0; i < text.length; i += 1) {
+      hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
+    }
+    return length > 0 ? hash % length : 0;
+  };
+
+  const pickVariant = (variants, seed) => {
+    if (!Array.isArray(variants) || variants.length === 0) {
+      return "";
+    }
+    return variants[variantIndexFor(seed, variants.length)] || variants[0];
+  };
+
+  const buildPreviewContent = (key) => {
+    const childNameRaw = String(readFieldValue("profile_name") || snapshot.profile_name || "").trim();
+    const childName = childNameRaw || "there";
+    const childLabel = childNameRaw || "your child";
+    const preferredPacing = String(readFieldValue("preferred_pacing") || snapshot.preferred_pacing || "");
+    const responseStyle = String(readFieldValue("response_style") || snapshot.response_style || "");
+    const proactiveCheckIns = Boolean(readFieldValue("proactive_check_ins"));
+    const parentVisibilityMode = String(readFieldValue("parent_visibility_mode") || snapshot.parent_visibility_mode || "");
+    const alertThreshold = String(readFieldValue("alert_threshold") || snapshot.alert_threshold || "");
+    const quietHoursStart = String(readFieldValue("quiet_hours_start") || snapshot.quiet_hours_start || "");
+    const quietHoursEnd = String(readFieldValue("quiet_hours_end") || snapshot.quiet_hours_end || "");
+    const dailyCadence = String(readFieldValue("daily_cadence") || snapshot.daily_cadence || "");
+    const selectedPlanKey = String(readFieldValue("selected_plan_key") || snapshot.selected_plan_key || "");
+
+    if (key === "preferred_pacing") {
+      if (!preferredPacing) {
+        return { visible: false, message: "", caption: "" };
+      }
+      const pacingExamples = {
+        gentle: [
+          `Hey ${childName}, take your time. What happened?`,
+          `${childName}, no rush. You can tell me a little bit at a time.`,
+          `Hi ${childName}. We can go slowly. What do you want to say first?`,
+          `${childName}, it's okay to start small. What happened today?`,
+          `Hey ${childName}, you don't have to say it all at once.`,
+          `${childName}, we can keep this nice and easy. What happened?`,
+        ],
+        balanced: [
+          `Tell me what happened, ${childName}. We can go one step at a time.`,
+          `Hey ${childName}, what happened today? We'll work through it together.`,
+          `${childName}, start wherever you want. I'll help you with the rest.`,
+          `Okay ${childName}, tell me the main part first.`,
+          `${childName}, what happened? We can keep it simple.`,
+          `Hey ${childName}, what do you want to talk about first?`,
+        ],
+        direct: [
+          `${childName}, tell me the main thing first.`,
+          `Hey ${childName}, what's the biggest part of this?`,
+          `${childName}, what happened first, and what's the hard part now?`,
+          `Let's keep it simple, ${childName}. What happened?`,
+          `${childName}, what's the problem right now?`,
+          `Quick version first, ${childName}. Then we can keep going.`,
+        ],
+        reflective: [
+          `${childName}, what part of today is still on your mind?`,
+          `When you think about today, ${childName}, what stands out the most?`,
+          `${childName}, what part is still bothering you a little?`,
+          `What feeling is sticking around right now, ${childName}?`,
+          `${childName}, what moment are you still thinking about?`,
+          `When you look back on today, ${childName}, what feels important?`,
+        ],
+        playful: [
+          `Okay ${childName}, tell me the biggest part of your day.`,
+          `${childName}, was today more good, bad, or just weird?`,
+          `Hey ${childName}, what was the most interesting part of today?`,
+          `${childName}, tell me the part you want to talk about first.`,
+          `Okay ${childName}, what was the big moment today?`,
+          `${childName}, what part of today feels most worth talking about?`,
+        ],
+        steady: [
+          `${childName}, let's go in order. What happened first?`,
+          `Start at the beginning, ${childName}, and we'll go step by step.`,
+          `${childName}, tell me what happened first, then what happened next.`,
+          `One step at a time, ${childName}. What came first?`,
+          `${childName}, we can keep this simple. Start at the beginning.`,
+          `Hey ${childName}, walk me through it slowly, one part at a time.`,
+        ],
+      };
+      const fallbackStyle = responseStyle || "warm";
+      const styleClosers = {
+        warm: [
+          "I'm here with you.",
+          "Thank you for telling me.",
+          "I'm listening.",
+          "It's okay. I'm with you.",
+          "I'm glad you told me.",
+          "That makes sense.",
+        ],
+        calm: [
+          "We can take this slowly.",
+          "No rush.",
+          "One step at a time is okay.",
+          "We can keep this simple.",
+          "Let's slow it down a little.",
+          "It's okay to go piece by piece.",
+        ],
+        encouraging: [
+          "We'll figure it out together.",
+          "You can do this.",
+          "We'll take the next step together.",
+          "You're doing okay.",
+          "We can keep going.",
+          "You're not alone in this.",
+        ],
+        reassuring: [
+          "You're okay.",
+          "It's okay to talk about this.",
+          "You're not in trouble.",
+          "It makes sense that you feel that way.",
+          "I'm still here.",
+          "You didn't do anything wrong by telling me.",
+        ],
+        upbeat: [
+          "We've got this.",
+          "Let's work through it together.",
+          "We can handle this.",
+          "Let's keep going.",
+          "Let's figure it out.",
+          "Still with you.",
+        ],
+        straightforward: [
+          "Let's keep it simple.",
+          "Let's talk about the main part.",
+          "We'll figure out the problem together.",
+          "Let's stay clear and simple.",
+          "Tell me the main thing.",
+          "Let's work on what's in front of us.",
+        ],
+      };
+      const pacingMessage = pickVariant(
+        pacingExamples[preferredPacing] || pacingExamples.balanced,
+        `${childName}|${preferredPacing}|${responseStyle}|pacing`
+      );
+      const closer = pickVariant(
+        styleClosers[fallbackStyle] || styleClosers.warm,
+        `${childName}|${preferredPacing}|${responseStyle}|closer`
+      );
+      return {
+        visible: true,
+        message: `${pacingMessage} ${closer}`,
+        caption: `${humanize(preferredPacing)} pacing shapes how quickly Resona moves ${childLabel} through the conversation.`,
+      };
+    }
+
+    if (key === "response_style") {
+      if (!responseStyle) {
+        return { visible: false, message: "", caption: "" };
+      }
+      const styleResponses = {
+        warm: [
+          `Hey ${childName}, thank you for telling me. I'm here with you.`,
+          `That makes sense, ${childName}. I'm listening.`,
+          `I'm glad you told me, ${childName}.`,
+          `Hey ${childName}, we can talk about it together.`,
+          `I'm right here, ${childName}.`,
+          `Thank you for saying that, ${childName}.`,
+        ],
+        calm: [
+          `${childName}, let's slow down and take one part at a time.`,
+          `No rush, ${childName}.`,
+          `We can keep this simple, ${childName}.`,
+          `${childName}, tell me one small part first.`,
+          `It's okay to go slowly, ${childName}.`,
+          `We don't have to do it all at once, ${childName}.`,
+        ],
+        encouraging: [
+          `${childName}, you can do this. We'll take the next step together.`,
+          `We're okay, ${childName}. We'll work through it.`,
+          `${childName}, one step is enough right now.`,
+          `Let's keep going together, ${childName}.`,
+          `You're doing okay, ${childName}.`,
+          `${childName}, we'll figure it out one part at a time.`,
+        ],
+        reassuring: [
+          `${childName}, you're okay.`,
+          `It's okay to feel like this, ${childName}.`,
+          `You're safe to talk about it, ${childName}.`,
+          `You're not in trouble, ${childName}.`,
+          `It makes sense that you feel that way, ${childName}.`,
+          `${childName}, I'm still here with you.`,
+        ],
+        upbeat: [
+          `Okay ${childName}, let's work through it together.`,
+          `${childName}, we've got this.`,
+          `Hey ${childName}, let's see what helps next.`,
+          `${childName}, we can handle this one step at a time.`,
+          `Alright ${childName}, let's keep going.`,
+          `Still with you, ${childName}.`,
+        ],
+        straightforward: [
+          `${childName}, tell me the main thing.`,
+          `Let's keep it simple, ${childName}. What happened?`,
+          `${childName}, what's the hard part right now?`,
+          `Tell me the clearest version, ${childName}.`,
+          `${childName}, what's going on right now?`,
+          `Let's talk about the main part first, ${childName}.`,
+        ],
+      };
+      return {
+        visible: true,
+        message: pickVariant(styleResponses[responseStyle] || styleResponses.warm, `${childName}|${responseStyle}|style`),
+        caption: `${humanize(responseStyle)} tone changes how emotionally supportive the reply feels for ${childLabel}.`,
+      };
+    }
+
+    if (key === "parent_visibility_mode") {
+      if (!parentVisibilityMode) {
+        return { visible: false, message: "", caption: "" };
+      }
+      const visibilityCopy =
+        parentVisibilityMode === "summary_with_alerts"
+          ? `For ${childLabel}, the portal would center a short summary like: "Mood dropped after school conversation; one reassurance exchange; no severe escalation."`
+          : `For ${childLabel}, the portal would keep the full transcript visible and attach safety notes directly beside the messages that triggered them.`;
+      return {
+        visible: true,
+        message: visibilityCopy,
+        caption: visibilityLabel(parentVisibilityMode),
+      };
+    }
+
+    if (key === "alert_threshold") {
+      if (!alertThreshold) {
+        return { visible: false, message: "", caption: "" };
+      }
+      const thresholdCopy = {
+        low: "Low threshold is the most sensitive, so the portal can surface early warning signs and lower-level changes sooner.",
+        medium: "Medium threshold is the balanced default, so the portal highlights more meaningful concerns without surfacing every small fluctuation.",
+        high: "High threshold is the least sensitive, so the portal mainly pushes forward stronger, clearer situations and keeps more minor signals in the background.",
+      };
+      const proactiveCopy = proactiveCheckIns
+        ? `With proactive check-ins on, ${childLabel} could also get a gentle follow-up later if the conversation ends on a heavy note.`
+        : `With proactive check-ins off, Resona would wait for ${childLabel} to initiate again instead of following up on its own.`;
+      return {
+        visible: true,
+        message: `${thresholdCopy[alertThreshold] || thresholdCopy.medium} ${proactiveCopy}`,
+        caption: `${humanize(alertThreshold)} threshold for parent-facing alerts`,
+      };
+    }
+
+    if (key === "daily_cadence") {
+      if (!dailyCadence) {
+        return { visible: false, message: "", caption: "" };
+      }
+      const cadenceCopy = {
+        adaptive: [
+          `If ${childLabel} starts chatting at different times each day, Resona would follow that rhythm instead of forcing a fixed schedule.`,
+          `Adaptive cadence lets Resona meet ${childLabel} where the week naturally opens up.`,
+          `This keeps the timing flexible so conversations can happen when ${childLabel} is actually receptive.`,
+          `Adaptive timing works best when ${childLabel}'s energy changes a lot from day to day.`,
+          `Resona would learn the natural openings in ${childLabel}'s routine and stay responsive to those.`,
+          `This keeps things from feeling overly scheduled if ${childLabel} responds differently each day.`,
+        ],
+        after_school: [
+          `"Hey ${childName}, how did today feel once everything settled down?"`,
+          `"Hi ${childName}, do you want to tell me one good part and one hard part from school?"`,
+          `"Hey ${childName}, are you in the mood to decompress for a minute after school?"`,
+          `"How was the day, ${childName}? We can do the short version first."`,
+          `"Hi ${childName}, what stuck with you most from today?"`,
+          `"Hey ${childName}, want a calm check-in now that the school day is over?"`,
+        ],
+        evening: [
+          `"Hey ${childName}, before the day ends, what feels worth talking through?"`,
+          `"Hi ${childName}, do you want a quieter end-of-day check-in tonight?"`,
+          `"Before you settle in, ${childName}, what part of today is still on your mind?"`,
+          `"Hey ${childName}, want to close out the day with a calm reset?"`,
+          `"Tonight feels like a good time to slow down a little, ${childName}. Want to talk?"`,
+          `"Hi ${childName}, do you want to sort through the day before quiet hours start?"`,
+        ],
+      };
+      const voiceCopy = Boolean(readFieldValue("voice_enabled"))
+        ? `If voice is included in the plan, the same tone can carry across calls with ${childLabel} too.`
+        : `This setup stays text-first unless voice is enabled later for ${childLabel}.`;
+      const quietHoursCopy =
+        quietHoursStart && quietHoursEnd
+          ? `Quiet hours will be respected from ${quietHoursStart} to ${quietHoursEnd}.`
+          : "You can add quiet hours now or refine them later in the portal.";
+      const cadenceMessage = pickVariant(
+        cadenceCopy[dailyCadence] || cadenceCopy.adaptive,
+        `${childName}|${dailyCadence}|cadence`
+      );
+      return {
+        visible: true,
+        message: `${cadenceMessage} ${voiceCopy}`,
+        caption: quietHoursCopy,
+      };
+    }
+
+    if (key === "selected_plan_key") {
+      if (!selectedPlanKey) {
+        return { visible: false, message: "", caption: "" };
+      }
+      const includedCredits = planMap.get(selectedPlanKey)?.included_credits_usd;
+      return selectedPlanKey === "voice"
+        ? {
+            visible: true,
+            message:
+              `Resona Voice is the better fit if ${childLabel} responds well to hearing a familiar voice, or if you want calls and texts to feel like one continuous relationship.`,
+            caption: `$${includedCredits || 30} in included monthly usage credits, then usage billing after credits are consumed.`,
+          }
+        : {
+            visible: true,
+            message:
+              `Resona Chat is the better fit if texting is the main channel for ${childLabel}, you want a calmer monthly starting point, and voice can wait until you know the household wants it.`,
+            caption: `$${includedCredits || 10} in included monthly usage credits, then usage billing after credits are consumed.`,
+          };
+    }
+
+    return { visible: false, message: "", caption: "" };
+  };
+
+  const renderPreviews = () => {
+    previewBoxes.forEach((box) => {
+      const key = box.getAttribute("data-preview-box") || "";
+      const content = buildPreviewContent(key);
+      const messageNode = box.querySelector("[data-preview-message]");
+      const captionNode = box.querySelector("[data-preview-caption]");
+      box.hidden = !content.visible;
+      if (!content.visible) {
+        if (messageNode) {
+          messageNode.textContent = "";
+          messageNode.dataset.lastText = "";
+        }
+        if (captionNode) {
+          captionNode.textContent = "";
+        }
+        return;
+      }
+      animatePreviewText(messageNode, content.message);
+      if (captionNode) {
+        captionNode.textContent = content.caption || "";
+      }
+    });
+  };
+
+  const listSummary = (values, customText, suffix) => {
+    const items = [
+      ...values.map((value) => humanize(value).toLowerCase()),
+      ...(customText ? [customText] : []),
+    ].filter(Boolean);
+    if (items.length === 0) {
+      return `flexible ${suffix}`;
+    }
+    if (items.length === 1) {
+      return `${items[0]} ${suffix}`;
+    }
+    if (items.length === 2) {
+      return `${items[0]} and ${items[1]} ${suffix}`;
+    }
+    return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]} ${suffix}`;
+  };
+
+  const collectPreferencePreviewPayload = () => ({
+    profile_name: String(readFieldValue("profile_name") || snapshot.profile_name || "").trim(),
+    preferred_pacing: Array.isArray(readFieldValue("preferred_pacing")) ? readFieldValue("preferred_pacing") : [],
+    preferred_pacing_custom: String(readFieldValue("preferred_pacing_custom") || snapshot.preferred_pacing_custom || "").trim(),
+    response_style: Array.isArray(readFieldValue("response_style")) ? readFieldValue("response_style") : [],
+    response_style_custom: String(readFieldValue("response_style_custom") || snapshot.response_style_custom || "").trim(),
+    communication_notes: String(readFieldValue("communication_notes") || snapshot.communication_notes || "").trim(),
+    voice_enabled: Boolean(readFieldValue("voice_enabled")),
+    proactive_check_ins: Boolean(readFieldValue("proactive_check_ins")),
+    daily_cadence: String(readFieldValue("daily_cadence") || snapshot.daily_cadence || "").trim(),
+  });
+
+  const preferencePreviewKey = (previewPayload) => JSON.stringify(previewPayload);
+
+  const buildLocalExamplePreview = (previewPayload) => {
+    const childName = previewPayload.profile_name || "there";
+    const pacing = Array.isArray(previewPayload.preferred_pacing) ? previewPayload.preferred_pacing : [];
+    const tones = Array.isArray(previewPayload.response_style) ? previewPayload.response_style : [];
+    const firstPacing = pacing[0] || "";
+    const firstTone = tones[0] || "";
+    let opener = `Hey ${childName}, tell me what happened when you're ready.`;
+    if (firstPacing === "direct") {
+      opener = `${childName}, tell me the main part first.`;
+    } else if (firstPacing === "steady") {
+      opener = `${childName}, start at the beginning and we can go one step at a time.`;
+    } else if (firstPacing === "reflective") {
+      opener = `${childName}, what part of today is still sitting with you?`;
+    } else if (firstPacing === "playful") {
+      opener = `Hey ${childName}, what part of today felt the biggest?`;
+    }
+    const closers = {
+      warm: "I'm here with you.",
+      calm: "We can keep it simple.",
+      encouraging: "We'll figure it out together.",
+      reassuring: "You're okay, and you can say it however you want.",
+      upbeat: "We've got this.",
+      straightforward: "We can work through the main part first.",
+    };
+    return {
+      message: `${opener} ${closers[firstTone] || "I'm listening."}`,
+      caption:
+        "Example only. This blends " +
+        listSummary(pacing, previewPayload.preferred_pacing_custom, "pacing") +
+        " with " +
+        listSummary(tones, previewPayload.response_style_custom, "tone") +
+        ", and you can change these later.",
+    };
+  };
+
+  const setAiPreviewState = ({ message = "", caption = "", pending = false }) => {
+    if (aiPreviewBox) {
+      aiPreviewBox.dataset.state = pending ? "loading" : message ? "ready" : "idle";
+    }
+    if (aiPreviewMessage) {
+      animatePreviewText(aiPreviewMessage, message);
+    }
+    if (aiPreviewCaption) {
+      aiPreviewCaption.textContent = caption;
+    }
+  };
+
+  const hasEnoughPreferencePreviewContext = (previewPayload) =>
+    Boolean(previewPayload.profile_name) &&
+    (previewPayload.preferred_pacing.length > 0 || previewPayload.preferred_pacing_custom) &&
+    (previewPayload.response_style.length > 0 || previewPayload.response_style_custom);
+
+  const currentPreferencePreviewKey = () => preferencePreviewKey(collectPreferencePreviewPayload());
+
+  const loadingPreviewState = () => ({
+    message: "Generating a new example...",
+    caption: "Using your latest selections to write a fresh sample reply.",
+    pending: true,
+  });
+
+  const schedulePreferencePreview = (previewPayload) => {
+    if (previewRequestTimer) {
+      window.clearTimeout(previewRequestTimer);
+    }
+    if (!hasEnoughPreferencePreviewContext(previewPayload)) {
+      return;
+    }
+    const cacheKey = preferencePreviewKey(previewPayload);
+    if (aiPreviewCache.has(cacheKey) || pendingPreviewKey === cacheKey) {
+      return;
+    }
+    previewRequestTimer = window.setTimeout(() => {
+      requestPreferencePreview(previewPayload);
+    }, 720);
+  };
+
+  const refreshAiPreviewPrompt = () => {
+    if (!aiPreviewBox) {
+      return;
+    }
+    const previewPayload = collectPreferencePreviewPayload();
+    if (!hasEnoughPreferencePreviewContext(previewPayload)) {
+      if (previewRequestTimer) {
+        window.clearTimeout(previewRequestTimer);
+      }
+      setAiPreviewState({
+        message: "Choose a pacing, a tone, and add the child name above to generate a sample reply.",
+        caption: "We only generate an example when there is enough context to make it useful.",
+      });
+      return;
+    }
+    const cacheKey = preferencePreviewKey(previewPayload);
+    const cached = aiPreviewCache.get(cacheKey);
+    if (cached) {
+      setAiPreviewState({
+        message: cached.message,
+        caption: cached.caption,
+      });
+      return;
+    }
+    setAiPreviewState(loadingPreviewState());
+    schedulePreferencePreview(previewPayload);
+  };
+
+  const requestPreferencePreview = async (inputPayload) => {
+    const previewPayload = inputPayload || collectPreferencePreviewPayload();
+    if (!hasEnoughPreferencePreviewContext(previewPayload)) {
+      return;
+    }
+    const cacheKey = preferencePreviewKey(previewPayload);
+    const cached = aiPreviewCache.get(cacheKey);
+    if (cached) {
+      setAiPreviewState({
+        message: cached.message,
+        caption: cached.caption,
+      });
+      return;
+    }
+    pendingPreviewKey = cacheKey;
+    setAiPreviewState(loadingPreviewState());
+    const fallback = buildLocalExamplePreview(previewPayload);
+    try {
+      const result = await requestJson(payload.preview_url, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          csrf_token: payload.csrf_token,
+          data: previewPayload,
+        }),
+      });
+      if (!result) {
+        return;
+      }
+      const { response, data } = result;
+      if (!response.ok) {
+        const errorCaption =
+          response.status === 429
+            ? "Preview limit reached for now, so we’re showing the local example instead."
+            : data.detail || fallback.caption;
+        if (currentPreferencePreviewKey() !== cacheKey) {
+          return;
+        }
+        setAiPreviewState({
+          message: fallback.message,
+          caption: errorCaption,
+          pending: false,
+        });
+        return;
+      }
+      if (!String(data.source || "").startsWith("fallback")) {
+        aiPreviewCache.set(cacheKey, { message: data.message, caption: data.caption });
+      }
+      if (currentPreferencePreviewKey() !== cacheKey) {
+        return;
+      }
+      setAiPreviewState({
+        message: data.message,
+        caption: data.caption,
+        pending: false,
+      });
+    } catch (error) {
+      console.error("Initialization preview failed", error);
+      if (currentPreferencePreviewKey() !== cacheKey) {
+        return;
+      }
+      setAiPreviewState({
+        message: fallback.message,
+        caption: "Instant example based on your selections while the live AI preview reconnects.",
+        pending: false,
+      });
+    } finally {
+      if (pendingPreviewKey === cacheKey) {
+        pendingPreviewKey = "";
+      }
+    }
+  };
+
+  const clearErrors = () => {
+    fieldErrors.forEach((node) => {
+      node.textContent = "";
+    });
+  };
+
+  const renderErrors = (errors) => {
+    clearErrors();
+    Object.entries(errors || {}).forEach(([field, message]) => {
+      const node = form.querySelector(`[data-error-for="${field}"]`);
+      if (node) {
+        node.textContent = String(message || "");
+      }
+    });
+  };
+
+  const syncFormValue = (name, value) => {
+    const nodes = Array.from(form.querySelectorAll(`[name="${name}"]`));
+    if (nodes.length === 0) {
+      return;
+    }
+    const first = nodes[0];
+    if (first.type === "radio") {
+      nodes.forEach((node) => {
+        node.checked = node.value === String(value || "");
+      });
+      return;
+    }
+    if (first.type === "checkbox") {
+      if (nodes.length > 1) {
+        const selected = Array.isArray(value)
+          ? value.map((item) => String(item))
+          : value
+            ? [String(value)]
+            : [];
+        nodes.forEach((node) => {
+          node.checked = selected.includes(node.value);
+        });
+        return;
+      }
+      first.checked = Boolean(value);
+      return;
+    }
+    first.value = value == null ? "" : String(value);
+  };
+
+  const syncForm = () => {
+    Object.entries(snapshot || {}).forEach(([name, value]) => {
+      syncFormValue(name, value);
+    });
+    renderPreviews();
+    refreshAiPreviewPrompt();
+  };
+
+  const renderSummary = () => {
+    summaryNodes.forEach((node) => {
+      const field = node.getAttribute("data-summary-field") || "";
+      node.textContent = summaryValue(field, summary[field]);
+    });
+    if (billingSelectedPlan) {
+      billingSelectedPlan.textContent = planLabel(summary.selected_plan_key || snapshot.selected_plan_key);
+    }
+    if (billingSubscriptionStatus) {
+      billingSubscriptionStatus.textContent = humanize(billingStatus || summary.subscription_status || "incomplete");
+    }
+  };
+
+  const updateProgress = () => {
+    indicators.forEach((indicator) => {
+      const step = indicator.getAttribute("data-step-indicator") || "";
+      indicator.classList.toggle("is-active", step === activeStep);
+      indicator.classList.toggle("is-complete", completedSteps.has(step));
+      indicator.disabled = !(step === activeStep || completedSteps.has(step));
+    });
+  };
+
+  const setPanelVisibility = (panel, visible) => {
+    panel.hidden = !visible;
+    panel.classList.toggle("is-active", visible);
+  };
+
+  const renderStep = () => {
+    const stepMeta = stepMap.get(activeStep);
+    root.setAttribute("data-current-step", activeStep);
+    if (currentMeta) {
+      if (activeStep === "complete") {
+        currentMeta.textContent = "Setup complete";
+      } else {
+        const visibleIndex = visibleSteps.findIndex((step) => step.key === activeStep);
+        currentMeta.textContent =
+          visibleIndex >= 0 ? `Step ${visibleIndex + 1} of ${visibleSteps.length}` : "Guided setup";
+      }
+    }
+    if (currentTitle) {
+      currentTitle.textContent = stepMeta?.label || humanize(activeStep);
+    }
+    if (currentDescription) {
+      currentDescription.textContent =
+        activeStep === "complete"
+          ? "Everything is ready. You can head straight into the dashboard."
+          : stepMeta?.description || "";
+    }
+    panels.forEach((panel) => {
+      const step = panel.getAttribute("data-step-panel");
+      setPanelVisibility(panel, step === activeStep);
+    });
+    updateProgress();
+    renderPreviews();
+    refreshAiPreviewPrompt();
+
+    if (backButton) {
+      backButton.hidden = activeStep === "welcome" || activeStep === "complete";
+      backButton.disabled = inFlight || activeStep === "welcome" || activeStep === "complete";
+    }
+    if (nextButton) {
+      nextButton.hidden = activeStep === "billing" || activeStep === "complete";
+      nextButton.disabled = inFlight;
+      nextButton.textContent = activeStep === "welcome" ? "Start setup" : activeStep === "plan" ? "Continue to billing" : "Next";
+    }
+  };
+
+  const collectStepData = (step) => {
+    const data = {};
+    const fields = stepFields[step] || [];
+    fields.forEach((name) => {
+      const nodes = Array.from(form.querySelectorAll(`[name="${name}"]`));
+      if (nodes.length === 0) {
+        return;
+      }
+      data[name] = readFieldValue(name);
+    });
+    return data;
+  };
+
+  const applyServerState = (responsePayload, preserveStep) => {
+    snapshot = responsePayload.snapshot || snapshot;
+    summary = responsePayload.summary || summary;
+    billingStatus = responsePayload.billing_status || billingStatus;
+    completedSteps = new Set(Array.isArray(responsePayload.completed_steps) ? responsePayload.completed_steps : []);
+    syncForm();
+    renderSummary();
+    if (!preserveStep && responsePayload.current_step) {
+      activeStep = responsePayload.current_step;
+    }
+    renderStep();
+  };
+
+  const requestJson = async (url, options) => {
+    const response = await fetch(url, options);
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) {
+      if (response.redirected) {
+        window.location.href = response.url;
+        return null;
+      }
+      throw new Error("Unexpected response from server");
+    }
+    const data = await response.json();
+    return { response, data };
+  };
+
+  const saveStep = async (step, mode) => {
+    const isAutosave = mode === "autosave";
+    if (inFlight && !isAutosave) {
+      return { ok: false };
+    }
+    if (!isAutosave) {
+      inFlight = true;
+      renderStep();
+    }
+    setSaveState("saving", "Saving...");
+    try {
+      const result = await requestJson(payload.save_url, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Resona-Step-Mode": mode,
+        },
+        body: JSON.stringify({
+          step,
+          data: collectStepData(step),
+          csrf_token: payload.csrf_token,
+        }),
+      });
+      if (!result) {
+        return { ok: false };
+      }
+      const { response, data } = result;
+      applyServerState(data, isAutosave);
+      renderErrors(data.validation_errors || {});
+      if (!response.ok) {
+        setSaveState("error", "Needs attention");
+        return { ok: false, data };
+      }
+      lastSavedAt = new Date();
+      setSaveState("saved", formatSavedAt(lastSavedAt));
+      return { ok: true, data };
+    } catch (error) {
+      console.error("Initialization save failed", error);
+      setSaveState("error", "Save failed");
+      return { ok: false };
+    } finally {
+      if (!isAutosave) {
+        inFlight = false;
+        renderStep();
+      }
+    }
+  };
+
+  const scheduleAutosave = () => {
+    if (!["household", "child", "preferences", "plan"].includes(activeStep)) {
+      return;
+    }
+    if (autosaveTimer) {
+      window.clearTimeout(autosaveTimer);
+    }
+    autosaveTimer = window.setTimeout(() => {
+      saveStep(activeStep, "autosave");
+    }, 420);
+  };
+
+  const setActiveStep = async (step, persistCurrent) => {
+    if (persistCurrent && ["household", "child", "preferences", "plan"].includes(activeStep)) {
+      await saveStep(activeStep, "autosave");
+    }
+    activeStep = step;
+    clearErrors();
+    renderStep();
+  };
+
+  form.addEventListener("input", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    if (target.matches("input, textarea")) {
+      renderPreviews();
+      refreshAiPreviewPrompt();
+      scheduleAutosave();
+    }
+  });
+
+  form.addEventListener("change", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    if (target.matches("select, input[type='checkbox'], input[type='radio']")) {
+      renderPreviews();
+      refreshAiPreviewPrompt();
+      scheduleAutosave();
+    }
+  });
+
+  indicators.forEach((indicator) => {
+    indicator.addEventListener("click", async () => {
+      const targetStep = indicator.getAttribute("data-step-jump") || "";
+      if (!targetStep || targetStep === activeStep || indicator.disabled) {
+        return;
+      }
+      await setActiveStep(targetStep, true);
+    });
+  });
+
+  if (backButton) {
+    backButton.addEventListener("click", async () => {
+      const index = stepOrder.indexOf(activeStep);
+      const previousStep = stepOrder[Math.max(index - 1, 0)] || "welcome";
+      if (previousStep === activeStep) {
+        return;
+      }
+      await setActiveStep(previousStep, true);
+    });
+  }
+
+  if (nextButton) {
+    nextButton.addEventListener("click", async () => {
+      const result = await saveStep(activeStep, "advance");
+      if (result.ok && result.data?.current_step) {
+        activeStep = result.data.current_step;
+        renderStep();
+      }
+    });
+  }
+
+  if (billingButton) {
+    billingButton.addEventListener("click", async () => {
+      setSaveState("saving", "Redirecting");
+      try {
+        const selectedPlanKey =
+          collectStepData("plan").selected_plan_key ||
+          snapshot.selected_plan_key ||
+          summary.selected_plan_key ||
+          "";
+        const result = await requestJson(payload.billing_url, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            csrf_token: payload.csrf_token,
+            selected_plan_key: selectedPlanKey,
+          }),
+        });
+        if (!result) {
+          return;
+        }
+        const { response, data } = result;
+        if (!response.ok) {
+          renderErrors(data.validation_errors || { billing: data.detail || "Unable to start checkout." });
+          setSaveState("error", "Needs attention");
+          return;
+        }
+        window.location.href = data.url;
+      } catch (error) {
+        console.error("Billing checkout failed", error);
+        renderErrors({ billing: "Unable to start checkout right now." });
+        setSaveState("error", "Checkout failed");
+      }
+    });
+  }
+
+  syncForm();
+  renderSummary();
+  renderStep();
+  setSaveState("saved", formatSavedAt(lastSavedAt));
+})();

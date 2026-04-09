@@ -27,6 +27,7 @@ openai:
   image_api_timeout_seconds: 900
   max_retries: 3
   chat_model: gpt-5.4-mini
+  portal_preview_model: gpt-4o-mini
   embedding_model: text-embedding-3-small
   image_model: gpt-image-1
   speech_model: gpt-4o-mini-tts
@@ -48,6 +49,7 @@ scheduling:
   cleanup_hours: 24
   embed_pending_minutes: 10
   daily_life_refresh_minutes: 10
+  usage_reconciliation_minutes: 30
 
 safety:
   daily_message_cap: 60
@@ -152,6 +154,14 @@ admin:
     - 192.168.0.0/16
   trusted_header_name: x-resona-admin-access
   trusted_header_value:
+  clerk_enabled: true
+  clerk_role_allowlist:
+    - org:admin
+    - admin
+    - owner
+  clerk_user_allowlist: []
+  clerk_email_allowlist: []
+  require_clerk_mfa: true
 
 alerting:
   webhook_url:
@@ -181,6 +191,7 @@ clerk:
   audience:
   jwks_url:
   session_cookie_name: __session
+  backend_session_cookie_name: resona_clerk_session
   sign_in_url: /sign-in
   sign_up_url: /sign-up
   sign_out_url:
@@ -193,6 +204,8 @@ stripe:
   webhook_secret:
   publishable_key:
   default_price_id:
+  chat_price_id:
+  voice_price_id:
   success_path: /app/billing?checkout=success
   cancel_path: /app/billing?checkout=cancel
 
@@ -221,6 +234,8 @@ rate_limit:
   otp_send_window_seconds: 900
   otp_check_limit: 12
   otp_check_window_seconds: 900
+  initialize_preview_limit: 12
+  initialize_preview_window_seconds: 3600
 
 web:
   brand_name: Resona

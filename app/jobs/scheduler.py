@@ -66,6 +66,14 @@ class SchedulerService:
             replace_existing=True,
             max_instances=1,
         )
+        self.scheduler.add_job(
+            self.run_usage_reconciliation,
+            "interval",
+            minutes=self.settings.scheduling.usage_reconciliation_minutes,
+            id="usage_reconciliation",
+            replace_existing=True,
+            max_instances=1,
+        )
 
     @asynccontextmanager
     async def _job_context(self, job_name: str):
@@ -117,3 +125,7 @@ class SchedulerService:
                     )
                 )
             run.details_json = {"created": created}
+
+    async def run_usage_reconciliation(self) -> None:
+        async with self._job_context("usage_reconciliation") as (session, run):
+            run.details_json = await self.container.usage_reconciliation_service.reconcile(session, provider="all")

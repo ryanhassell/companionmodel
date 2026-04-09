@@ -1,0 +1,73 @@
+{% extends "portal/base.html" %}
+{% block content %}
+<section class="page-header">
+  <div>
+    <h2>Signing you out</h2>
+    <p class="subtle">We’re closing your Resona portal session securely.</p>
+  </div>
+</section>
+<article class="card" style="max-width:720px;">
+  <p class="subtle">Please wait a moment while we complete sign-out.</p>
+  <p class="pill" id="portal-logout-status">Clearing your session…</p>
+</article>
+{% if clerk_enabled and clerk_publishable_key %}
+<script>
+  window.addEventListener("load", async function () {
+    const statusNode = document.getElementById("portal-logout-status");
+    const redirectUrl = "{{ sign_out_redirect_url }}";
+    const finish = () => window.location.replace(redirectUrl);
+    const wait = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
+    const waitForClerk = () =>
+      new Promise((resolve, reject) => {
+        let attempts = 0;
+        const timer = window.setInterval(() => {
+          attempts += 1;
+          if (window.Clerk) {
+            window.clearInterval(timer);
+            resolve(window.Clerk);
+            return;
+          }
+          if (attempts > 120) {
+            window.clearInterval(timer);
+            reject(new Error("Clerk script did not load"));
+          }
+        }, 50);
+      });
+
+    try {
+      await fetch("/app/auth/clear", {
+        method: "POST",
+        credentials: "same-origin",
+      });
+    } catch {
+      // Keep going; we still want to terminate the Clerk browser session.
+    }
+
+    try {
+      if (statusNode) statusNode.textContent = "Loading secure sign-out…";
+      const clerk = await waitForClerk();
+      await clerk.load({
+        publishableKey: "{{ clerk_publishable_key }}",
+        {% if clerk_frontend_api_url %}frontendApi: "{{ clerk_frontend_api_url }}",{% endif %}
+      });
+      if (statusNode) statusNode.textContent = "Ending your secure Clerk session…";
+      await Promise.race([
+        clerk.signOut({ redirectUrl }),
+        wait(1600),
+      ]);
+      finish();
+    } catch (err) {
+      console.error("Portal logout failed", err);
+      if (statusNode) statusNode.textContent = "Signed out. Redirecting…";
+      finish();
+    }
+  });
+</script>
+{% else %}
+<script>
+  window.addEventListener("load", function () {
+    window.location.replace("{{ sign_out_redirect_url }}");
+  });
+</script>
+{% endif %}
+{% endblock %}

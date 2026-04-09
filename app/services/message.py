@@ -31,6 +31,7 @@ from app.services.safety import SafetyService
 from app.services.safety_rewrite import SafetyRewriteService
 from app.services.schedule import ScheduleService
 from app.services.turn_classifier import TurnClassifierService
+from app.services.usage_ingestion import UsageIngestionService, UsageRecordInput
 from app.utils.text import make_idempotency_key, normalize_text, similarity_score, truncate_text
 from app.utils.time import utc_now
 
@@ -56,6 +57,7 @@ class MessageService:
         candidate_reply_service: CandidateReplyService,
         reply_ranker_service: ReplyRankerService,
         safety_rewrite_service: SafetyRewriteService,
+        usage_ingestion_service: UsageIngestionService,
     ) -> None:
         self.settings = settings
         self.twilio_provider = twilio_provider
@@ -73,6 +75,7 @@ class MessageService:
         self.candidate_reply_service = candidate_reply_service
         self.reply_ranker_service = reply_ranker_service
         self.safety_rewrite_service = safety_rewrite_service
+        self.usage_ingestion_service = usage_ingestion_service
 
     async def handle_inbound_message(self, session: AsyncSession, payload: InboundMessagePayload) -> Message:
         existing = await session.scalar(select(Message).where(Message.provider_message_sid == payload.message_sid))
@@ -100,6 +103,7 @@ class MessageService:
         )
         session.add(inbound)
         await session.flush()
+        await self._record_twilio_inbound_usage(session, message=inbound, payload=payload.raw_form)
         self.conversation_service.mark_inbound(user, conversation)
         for media in payload.media:
             session.add(
@@ -403,6 +407,13 @@ class MessageService:
                     }
                 ],
                 max_output_tokens=220,
+            )
+            await self._record_openai_usage(
+                session,
+                user=user,
+                conversation=conversation,
+                usage=response.get("usage", {}) if isinstance(response, dict) else {},
+                event_type="openai.responses.image_decision",
             )
             if isinstance(response, dict):
                 decision = {
@@ -737,6 +748,13 @@ class MessageService:
             ],
             max_output_tokens=80,
             temperature=self.settings.openai.temperature,
+        )
+        await self._record_openai_usage(
+            session,
+            user=user,
+            conversation=conversation,
+            usage=response.usage,
+            event_type=f"openai.responses.photo_reply.{mode}",
         )
         fallback_map = {
             "ack": "ok hang on lol",
@@ -1095,6 +1113,12 @@ class MessageService:
             body=body,
             media_urls=media_urls or None,
         )
+        await self._record_twilio_outbound_usage(
+            session,
+            message=message,
+            twilio_response=result.raw_response,
+            media_urls=media_urls,
+        )
         message.provider_message_sid = result.provider_sid
         message.status = MessageStatus.sent if result.provider_sid else MessageStatus.failed
         message.sent_at = utc_now()
@@ -1149,6 +1173,11 @@ class MessageService:
         message.status = status_map.get(message_status, message.status)
         if message.status == MessageStatus.delivered:
             message.delivered_at = utc_now()
+        await self._finalize_twilio_usage_from_status(
+            session,
+            message=message,
+            payload=payload,
+        )
         attempt = DeliveryAttempt(
             message_id=message.id,
             provider="twilio",
@@ -1160,3 +1189,187 @@ class MessageService:
         session.add(attempt)
         await session.flush()
         return message
+
+    async def _record_twilio_inbound_usage(self, session: AsyncSession, *, message: Message, payload: dict[str, Any]) -> None:
+        account_id = await self.usage_ingestion_service.resolve_account_id_for_user(session, user_id=message.user_id)
+        if account_id is None:
+            return
+        sid = str(payload.get("MessageSid") or message.provider_message_sid or message.id)
+        await self.usage_ingestion_service.record_event(
+            session,
+            UsageRecordInput(
+                account_id=account_id,
+                user_id=message.user_id,
+                conversation_id=message.conversation_id,
+                provider="twilio",
+                product_surface="chat",
+                event_type="twilio.sms.inbound",
+                external_id=sid,
+                idempotency_key=f"twilio:sms:inbound:{sid}",
+                quantity=1.0,
+                unit="message",
+                occurred_at=message.created_at or utc_now(),
+                metadata_json={"direction": "inbound"},
+            ),
+        )
+
+    async def _record_twilio_outbound_usage(
+        self,
+        session: AsyncSession,
+        *,
+        message: Message,
+        twilio_response: dict[str, Any],
+        media_urls: list[str],
+    ) -> None:
+        account_id = await self.usage_ingestion_service.resolve_account_id_for_user(session, user_id=message.user_id)
+        if account_id is None:
+            return
+        sid = str(twilio_response.get("sid") or message.id)
+        num_segments = twilio_response.get("num_segments")
+        try:
+            quantity = float(num_segments) if num_segments not in (None, "") else 1.0
+        except (TypeError, ValueError):
+            quantity = 1.0
+        await self.usage_ingestion_service.record_event(
+            session,
+            UsageRecordInput(
+                account_id=account_id,
+                user_id=message.user_id,
+                conversation_id=message.conversation_id,
+                provider="twilio",
+                product_surface="chat",
+                event_type="twilio.sms.outbound",
+                external_id=sid,
+                idempotency_key=f"twilio:sms:outbound:{sid}",
+                quantity=quantity,
+                unit="segment",
+                occurred_at=message.sent_at or utc_now(),
+                estimated_cost_usd=None,
+                metadata_json={
+                    "status": twilio_response.get("status"),
+                    "num_media": len(media_urls),
+                    "price": twilio_response.get("price"),
+                    "price_unit": twilio_response.get("price_unit"),
+                },
+            ),
+        )
+
+    async def _finalize_twilio_usage_from_status(
+        self,
+        session: AsyncSession,
+        *,
+        message: Message,
+        payload: dict[str, Any],
+    ) -> None:
+        price_raw = payload.get("Price")
+        if price_raw in (None, ""):
+            return
+        try:
+            cost = abs(float(str(price_raw)))
+        except (TypeError, ValueError):
+            return
+        provider_sid = message.provider_message_sid or str(payload.get("MessageSid") or "")
+        if not provider_sid:
+            return
+        updated = await self.usage_ingestion_service.finalize_by_external_id(
+            session,
+            provider="twilio",
+            external_id=provider_sid,
+            event_type="twilio.sms.outbound",
+            cost_usd=cost,
+            source_ref="twilio_status_webhook",
+            metadata_patch={
+                "price": str(price_raw),
+                "price_unit": str(payload.get("PriceUnit") or "USD"),
+                "message_status": str(payload.get("MessageStatus") or ""),
+            },
+        )
+        if updated == 0:
+            account_id = await self.usage_ingestion_service.resolve_account_id_for_user(session, user_id=message.user_id)
+            if account_id is None:
+                return
+            await self.usage_ingestion_service.record_event(
+                session,
+                UsageRecordInput(
+                    account_id=account_id,
+                    user_id=message.user_id,
+                    conversation_id=message.conversation_id,
+                    provider="twilio",
+                    product_surface="chat",
+                    event_type="twilio.sms.outbound",
+                    external_id=provider_sid,
+                    idempotency_key=f"twilio:sms:outbound:{provider_sid}",
+                    quantity=1.0,
+                    unit="segment",
+                    occurred_at=utc_now(),
+                    cost_usd=cost,
+                    source_ref="twilio_status_webhook",
+                    metadata_json={
+                        "price": str(price_raw),
+                        "price_unit": str(payload.get("PriceUnit") or "USD"),
+                    },
+                ),
+            )
+
+    async def _record_openai_usage(
+        self,
+        session: AsyncSession,
+        *,
+        user: User,
+        conversation: Conversation,
+        usage: dict[str, Any],
+        event_type: str,
+    ) -> None:
+        if not usage:
+            return
+        account_id = await self.usage_ingestion_service.resolve_account_id_for_user(session, user_id=user.id)
+        if account_id is None:
+            return
+        prompt_tokens = _usage_int(usage, "input_tokens", "prompt_tokens")
+        completion_tokens = _usage_int(usage, "output_tokens", "completion_tokens")
+        total_tokens = _usage_int(usage, "total_tokens")
+        if total_tokens <= 0:
+            total_tokens = prompt_tokens + completion_tokens
+        if total_tokens <= 0:
+            return
+        idempotency = make_idempotency_key(
+            "openai",
+            str(conversation.id),
+            event_type,
+            str(total_tokens),
+            utc_now().isoformat(timespec="seconds"),
+        )
+        await self.usage_ingestion_service.record_event(
+            session,
+            UsageRecordInput(
+                account_id=account_id,
+                user_id=user.id,
+                conversation_id=conversation.id,
+                provider="openai",
+                product_surface="chat",
+                event_type=event_type,
+                external_id=None,
+                idempotency_key=idempotency,
+                quantity=float(total_tokens),
+                unit="token",
+                occurred_at=utc_now(),
+                estimated_cost_usd=None,
+                metadata_json={
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                },
+            ),
+        )
+
+
+def _usage_int(payload: dict[str, Any], *keys: str) -> int:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+    return 0

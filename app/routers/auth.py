@@ -16,7 +16,10 @@ router = APIRouter(tags=["auth"])
 async def login_page(
     request: Request,
     session: AsyncSession = Depends(get_db_session),
+    admin_context: object | None = Depends(get_optional_admin_context),
 ):
+    if admin_context is not None:
+        return RedirectResponse(url="/admin", status_code=303)
     container = request.app.state.container
     admin_count = await container.auth_service.count_admins(session)
     if admin_count == 0:

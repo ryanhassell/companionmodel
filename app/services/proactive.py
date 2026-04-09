@@ -17,6 +17,7 @@ from app.services.memory import MemoryService
 from app.services.message import MessageService
 from app.services.prompt import PromptService
 from app.services.schedule import ScheduleService
+from app.services.usage_ingestion import UsageIngestionService
 
 
 class ProactiveService:
@@ -32,6 +33,7 @@ class ProactiveService:
         memory_service: MemoryService,
         voice_service: VoiceService,
         conversation_state_service: ConversationStateService,
+        usage_ingestion_service: UsageIngestionService | None = None,
     ) -> None:
         self.config_service = config_service
         self.conversation_service = conversation_service
@@ -43,6 +45,7 @@ class ProactiveService:
         self.memory_service = memory_service
         self.voice_service = voice_service
         self.conversation_state_service = conversation_state_service
+        self.usage_ingestion_service = usage_ingestion_service
 
     async def scan(self, session: AsyncSession) -> int:
         users = (

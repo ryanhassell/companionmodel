@@ -4,30 +4,50 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ title or (brand_name ~ " Parent Portal") }}</title>
+    <script>document.documentElement.classList.add("js");</script>
     <link rel="icon" type="image/svg+xml" href="/static/images/resona-mark.svg">
     <link rel="apple-touch-icon" href="/static/images/resona-mark.svg">
     <link rel="stylesheet" href="/static/style.css">
+    {% if clerk_enabled and clerk_publishable_key and not skip_clerk_global_script %}
+    <script
+      async
+      crossorigin="anonymous"
+      data-clerk-publishable-key="{{ clerk_publishable_key }}"
+      src="{% if clerk_frontend_api_url %}{{ clerk_frontend_api_url }}/npm/@clerk/clerk-js@6.6.0/dist/clerk.browser.js{% else %}https://cdn.jsdelivr.net/npm/@clerk/clerk-js@6.6.0/dist/clerk.browser.js{% endif %}"
+      type="text/javascript">
+    </script>
+    {% endif %}
+    {% block head_extras %}{% endblock %}
   </head>
-  <body class="portal-body">
+  <body
+    class="{{ body_class or 'portal-body' }}"
+    data-clerk-enabled="{{ 'true' if clerk_enabled and clerk_publishable_key else 'false' }}"
+    data-clerk-publishable-key="{{ clerk_publishable_key or '' }}"
+    data-clerk-frontend-api-url="{{ clerk_frontend_api_url or '' }}">
     <div class="portal-layout">
       <aside class="portal-sidebar">
-        <a href="/" class="portal-brand-link" aria-label="{{ brand_name }} home">
-          <img src="/static/images/resona-mark.svg" alt="{{ brand_name }} logo" class="portal-brand-logo">
-        </a>
-        <h1 class="portal-brand">{{ brand_name }} Parent Portal</h1>
-        <p class="subtle">Secure household monitoring with clear safety visibility.</p>
+        <div class="portal-brand-lockup">
+          <a href="/" class="portal-brand-link" aria-label="{{ brand_name }} home">
+            <img src="/static/images/resona-mark.svg" alt="{{ brand_name }} logo" class="portal-brand-logo">
+            <span class="portal-brand-word">{{ brand_name }}</span>
+          </a>
+          <p class="portal-brand-subtitle subtle">Parent Portal</p>
+        </div>
         <nav class="nav">
-          {% if customer_user %}
+          {% if customer_user and not portal_locked %}
             {% for item in portal_nav_items %}
           <a href="{{ item.href }}" class="{{ 'active' if active_nav == item.key else '' }}">{{ item.label }}</a>
             {% endfor %}
-          {% endif %}
+          {% elif customer_user and portal_locked %}
+          <div class="portal-lock-card">
+            <p class="eyebrow">Setup in Progress</p>
+            <p class="subtle">Finish initialization to unlock the full parent portal, timeline, and safety workspace.</p>
+          </div>
+        {% endif %}
         </nav>
         {% if customer_user %}
-        <p class="subtle">Signed in as {{ customer_user.email }}</p>
-        <form method="post" action="/app/logout">
-          <button type="submit" class="secondary">Log Out</button>
-        </form>
+        <p class="subtle">Signed in as {{ customer_display_name }}</p>
+        <a href="/app/logout" class="button secondary" data-portal-signout>Log Out</a>
         {% endif %}
         <p class="subtle portal-footer-links"><a href="{{ safety_policy_url }}">Safety</a> · <a href="{{ privacy_url }}">Privacy</a> · <a href="{{ terms_url }}">Terms</a></p>
         <p class="subtle">{{ support_email }}</p>
@@ -36,5 +56,7 @@
         {% block content %}{% endblock %}
       </main>
     </div>
+    <script src="/static/portal-shell.js" defer></script>
+    {% block body_scripts %}{% endblock %}
   </body>
 </html>

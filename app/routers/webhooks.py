@@ -90,6 +90,7 @@ async def twilio_voice_status_webhook(
         session,
         provider_sid=str(form.get("CallSid", "")),
         status=str(form.get("CallStatus", "")),
+        payload=dict(form),
     )
     await session.commit()
     return PlainTextResponse("ok")

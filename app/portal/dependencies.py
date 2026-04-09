@@ -56,6 +56,7 @@ async def get_optional_portal_context(
     else:
         token = container.clerk_auth_service.token_from_request(
             request.headers.get("authorization"),
+            request.cookies.get(container.settings.clerk.backend_session_cookie_name),
             request.cookies.get(container.settings.clerk.session_cookie_name),
         )
         if not token:

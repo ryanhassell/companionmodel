@@ -61,6 +61,7 @@ class OpenAIConfig(BaseModel):
     image_api_timeout_seconds: int = 900
     max_retries: int = 3
     chat_model: str = "gpt-5.4-mini"
+    portal_preview_model: str = "gpt-4o-mini"
     embedding_model: str = "text-embedding-3-small"
     image_model: str = "gpt-image-1"
     speech_model: str = "gpt-4o-mini-tts"
@@ -94,6 +95,7 @@ class SchedulingConfig(BaseModel):
     cleanup_hours: int = 24
     embed_pending_minutes: int = 10
     daily_life_refresh_minutes: int = 10
+    usage_reconciliation_minutes: int = 30
 
 
 class SafetyConfig(BaseModel):
@@ -195,6 +197,11 @@ class AdminConfig(BaseModel):
     )
     trusted_header_name: str = "x-resona-admin-access"
     trusted_header_value: str | None = None
+    clerk_enabled: bool = False
+    clerk_role_allowlist: list[str] = Field(default_factory=lambda: ["org:admin", "admin", "owner"])
+    clerk_user_allowlist: list[str] = Field(default_factory=list)
+    clerk_email_allowlist: list[str] = Field(default_factory=list)
+    require_clerk_mfa: bool = True
 
 
 class AlertingConfig(BaseModel):
@@ -232,10 +239,13 @@ class ClerkConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     enabled: bool = False
+    publishable_key: str | None = None
+    frontend_api_url: str | None = None
     issuer: str | None = None
     audience: str | None = None
     jwks_url: str | None = None
     session_cookie_name: str = "__session"
+    backend_session_cookie_name: str = "resona_clerk_session"
     sign_in_url: str = "/sign-in"
     sign_up_url: str = "/sign-up"
     sign_out_url: str | None = None
@@ -251,6 +261,8 @@ class StripeConfig(BaseModel):
     webhook_secret: str | None = None
     publishable_key: str | None = None
     default_price_id: str | None = None
+    chat_price_id: str | None = None
+    voice_price_id: str | None = None
     success_path: str = "/app/billing?checkout=success"
     cancel_path: str = "/app/billing?checkout=cancel"
 
@@ -288,6 +300,8 @@ class RateLimitConfig(BaseModel):
     otp_send_window_seconds: int = 900
     otp_check_limit: int = 12
     otp_check_window_seconds: int = 900
+    initialize_preview_limit: int = 12
+    initialize_preview_window_seconds: int = 3600
 
 
 class WebPresentationConfig(BaseModel):
@@ -408,6 +422,7 @@ def _apply_flat_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
         ("openai", "api_key"): os.getenv("OPENAI_API_KEY"),
         ("openai", "base_url"): os.getenv("OPENAI_BASE_URL"),
         ("openai", "chat_model"): os.getenv("OPENAI_CHAT_MODEL"),
+        ("openai", "portal_preview_model"): os.getenv("OPENAI_PORTAL_PREVIEW_MODEL"),
         ("openai", "embedding_model"): os.getenv("OPENAI_EMBEDDING_MODEL"),
         ("openai", "image_model"): os.getenv("OPENAI_IMAGE_MODEL"),
         ("openai", "speech_model"): os.getenv("OPENAI_SPEECH_MODEL"),
@@ -425,6 +440,7 @@ def _apply_flat_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
         ("voice", "elevenlabs_default_voice_id"): os.getenv("VOICE_ELEVENLABS_DEFAULT_VOICE_ID"),
         ("voice", "elevenlabs_call_tts_model"): os.getenv("VOICE_ELEVENLABS_CALL_TTS_MODEL"),
         ("voice", "elevenlabs_creative_tts_model"): os.getenv("VOICE_ELEVENLABS_CREATIVE_TTS_MODEL"),
+        ("scheduling", "usage_reconciliation_minutes"): os.getenv("SCHEDULING_USAGE_RECONCILIATION_MINUTES"),
         ("admin", "bootstrap_username"): os.getenv("ADMIN_BOOTSTRAP_USERNAME"),
         ("admin", "bootstrap_password"): os.getenv("ADMIN_BOOTSTRAP_PASSWORD"),
         ("admin", "session_cookie_name"): os.getenv("ADMIN_SESSION_COOKIE_NAME"),
@@ -433,6 +449,11 @@ def _apply_flat_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
         ("admin", "allowlist_cidrs"): os.getenv("ADMIN_ALLOWLIST_CIDRS"),
         ("admin", "trusted_header_name"): os.getenv("ADMIN_TRUSTED_HEADER_NAME"),
         ("admin", "trusted_header_value"): os.getenv("ADMIN_TRUSTED_HEADER_VALUE"),
+        ("admin", "clerk_enabled"): os.getenv("ADMIN_CLERK_ENABLED"),
+        ("admin", "clerk_role_allowlist"): os.getenv("ADMIN_CLERK_ROLE_ALLOWLIST"),
+        ("admin", "clerk_user_allowlist"): os.getenv("ADMIN_CLERK_USER_ALLOWLIST"),
+        ("admin", "clerk_email_allowlist"): os.getenv("ADMIN_CLERK_EMAIL_ALLOWLIST"),
+        ("admin", "require_clerk_mfa"): os.getenv("ADMIN_REQUIRE_CLERK_MFA"),
         ("customer_portal", "session_cookie_name"): os.getenv("PORTAL_SESSION_COOKIE_NAME"),
         ("customer_portal", "session_max_age_seconds"): os.getenv("PORTAL_SESSION_MAX_AGE_SECONDS"),
         ("customer_portal", "secure_cookies"): os.getenv("PORTAL_SECURE_COOKIES"),
@@ -442,10 +463,13 @@ def _apply_flat_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
         ("customer_portal", "max_login_failures"): os.getenv("PORTAL_MAX_LOGIN_FAILURES"),
         ("customer_portal", "lockout_minutes"): os.getenv("PORTAL_LOCKOUT_MINUTES"),
         ("clerk", "enabled"): os.getenv("CLERK_ENABLED"),
+        ("clerk", "publishable_key"): os.getenv("CLERK_PUBLISHABLE_KEY"),
+        ("clerk", "frontend_api_url"): os.getenv("CLERK_FRONTEND_API_URL"),
         ("clerk", "issuer"): os.getenv("CLERK_ISSUER"),
         ("clerk", "audience"): os.getenv("CLERK_AUDIENCE"),
         ("clerk", "jwks_url"): os.getenv("CLERK_JWKS_URL"),
         ("clerk", "session_cookie_name"): os.getenv("CLERK_SESSION_COOKIE_NAME"),
+        ("clerk", "backend_session_cookie_name"): os.getenv("CLERK_BACKEND_SESSION_COOKIE_NAME"),
         ("clerk", "sign_in_url"): os.getenv("CLERK_SIGN_IN_URL"),
         ("clerk", "sign_up_url"): os.getenv("CLERK_SIGN_UP_URL"),
         ("clerk", "sign_out_url"): os.getenv("CLERK_SIGN_OUT_URL"),
@@ -456,6 +480,8 @@ def _apply_flat_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
         ("stripe", "webhook_secret"): os.getenv("STRIPE_WEBHOOK_SECRET"),
         ("stripe", "publishable_key"): os.getenv("STRIPE_PUBLISHABLE_KEY"),
         ("stripe", "default_price_id"): os.getenv("STRIPE_DEFAULT_PRICE_ID"),
+        ("stripe", "chat_price_id"): os.getenv("STRIPE_CHAT_PRICE_ID"),
+        ("stripe", "voice_price_id"): os.getenv("STRIPE_VOICE_PRICE_ID"),
         ("email", "enabled"): os.getenv("EMAIL_ENABLED"),
         ("email", "from_address"): os.getenv("EMAIL_FROM_ADDRESS"),
         ("email", "smtp_host"): os.getenv("EMAIL_SMTP_HOST"),
@@ -466,6 +492,8 @@ def _apply_flat_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
         ("email", "use_ssl"): os.getenv("EMAIL_USE_SSL"),
         ("redis", "url"): os.getenv("REDIS_URL"),
         ("redis", "key_prefix"): os.getenv("REDIS_KEY_PREFIX"),
+        ("rate_limit", "initialize_preview_limit"): os.getenv("RATE_LIMIT_INITIALIZE_PREVIEW_LIMIT"),
+        ("rate_limit", "initialize_preview_window_seconds"): os.getenv("RATE_LIMIT_INITIALIZE_PREVIEW_WINDOW_SECONDS"),
         ("web", "brand_name"): os.getenv("WEB_BRAND_NAME"),
         ("web", "canonical_domain"): os.getenv("WEB_CANONICAL_DOMAIN"),
         ("web", "support_email"): os.getenv("WEB_SUPPORT_EMAIL"),

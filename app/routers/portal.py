@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,8 +17,21 @@ from app.portal.dependencies import (
     require_portal_context,
 )
 from app.schemas.site import ParentDashboardContext, PortalNavItem
+from app.services.portal_initialization import InitializationValidationError
 
 router = APIRouter(prefix="/app", tags=["portal"])
+
+
+def _customer_display_name(customer_user: CustomerUser | None) -> str:
+    if customer_user is None:
+        return "My account"
+    display_name = (customer_user.display_name or "").strip()
+    if display_name and "@clerk.local" not in display_name.lower():
+        return display_name
+    email = (customer_user.email or "").strip()
+    if email and "@clerk.local" not in email.lower():
+        return email
+    return "My account"
 
 
 def _client_ip(request: Request) -> str | None:
@@ -34,8 +47,9 @@ def _portal_response(request: Request, template: str, **context):
     status_code = int(context.pop("status_code", 200))
     settings = request.app.state.container.settings
     nav_items = [
+        PortalNavItem(href="/app/landing", label="Portal Home", key="landing"),
         PortalNavItem(href="/app/dashboard", label="Dashboard", key="dashboard"),
-        PortalNavItem(href="/app/onboarding", label="Setup", key="onboarding"),
+        PortalNavItem(href="/app/initialize", label="Setup", key="initialize"),
         PortalNavItem(href="/app/child", label="Child Profile", key="child"),
         PortalNavItem(href="/app/timeline", label="Conversation Timeline", key="timeline"),
         PortalNavItem(href="/app/memory", label="Memory Highlights", key="memory"),
@@ -51,30 +65,103 @@ def _portal_response(request: Request, template: str, **context):
         "privacy_url": settings.web.privacy_url,
         "terms_url": settings.web.terms_url,
         "safety_policy_url": settings.web.safety_policy_url,
+        "clerk_enabled": request.app.state.container.clerk_auth_service.enabled,
+        "clerk_publishable_key": settings.clerk.publishable_key,
+        "clerk_frontend_api_url": settings.clerk.frontend_api_url,
         "portal_nav_items": nav_items,
         **context,
     }
+    payload["customer_display_name"] = _customer_display_name(payload.get("customer_user"))
     return templates.TemplateResponse(template, payload, status_code=status_code)
+
+
+def _clerk_callback_url(next_path: str = "/app/landing") -> str:
+    return f"/app/session/callback?next={next_path}"
+
+
+def _initialization_next_step(current_step: str, completed_steps: list[str], step_order: list[str]) -> str:
+    completed = set(completed_steps)
+    if current_step == "complete":
+        return "complete"
+    try:
+        start_idx = step_order.index(current_step)
+    except ValueError:
+        start_idx = 0
+    for step in step_order[start_idx + 1 :]:
+        if step not in completed or step == "complete":
+            return step
+    return step_order[-1]
+
+
+def _initialization_previous_step(current_step: str, step_order: list[str]) -> str:
+    try:
+        idx = step_order.index(current_step)
+    except ValueError:
+        return step_order[0]
+    return step_order[max(idx - 1, 0)]
 
 
 @router.get("")
 async def portal_root(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
     context: PortalRequestContext | None = Depends(get_optional_portal_context),
 ):
     if context is None:
         return RedirectResponse(url="/app/login", status_code=303)
-    return RedirectResponse(url="/app/dashboard", status_code=303)
+    init_result = await context.container.portal_initialization_service.load_context(
+        session,
+        customer_user=context.customer_user,
+    )
+    await session.commit()
+    if context.container.portal_initialization_service.requires_initialization(init_result.context):
+        return RedirectResponse(url="/app/initialize", status_code=303)
+    return RedirectResponse(url="/app/landing", status_code=303)
+
+
+@router.get("/landing")
+async def portal_landing(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    context: PortalRequestContext = Depends(require_portal_context),
+):
+    household = await session.scalar(select(Household).where(Household.account_id == context.customer_user.account_id))
+    return _portal_response(
+        request,
+        "portal/landing.html",
+        active_nav="landing",
+        customer_user=context.customer_user,
+        mfa_verified=context.mfa_verified,
+        household=household,
+    )
 
 
 @router.get("/signup")
-async def portal_signup_page(request: Request):
+async def portal_signup_page(
+    request: Request,
+    context: PortalRequestContext | None = Depends(get_optional_portal_context),
+):
+    if context is not None:
+        return RedirectResponse(url="/app/landing", status_code=303)
     container = request.app.state.container
     return _portal_response(
         request,
         "portal/signup.html",
         legacy_auth_enabled=not container.clerk_auth_service.enabled,
-        clerk_sign_up_url=container.settings.clerk.sign_up_url,
+        clerk_enabled=container.clerk_auth_service.enabled,
+        clerk_publishable_key=container.settings.clerk.publishable_key,
+        clerk_frontend_api_url=container.settings.clerk.frontend_api_url,
+        clerk_callback_url=_clerk_callback_url(),
     )
+
+
+@router.get("/signup/{_clerk_path:path}")
+async def portal_signup_page_catchall(
+    request: Request,
+    _clerk_path: str,
+    context: PortalRequestContext | None = Depends(get_optional_portal_context),
+):
+    return RedirectResponse(url="/app/signup", status_code=303)
 
 
 @router.post("/signup")
@@ -145,16 +232,32 @@ async def portal_signup_submit(
 
 
 @router.get("/login")
-async def portal_login_page(request: Request):
+async def portal_login_page(
+    request: Request,
+    context: PortalRequestContext | None = Depends(get_optional_portal_context),
+):
+    if context is not None:
+        return RedirectResponse(url="/app/landing", status_code=303)
     container = request.app.state.container
     return _portal_response(
         request,
         "portal/login.html",
         reason=request.query_params.get("reason"),
         legacy_auth_enabled=not container.clerk_auth_service.enabled,
-        clerk_sign_in_url=container.settings.clerk.sign_in_url,
-        clerk_sign_up_url=container.settings.clerk.sign_up_url,
+        clerk_enabled=container.clerk_auth_service.enabled,
+        clerk_publishable_key=container.settings.clerk.publishable_key,
+        clerk_frontend_api_url=container.settings.clerk.frontend_api_url,
+        clerk_callback_url=_clerk_callback_url(),
     )
+
+
+@router.get("/login/{_clerk_path:path}")
+async def portal_login_page_catchall(
+    request: Request,
+    _clerk_path: str,
+    context: PortalRequestContext | None = Depends(get_optional_portal_context),
+):
+    return RedirectResponse(url="/app/login", status_code=303)
 
 
 @router.post("/login")
@@ -195,7 +298,7 @@ async def portal_login_submit(
             trusted_device=bool(form.get("trusted_device")),
         )
         await session.commit()
-        response = RedirectResponse(url="/app/dashboard", status_code=303)
+        response = RedirectResponse(url="/app/landing", status_code=303)
         response.set_cookie(
             container.settings.customer_portal.session_cookie_name,
             token,
@@ -208,8 +311,8 @@ async def portal_login_submit(
     return RedirectResponse(url=container.settings.clerk.sign_in_url, status_code=303)
 
 
-@router.post("/logout")
-async def portal_logout(
+@router.get("/logout")
+async def portal_logout_page(
     request: Request,
     session: AsyncSession = Depends(get_db_session),
 ):
@@ -223,11 +326,104 @@ async def portal_logout(
         response.delete_cookie(container.settings.customer_portal.session_cookie_name)
         return response
 
-    response = RedirectResponse(
-        url=container.settings.clerk.sign_out_url or "/app/login",
-        status_code=303,
+    response = _portal_response(
+        request,
+        "portal/logout.html",
+        customer_user=None,
+        portal_locked=True,
+        clerk_enabled=container.clerk_auth_service.enabled,
+        clerk_publishable_key=container.settings.clerk.publishable_key,
+        clerk_frontend_api_url=container.settings.clerk.frontend_api_url,
+        sign_out_redirect_url="/app/login?signed_out=1",
     )
+    response.delete_cookie(container.settings.clerk.backend_session_cookie_name)
     response.delete_cookie(container.settings.clerk.session_cookie_name)
+    return response
+
+
+@router.post("/logout")
+async def portal_logout(
+    request: Request,
+):
+    return RedirectResponse(url="/app/logout", status_code=303)
+
+
+@router.get("/session/callback")
+async def portal_clerk_session_callback(
+    request: Request,
+):
+    container = request.app.state.container
+    next_path = request.query_params.get("next") or "/app/landing"
+    return _portal_response(
+        request,
+        "portal/clerk_callback.html",
+        next_path=next_path,
+        clerk_enabled=container.clerk_auth_service.enabled,
+        clerk_publishable_key=container.settings.clerk.publishable_key,
+        clerk_frontend_api_url=container.settings.clerk.frontend_api_url,
+    )
+
+
+@router.post("/auth/sync")
+async def portal_clerk_auth_sync(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+):
+    container = request.app.state.container
+    if not container.clerk_auth_service.enabled:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request body") from exc
+    raw_token = str(payload.get("token") or "").strip()
+    hinted_email = str(payload.get("email") or "").strip().lower()
+    hinted_display_name = str(payload.get("display_name") or "").strip()
+    if not raw_token:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing Clerk token")
+    try:
+        claims = container.clerk_auth_service.verify_token(raw_token)
+        if hinted_email and "@clerk.local" not in hinted_email:
+            claims.email = hinted_email
+            claims.raw = {**claims.raw, "email": hinted_email, "email_address": hinted_email}
+        if hinted_display_name:
+            claims.raw = {
+                **claims.raw,
+                "name": hinted_display_name,
+                "full_name": claims.raw.get("full_name") or hinted_display_name,
+            }
+        tenant = await container.clerk_auth_service.resolve_tenant_context(session, claims)
+        await session.commit()
+    except Exception as exc:
+        await session.rollback()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Clerk session") from exc
+
+    response = JSONResponse(
+        {
+            "ok": True,
+            "account_id": str(tenant.account.id),
+            "clerk_org_id": tenant.clerk_org_id,
+            "role": tenant.role.value,
+        }
+    )
+    response.set_cookie(
+        container.settings.clerk.backend_session_cookie_name,
+        raw_token,
+        httponly=True,
+        secure=container.settings.customer_portal.secure_cookies or request.url.scheme == "https",
+        samesite="lax",
+        max_age=container.settings.customer_portal.session_max_age_seconds,
+    )
+    return response
+
+
+@router.post("/auth/clear")
+async def portal_clerk_auth_clear(
+    request: Request,
+):
+    container = request.app.state.container
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(container.settings.clerk.backend_session_cookie_name)
     return response
 
 
@@ -349,58 +545,274 @@ async def portal_verify_phone_submit(
 @router.get("/onboarding")
 async def portal_onboarding_page(
     request: Request,
-    session: AsyncSession = Depends(get_db_session),
-    context: PortalRequestContext = Depends(require_portal_context),
 ):
-    household = await session.scalar(select(Household).where(Household.account_id == context.customer_user.account_id))
-    child = await session.scalar(select(ChildProfile).where(ChildProfile.account_id == context.customer_user.account_id))
-    return _portal_response(
-        request,
-        "portal/onboarding.html",
-        customer_user=context.customer_user,
-        household=household,
-        child=child,
-        csrf_token=context.csrf_token,
-    )
+    return RedirectResponse(url="/app/initialize", status_code=303)
 
 
 @router.post("/onboarding")
 async def portal_onboarding_submit(
     request: Request,
+):
+    return RedirectResponse(url="/app/initialize", status_code=303)
+
+
+@router.get("/initialize")
+async def portal_initialize_page(
+    request: Request,
     session: AsyncSession = Depends(get_db_session),
     context: PortalRequestContext = Depends(require_portal_context),
 ):
-    await _verify_portal_csrf(request, context)
+    init_result = await context.container.portal_initialization_service.load_context(
+        session,
+        customer_user=context.customer_user,
+    )
+    await session.commit()
+    checkout_status = request.query_params.get("checkout")
+    initialization_payload = {
+        **init_result.context.model_dump(),
+        "plan_options": context.container.portal_initialization_service.plan_options(),
+        "timezone_options": context.container.portal_initialization_service.timezone_options(),
+        "save_url": "/app/initialize/save",
+        "preview_url": "/app/initialize/preview",
+        "billing_url": "/app/initialize/billing/checkout",
+        "dashboard_url": "/app/dashboard",
+        "csrf_token": context.csrf_token,
+    }
+    return _portal_response(
+        request,
+        "portal/initialize.html",
+        active_nav="initialize",
+        customer_user=context.customer_user,
+        csrf_token=context.csrf_token,
+        initialization=init_result.context,
+        initialization_payload=initialization_payload,
+        plan_options=context.container.portal_initialization_service.plan_options(),
+        timezone_options=context.container.portal_initialization_service.timezone_options(),
+        checkout_status=checkout_status,
+        portal_locked=not init_result.context.completion_ready,
+        body_class="portal-body portal-initialize-body",
+    )
+
+
+@router.post("/initialize/save")
+async def portal_initialize_save(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    context: PortalRequestContext = Depends(require_portal_context),
+):
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request body") from exc
+    csrf_token = str(payload.get("csrf_token") or "")
+    if not csrf_token or csrf_token != context.csrf_token:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+
+    step = str(payload.get("step") or "").strip()
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        data = {}
+    intent = request.headers.get("x-resona-step-mode", "advance").strip().lower()
+    validate_required = intent != "autosave"
+
+    try:
+        result = await context.container.portal_initialization_service.save_step(
+            session,
+            customer_user=context.customer_user,
+            step=step,
+            data=data,
+            validate_required=validate_required,
+            advance_step=intent != "autosave",
+        )
+        await session.commit()
+        return JSONResponse(
+            {
+                "ok": True,
+                "current_step": result.context.current_step,
+                "next_step": _initialization_next_step(
+                    result.context.current_step,
+                    result.context.completed_steps,
+                    result.context.step_order,
+                ),
+                "previous_step": _initialization_previous_step(
+                    result.context.current_step,
+                    result.context.step_order,
+                ),
+                "completed_steps": result.context.completed_steps,
+                "validation_errors": {},
+                "summary": result.context.summary.model_dump(),
+                "snapshot": result.context.snapshot,
+                "completion_ready": result.context.completion_ready,
+                "billing_status": result.context.billing_status,
+            }
+        )
+    except InitializationValidationError as exc:
+        result = await context.container.portal_initialization_service.load_context(
+            session,
+            customer_user=context.customer_user,
+        )
+        await session.commit()
+        return JSONResponse(
+            {
+                "ok": False,
+                "current_step": step or result.context.current_step,
+                "next_step": step or result.context.current_step,
+                "previous_step": _initialization_previous_step(
+                    step or result.context.current_step,
+                    result.context.step_order,
+                ),
+                "completed_steps": result.context.completed_steps,
+                "validation_errors": exc.errors,
+                "summary": result.context.summary.model_dump(),
+                "snapshot": result.context.snapshot,
+                "completion_ready": result.context.completion_ready,
+                "billing_status": result.context.billing_status,
+            },
+            status_code=400,
+        )
+
+
+@router.post("/initialize/preview")
+async def portal_initialize_preview(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    context: PortalRequestContext = Depends(require_portal_context),
+):
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request body") from exc
+    csrf_token = str(payload.get("csrf_token") or "")
+    if not csrf_token or csrf_token != context.csrf_token:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        data = {}
+    cached_preview = await context.container.portal_preview_service.get_cached_preference_preview(
+        session,
+        customer_user=context.customer_user,
+        payload=data,
+    )
+    if cached_preview is not None:
+        return JSONResponse({"ok": True, **cached_preview})
+
+    try:
+        ip = _client_ip(request) or "unknown"
+        rate_limit = context.container.settings.rate_limit
+        await _enforce_rate_limit(
+            request,
+            key=f"initialize-preview:{ip}:{context.customer_user.account_id}",
+            limit=rate_limit.initialize_preview_limit,
+            window_seconds=rate_limit.initialize_preview_window_seconds,
+        )
+
+        preview = await context.container.portal_preview_service.generate_preference_preview(
+            session,
+            customer_user=context.customer_user,
+            payload=data,
+        )
+        await session.commit()
+    except ValueError as exc:
+        await session.rollback()
+        return JSONResponse({"ok": False, "detail": str(exc)}, status_code=400)
+
+    return JSONResponse({"ok": True, "cached": False, **preview})
+
+
+@router.post("/initialize/billing/checkout")
+async def portal_initialize_billing_checkout(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    context: PortalRequestContext = Depends(require_portal_context),
+):
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    csrf_token = str(payload.get("csrf_token") or "")
+    if not csrf_token or csrf_token != context.csrf_token:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+
+    init_result = await context.container.portal_initialization_service.load_context(
+        session,
+        customer_user=context.customer_user,
+    )
+    account = await session.get(Account, context.customer_user.account_id)
+    if account is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    plan_key = str(payload.get("selected_plan_key") or init_result.context.selected_plan_key or "").strip() or None
+    if not plan_key:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Choose a plan before checkout.")
+    try:
+        plan_result = await context.container.portal_initialization_service.save_step(
+            session,
+            customer_user=context.customer_user,
+            step="plan",
+            data={"selected_plan_key": plan_key},
+            validate_required=True,
+            advance_step=False,
+        )
+        plan_key = plan_result.context.selected_plan_key or plan_key
+    except InitializationValidationError as exc:
+        await session.rollback()
+        return JSONResponse({"ok": False, "validation_errors": exc.errors}, status_code=400)
+
     ip = _client_ip(request) or "unknown"
     await _enforce_rate_limit(
         request,
-        key=f"onboarding:{ip}:{context.clerk_user_id}:{context.clerk_org_id}",
-        limit=max(1, context.container.settings.rate_limit.signup_limit),
-        window_seconds=context.container.settings.rate_limit.signup_window_seconds,
+        key=f"initialize-billing:{ip}:{context.customer_user.account_id}",
+        limit=max(1, context.container.settings.rate_limit.otp_send_limit),
+        window_seconds=context.container.settings.rate_limit.otp_send_window_seconds,
     )
-    form = await request.form()
+
+    settings = context.container.settings
+    success_url = f"{settings.app.base_url}/app/initialize/return?checkout=success&session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{settings.app.base_url}/app/initialize/return?checkout=cancel"
     try:
-        await context.container.customer_auth_service.complete_onboarding(
+        url = await context.container.billing_service.create_checkout_session(
             session,
-            customer_user=context.customer_user,
-            mode=str(form.get("mode", "for_someone_else")),
-            relationship=str(form.get("relationship", "guardian")),
-            household_name=str(form.get("household_name", "")),
-            child_name=str(form.get("child_name", "")),
-            timezone=str(form.get("timezone", "America/New_York")),
-            child_phone_number=str(form.get("child_phone_number", "")).strip() or None,
+            account=account,
+            customer_email=context.customer_user.email,
+            clerk_org_id=context.clerk_org_id,
+            plan_key=plan_key,
+            success_url=success_url,
+            cancel_url=cancel_url,
         )
-    except ValueError as exc:
-        return _portal_response(
-            request,
-            "portal/onboarding.html",
-            error=str(exc),
-            customer_user=context.customer_user,
-            csrf_token=context.csrf_token,
-            status_code=400,
-        )
+    except RuntimeError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     await session.commit()
-    return RedirectResponse(url="/app/dashboard", status_code=303)
+    return JSONResponse({"ok": True, "url": url})
+
+
+@router.get("/initialize/return")
+async def portal_initialize_return(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    context: PortalRequestContext = Depends(require_portal_context),
+):
+    checkout_status = str(request.query_params.get("checkout") or "").strip() or "cancel"
+    session_id = str(request.query_params.get("session_id") or "").strip()
+    if checkout_status == "success" and session_id and context.container.billing_service.available:
+        try:
+            await context.container.billing_service.sync_checkout_session(
+                session,
+                checkout_session_id=session_id,
+            )
+        except RuntimeError:
+            await session.rollback()
+            return RedirectResponse(url="/app/initialize?checkout=processing", status_code=303)
+
+    init_result = await context.container.portal_initialization_service.load_context(
+        session,
+        customer_user=context.customer_user,
+    )
+    await session.commit()
+    if init_result.context.completion_ready:
+        return RedirectResponse(url="/app/initialize?checkout=success", status_code=303)
+    return RedirectResponse(url=f"/app/initialize?checkout={checkout_status}", status_code=303)
 
 
 @router.get("/dashboard")
@@ -416,7 +828,11 @@ async def portal_dashboard(
         session,
         account_id=context.customer_user.account_id,
     )
-    usage_summary = context.container.billing_service.usage_credit_summary(subscription)
+    usage_summary = await context.container.billing_service.usage_credit_summary(
+        session,
+        account_id=context.customer_user.account_id,
+        subscription=subscription,
+    )
     parent_context = ParentDashboardContext(
         household_name=household.name if household else "Household",
         child_name=child.display_name if child and child.display_name else (child.first_name if child else "Not set"),
@@ -548,7 +964,15 @@ async def portal_billing_page(
         session,
         account_id=context.customer_user.account_id,
     )
-    usage_summary = context.container.billing_service.usage_credit_summary(subscription)
+    usage_summary = await context.container.billing_service.usage_credit_summary(
+        session,
+        account_id=context.customer_user.account_id,
+        subscription=subscription,
+    )
+    init_result = await context.container.portal_initialization_service.load_context(
+        session,
+        customer_user=context.customer_user,
+    )
     return _portal_response(
         request,
         "portal/billing.html",
@@ -558,6 +982,7 @@ async def portal_billing_page(
         usage_summary=usage_summary,
         stripe_enabled=context.container.billing_service.available,
         csrf_token=context.csrf_token,
+        selected_plan_key=init_result.context.selected_plan_key or "chat",
     )
 
 
@@ -568,6 +993,7 @@ async def portal_billing_checkout(
     context: PortalRequestContext = Depends(require_owner_mfa_context),
 ):
     await _verify_portal_csrf(request, context)
+    form = await request.form()
     ip = _client_ip(request) or "unknown"
     await _enforce_rate_limit(
         request,
@@ -581,12 +1007,27 @@ async def portal_billing_checkout(
     settings = context.container.settings
     success_url = f"{settings.app.base_url}{settings.stripe.success_path}"
     cancel_url = f"{settings.app.base_url}{settings.stripe.cancel_path}"
+    subscription = await context.container.billing_service.get_account_subscription(
+        session,
+        account_id=context.customer_user.account_id,
+    )
+    init_result = await context.container.portal_initialization_service.load_context(
+        session,
+        customer_user=context.customer_user,
+    )
+    plan_key = (
+        str(form.get("plan_key") or "").strip()
+        or init_result.context.selected_plan_key
+        or context.container.billing_service.plan_key_for_subscription(subscription)
+        or "chat"
+    )
     try:
         url = await context.container.billing_service.create_checkout_session(
             session,
             account=account,
             customer_email=context.customer_user.email,
             clerk_org_id=context.clerk_org_id,
+            plan_key=plan_key,
             success_url=success_url,
             cancel_url=cancel_url,
         )

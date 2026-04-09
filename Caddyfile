@@ -1,0 +1,8 @@
+{
+  email support@resona.chat
+}
+
+resona.chat, www.resona.chat {
+  encode zstd gzip
+  reverse_proxy app:8000
+}

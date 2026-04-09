@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.admin.dependencies import AdminRequestContext, get_optional_admin_context, verify_csrf_or_403
 from app.core.templating import templates
 from app.db.session import get_db_session
-from app.models.admin import JobRun
+from app.models.admin import AdminIdentity, AdminUser, JobRun
 from app.models.communication import CallRecord, Conversation, DeliveryAttempt, MediaAsset, Message, SafetyEvent
 from app.models.configuration import AppSetting, PromptTemplate, ScheduleRule
 from app.models.enums import (
@@ -30,7 +30,7 @@ from app.models.enums import (
 )
 from app.models.memory import MemoryItem
 from app.models.persona import Persona
-from app.models.portal import CustomerUser, VerificationCase
+from app.models.portal import CustomerUser, PlanSimulationRun, PlanSimulationScenario, UsageEvent, UsageReconciliationRun, VerificationCase
 from app.models.user import User
 from app.utils.text import make_idempotency_key
 from app.utils.time import parse_clock
@@ -901,6 +901,282 @@ async def settings_page(
         "admin/settings.html",
         _context_dict(request, context, active_nav="settings", settings_rows=settings_rows, users=users, personas=personas, scopes=list(AppSettingScope)),
     )
+
+
+@router.get("/usage-economics")
+async def usage_economics_page(
+    request: Request,
+    days: int = 30,
+    session: AsyncSession = Depends(get_db_session),
+    context: AdminRequestContext | None = Depends(get_optional_admin_context),
+):
+    if context is None:
+        return _redirect_login()
+    days = max(1, min(days, 90))
+
+    provider_rows = list(
+        (
+            await session.execute(
+                select(
+                    UsageEvent.provider,
+                    func.coalesce(func.sum(UsageEvent.cost_usd), 0.0).label("finalized_cost"),
+                    func.coalesce(func.sum(UsageEvent.estimated_cost_usd), 0.0).label("pending_estimated_cost"),
+                    func.count().label("event_count"),
+                ).group_by(UsageEvent.provider)
+            )
+        ).all()
+    )
+    surface_rows = list(
+        (
+            await session.execute(
+                select(
+                    UsageEvent.product_surface,
+                    func.coalesce(func.sum(UsageEvent.cost_usd), 0.0).label("finalized_cost"),
+                    func.count().label("event_count"),
+                ).group_by(UsageEvent.product_surface)
+            )
+        ).all()
+    )
+    account_rows = list(
+        (
+            await session.execute(
+                select(
+                    UsageEvent.account_id,
+                    func.coalesce(func.sum(UsageEvent.cost_usd), 0.0).label("finalized_cost"),
+                    func.coalesce(func.sum(UsageEvent.estimated_cost_usd), 0.0).label("pending_estimated_cost"),
+                )
+                .group_by(UsageEvent.account_id)
+                .order_by(desc(func.coalesce(func.sum(UsageEvent.cost_usd), 0.0)))
+                .limit(50)
+            )
+        ).all()
+    )
+    totals = {
+        "finalized_cost_usd": float(
+            (await session.scalar(select(func.coalesce(func.sum(UsageEvent.cost_usd), 0.0)))) or 0.0
+        ),
+        "pending_cost_usd": float(
+            (
+                await session.scalar(
+                    select(func.coalesce(func.sum(UsageEvent.estimated_cost_usd), 0.0)).where(UsageEvent.pricing_state == "pending")
+                )
+            )
+            or 0.0
+        ),
+        "event_count": int((await session.scalar(select(func.count()).select_from(UsageEvent))) or 0),
+    }
+    latest_reconciliation = (
+        await session.execute(select(UsageReconciliationRun).order_by(desc(UsageReconciliationRun.created_at)).limit(1))
+    ).scalar_one_or_none()
+    latest_simulation = (
+        await session.execute(select(PlanSimulationRun).order_by(desc(PlanSimulationRun.created_at)).limit(1))
+    ).scalar_one_or_none()
+    latest_scenarios = []
+    if latest_simulation is not None:
+        latest_scenarios = list(
+            (
+                await session.execute(
+                    select(PlanSimulationScenario).where(PlanSimulationScenario.simulation_run_id == latest_simulation.id)
+                )
+            ).scalars().all()
+        )
+    admin_identities = list((await session.execute(select(AdminIdentity).order_by(desc(AdminIdentity.updated_at)).limit(100))).scalars().all())
+
+    return templates.TemplateResponse(
+        "admin/usage_economics.html",
+        _context_dict(
+            request,
+            context,
+            active_nav="usage-economics",
+            days=days,
+            totals=totals,
+            provider_rows=provider_rows,
+            surface_rows=surface_rows,
+            account_rows=account_rows,
+            latest_reconciliation=latest_reconciliation,
+            latest_simulation=latest_simulation,
+            latest_scenarios=latest_scenarios,
+            admin_identities=admin_identities,
+        ),
+    )
+
+
+@router.post("/usage-economics/simulate")
+async def usage_economics_simulate(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    context: AdminRequestContext | None = Depends(get_optional_admin_context),
+):
+    if context is None:
+        return _redirect_login()
+    await verify_csrf_or_403(request, context)
+    form = await request.form()
+    actor_count = int(str(form.get("actor_count") or "100") or "100")
+    period_days = int(str(form.get("period_days") or "30") or "30")
+    await context.container.pricing_simulation_service.run_real_family_profile(
+        session,
+        actor_count=actor_count,
+        period_days=period_days,
+        chat_price_usd=24.0,
+        voice_price_usd=59.0,
+    )
+    await context.container.audit_service.record(
+        session,
+        admin_user_id=str(context.admin_user.id),
+        action="run_pricing_simulation",
+        entity_type="usage",
+        summary=f"Ran pricing simulation for {actor_count} actors over {period_days} days",
+    )
+    await session.commit()
+    return RedirectResponse(url="/admin/usage-economics", status_code=303)
+
+
+@router.get("/usage-economics/export")
+async def usage_economics_export(
+    kind: str = "usage",
+    session: AsyncSession = Depends(get_db_session),
+    context: AdminRequestContext | None = Depends(get_optional_admin_context),
+) -> Response:
+    if context is None:
+        return _redirect_login()
+    if kind == "simulation":
+        runs = list((await session.execute(select(PlanSimulationRun).order_by(desc(PlanSimulationRun.created_at)).limit(200))).scalars().all())
+        scenarios = list((await session.execute(select(PlanSimulationScenario))).scalars().all())
+        run_map = {str(run.id): run for run in runs}
+        grouped: dict[str, list[PlanSimulationScenario]] = {}
+        for scenario in scenarios:
+            grouped.setdefault(str(scenario.simulation_run_id), []).append(scenario)
+        buffer = StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(
+            [
+                "run_id",
+                "created_at",
+                "profile",
+                "scenario",
+                "chat_price_usd",
+                "voice_price_usd",
+                "revenue_usd",
+                "cost_usd",
+                "margin_pct",
+                "band",
+            ]
+        )
+        for run_id, run in run_map.items():
+            for scenario in grouped.get(run_id, []):
+                writer.writerow(
+                    [
+                        run_id,
+                        run.created_at,
+                        run.profile,
+                        scenario.name,
+                        scenario.plan_chat_price_usd,
+                        scenario.plan_voice_price_usd,
+                        scenario.projected_revenue_usd,
+                        scenario.projected_cost_usd,
+                        scenario.projected_margin_pct,
+                        scenario.recommendation_band,
+                    ]
+                )
+        return Response(
+            content=buffer.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename=\"pricing_simulations.csv\"'},
+        )
+
+    rows = list((await session.execute(select(UsageEvent).order_by(desc(UsageEvent.occurred_at)).limit(2000))).scalars().all())
+    buffer = StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(
+        [
+            "occurred_at",
+            "account_id",
+            "user_id",
+            "provider",
+            "surface",
+            "event_type",
+            "external_id",
+            "quantity",
+            "unit",
+            "cost_usd",
+            "pricing_state",
+            "source_ref",
+        ]
+    )
+    for row in rows:
+        writer.writerow(
+            [
+                row.occurred_at,
+                row.account_id,
+                row.user_id,
+                row.provider,
+                row.product_surface,
+                row.event_type,
+                row.external_id,
+                row.quantity,
+                row.unit,
+                row.cost_usd,
+                row.pricing_state,
+                row.source_ref,
+            ]
+        )
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename=\"usage_economics.csv\"'},
+    )
+
+
+@router.post("/admin-identities")
+async def admin_identities_submit(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    context: AdminRequestContext | None = Depends(get_optional_admin_context),
+):
+    if context is None:
+        return _redirect_login()
+    await verify_csrf_or_403(request, context)
+    form = await request.form()
+    clerk_user_id = str(form.get("clerk_user_id") or "").strip()
+    email = str(form.get("email") or "").strip().lower()
+    org_role = str(form.get("org_role") or "").strip() or None
+    if not clerk_user_id:
+        return RedirectResponse(url="/admin/usage-economics?error=missing_user_id", status_code=303)
+    identity = await session.scalar(select(AdminIdentity).where(AdminIdentity.clerk_user_id == clerk_user_id))
+    if identity is None:
+        admin_user = AdminUser(
+            username=(email or f"clerk-{clerk_user_id[:16]}")[:80],
+            password_hash=f"clerk:manual:{clerk_user_id}",
+            is_active=True,
+        )
+        session.add(admin_user)
+        await session.flush()
+        identity = AdminIdentity(
+            admin_user_id=admin_user.id,
+            provider="clerk",
+            clerk_user_id=clerk_user_id,
+            email=email or None,
+            org_role=org_role,
+            allowlisted=True,
+            is_active=True,
+        )
+        session.add(identity)
+    else:
+        identity.email = email or identity.email
+        identity.org_role = org_role or identity.org_role
+        identity.allowlisted = True
+        identity.is_active = True
+    await context.container.audit_service.record(
+        session,
+        admin_user_id=str(context.admin_user.id),
+        action="upsert_admin_identity",
+        entity_type="admin_identity",
+        entity_id=str(identity.id),
+        summary=f"Allowlisted Clerk admin identity {clerk_user_id}",
+        details={"email": email, "org_role": org_role},
+    )
+    await session.commit()
+    return RedirectResponse(url="/admin/usage-economics", status_code=303)
 
 
 @router.get("/human-likeness")

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 import ipaddress
+from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
@@ -18,6 +19,48 @@ from app.services.container import ServiceContainer
 
 settings = get_settings()
 configure_logging(settings)
+
+_csp_script_sources = {"'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net", "https://esm.sh"}
+_csp_connect_sources = {"'self'", "https://clerk-telemetry.com"}
+_csp_frame_sources = {"'self'"}
+_clerk_security_sources = {
+    "https://challenges.cloudflare.com",
+    "https://*.hcaptcha.com",
+    "https://hcaptcha.com",
+    "https://www.recaptcha.net",
+    "https://www.google.com",
+    "https://www.gstatic.com",
+}
+_csp_script_sources.update(_clerk_security_sources)
+_csp_connect_sources.update(_clerk_security_sources)
+_csp_frame_sources.update(_clerk_security_sources)
+
+if settings.clerk.frontend_api_url:
+    parsed_frontend_api = urlparse(settings.clerk.frontend_api_url)
+    clerk_origin = f"{parsed_frontend_api.scheme}://{parsed_frontend_api.netloc}"
+    _csp_script_sources.add(clerk_origin)
+    _csp_connect_sources.add(clerk_origin)
+    _csp_frame_sources.add(clerk_origin)
+
+if settings.clerk.issuer:
+    parsed_issuer = urlparse(settings.clerk.issuer)
+    if parsed_issuer.scheme and parsed_issuer.netloc:
+        issuer_origin = f"{parsed_issuer.scheme}://{parsed_issuer.netloc}"
+        _csp_script_sources.add(issuer_origin)
+        _csp_connect_sources.add(issuer_origin)
+        _csp_frame_sources.add(issuer_origin)
+
+_content_security_policy = (
+    "default-src 'self'; "
+    "img-src 'self' data: https:; "
+    "style-src 'self' 'unsafe-inline'; "
+    f"script-src {' '.join(sorted(_csp_script_sources))}; "
+    "font-src 'self' data: https:; "
+    f"connect-src {' '.join(sorted(_csp_connect_sources))}; "
+    f"frame-src {' '.join(sorted(_csp_frame_sources))}; "
+    "worker-src 'self' blob:; "
+    "frame-ancestors 'none'"
+)
 
 
 @asynccontextmanager
@@ -88,7 +131,7 @@ async def security_headers_middleware(request: Request, call_next):
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault(
         "Content-Security-Policy",
-        "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'",
+        _content_security_policy,
     )
     return response
 
@@ -118,8 +161,17 @@ async def portal_entitlement_middleware(request: Request, call_next):
     public_prefixes = {
         "/app/login",
         "/app/signup",
+        "/app/session/callback",
+        "/app/auth/sync",
+        "/app/auth/clear",
         "/app/billing/webhook",
         "/app/logout",
+    }
+    initialization_prefixes = {
+        "/app/initialize",
+        "/app/initialize/save",
+        "/app/initialize/billing/checkout",
+        "/app/initialize/return",
     }
     if path == "/app":
         return await call_next(request)
@@ -138,6 +190,19 @@ async def portal_entitlement_middleware(request: Request, call_next):
                 response = RedirectResponse(url="/app/login?reason=invalid_session", status_code=303)
                 response.delete_cookie(container.settings.customer_portal.session_cookie_name)
                 return response
+            init_result = await container.portal_initialization_service.load_context(
+                session,
+                customer_user=authd.customer_user,
+            )
+            is_initialization_path = any(
+                path == prefix or path.startswith(f"{prefix}/") for prefix in initialization_prefixes
+            )
+            if container.portal_initialization_service.requires_initialization(init_result.context) and not is_initialization_path:
+                await session.commit()
+                return RedirectResponse(url="/app/initialize", status_code=303)
+            if is_initialization_path:
+                await session.commit()
+                return await call_next(request)
             sub_status = await container.billing_service.account_status(
                 session,
                 account_id=authd.customer_user.account_id,
@@ -152,6 +217,7 @@ async def portal_entitlement_middleware(request: Request, call_next):
 
     token = container.clerk_auth_service.token_from_request(
         request.headers.get("authorization"),
+        request.cookies.get(container.settings.clerk.backend_session_cookie_name),
         request.cookies.get(container.settings.clerk.session_cookie_name),
     )
     if not token:
@@ -172,6 +238,20 @@ async def portal_entitlement_middleware(request: Request, call_next):
         if not tenant.clerk_org_id:
             await session.rollback()
             return RedirectResponse(url="/app/login?reason=no_org", status_code=303)
+
+        init_result = await container.portal_initialization_service.load_context(
+            session,
+            customer_user=tenant.customer_user,
+        )
+        is_initialization_path = any(
+            path == prefix or path.startswith(f"{prefix}/") for prefix in initialization_prefixes
+        )
+        if container.portal_initialization_service.requires_initialization(init_result.context) and not is_initialization_path:
+            await session.commit()
+            return RedirectResponse(url="/app/initialize", status_code=303)
+        if is_initialization_path:
+            await session.commit()
+            return await call_next(request)
 
         sensitive_prefixes = {
             "/app/security",

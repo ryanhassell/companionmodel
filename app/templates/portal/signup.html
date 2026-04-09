@@ -1,12 +1,15 @@
 {% extends "portal/base.html" %}
 {% block content %}
+<section class="portal-auth-page">
+<div class="portal-auth-layout">
+<div class="portal-auth-main">
 <section class="page-header">
   <div>
     <h2>Create Account</h2>
-    <p class="subtle">Signup is now managed by Clerk with organization-based tenancy and verification.</p>
+    <p class="subtle">Create your parent account here, then we’ll walk you into setup.</p>
   </div>
 </section>
-<article class="card" style="max-width: 720px;">
+<article class="clerk-auth-shell">
   {% if error %}<p class="pill" style="background:#fff1ee;color:#8a3428;">{{ error }}</p>{% endif %}
   {% if legacy_auth_enabled %}
   <form method="post" class="grid">
@@ -20,9 +23,126 @@
     <button type="submit">Create Account</button>
   </form>
   {% else %}
-  <p>Use Clerk to create your portal account:</p>
-  <p><a class="button-link" href="{{ clerk_sign_up_url }}">Continue to Clerk Sign Up</a></p>
+    {% if clerk_publishable_key %}
+    <div id="clerk-sign-up-root" class="clerk-embed"></div>
+    <p class="pill auth-launch-status" id="clerk-sign-up-status">Loading secure account creation…</p>
+    <p class="subtle auth-back-link"><a href="/">Back to home</a></p>
+    <script type="module">
+      import "https://esm.sh/@clerk/ui@1.5.0/register";
+
+      window.addEventListener("load", async function () {
+        const authShell = document.querySelector(".clerk-auth-shell");
+        const mountNode = document.getElementById("clerk-sign-up-root");
+        const statusNode = document.getElementById("clerk-sign-up-status");
+        const loadSharedUiBundle = () =>
+          new Promise((resolve, reject) => {
+            if (window.__internal_ClerkUICtor) {
+              resolve(window.__internal_ClerkUICtor);
+              return;
+            }
+            const existing = document.querySelector('script[data-clerk-ui-shared="true"]');
+            if (existing) {
+              existing.addEventListener("load", () => resolve(window.__internal_ClerkUICtor), { once: true });
+              existing.addEventListener("error", () => reject(new Error("Clerk UI bundle failed to load")), { once: true });
+              return;
+            }
+            const script = document.createElement("script");
+            script.async = true;
+            script.dataset.clerkUiShared = "true";
+            script.src = "https://cdn.jsdelivr.net/npm/@clerk/ui@1.5.0/dist/ui.shared.browser.js";
+            script.onload = () => resolve(window.__internal_ClerkUICtor);
+            script.onerror = () => reject(new Error("Clerk UI bundle failed to load"));
+            document.head.appendChild(script);
+          });
+        const waitForClerk = () =>
+          new Promise((resolve, reject) => {
+            let attempts = 0;
+            const timer = window.setInterval(() => {
+              attempts += 1;
+              if (window.Clerk) {
+                window.clearInterval(timer);
+                resolve(window.Clerk);
+                return;
+              }
+              if (attempts > 120) {
+                window.clearInterval(timer);
+                reject(new Error("Clerk script did not load"));
+              }
+            }, 50);
+          });
+        try {
+          if (statusNode) statusNode.textContent = "Preparing secure account creation…";
+          await loadSharedUiBundle();
+          const clerk = await waitForClerk();
+          await clerk.load({
+            clerkUICtor: window.__internal_ClerkUICtor,
+          });
+          if (clerk.user && clerk.session) {
+            if (statusNode) statusNode.textContent = "Finishing account setup…";
+            window.location.replace("{{ clerk_callback_url }}");
+            return;
+          }
+          const appearance = {
+            variables: {
+              colorPrimary: "#1e5f53",
+              colorText: "#222827",
+              colorTextSecondary: "#67706d",
+              colorBackground: "#fcfaf5",
+              colorInputBackground: "#ffffff",
+              colorInputText: "#222827",
+              borderRadius: "0px",
+              fontFamily: "\"DM Sans\", \"Avenir Next\", \"Segoe UI\", sans-serif",
+            },
+            options: {
+              termsPageUrl: "/terms-and-conditions",
+              privacyPageUrl: "/privacy-policy",
+            },
+          };
+          if (!mountNode) {
+            throw new Error("Missing Clerk sign-up mount node");
+          }
+          clerk.mountSignUp(mountNode, {
+            routing: "hash",
+            signInUrl: "/app/login",
+            forceRedirectUrl: "{{ clerk_callback_url }}",
+            fallbackRedirectUrl: "{{ clerk_callback_url }}",
+            appearance,
+          });
+          if (statusNode) statusNode.textContent = "Use the form here to create your account.";
+        } catch (err) {
+          console.error("Clerk sign-up mount failed", err);
+          if (authShell) {
+            authShell.innerHTML = [
+              "<p class=\"pill\" style=\"background:#fff1ee;color:#8a3428;\">We couldn't load account creation right now.</p>",
+              '<p class="subtle">Please refresh once and try again.</p>',
+            ].join("");
+          }
+        }
+      });
+    </script>
+    {% else %}
+    <p class="pill" style="background:#fff1ee;color:#8a3428;">Clerk is enabled but no publishable key is configured.</p>
+    <p class="subtle">Set <code>CLERK_PUBLISHABLE_KEY</code> to enable embedded sign up.</p>
+    {% endif %}
   {% endif %}
-  <p class="subtle">Already have an account? <a href="/app/login">Sign in</a></p>
 </article>
+</div>
+<aside class="portal-auth-aside">
+  <section class="card auth-mini-card">
+    <p class="eyebrow">What You’re Setting Up</p>
+    <h3>A parent portal built for ongoing visibility.</h3>
+    <ul class="auth-benefit-list">
+      <li>Guided first-time setup for household, child profile, and boundaries.</li>
+      <li>Clear billing and usage tracking once the plan is active.</li>
+      <li>One place for memory highlights, safety signals, and conversation review.</li>
+    </ul>
+  </section>
+  <section class="card auth-mini-card">
+    <p class="eyebrow">Secure Start</p>
+    <h3>Account creation stays separated from your child’s experience.</h3>
+    <p class="subtle">We use Clerk for customer identity and keep household access scoped to the signed-in parent account.</p>
+  </section>
+</aside>
+</div>
+</section>
 {% endblock %}

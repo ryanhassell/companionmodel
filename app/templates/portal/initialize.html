@@ -1,0 +1,370 @@
+{% extends "portal/base.html" %}
+{% set active_nav = 'initialize' %}
+{% block content %}
+<section class="page-header initialization-header">
+  <div>
+    <p class="eyebrow">Account Setup</p>
+    <h2>Let’s finish your parent portal setup.</h2>
+    <p class="subtle">
+      This guided setup covers household details, one child profile, communication defaults, and billing
+      so the full portal is ready the moment you land on the dashboard.
+    </p>
+    <p class="subtle initialization-required-note"><span class="required-indicator" aria-hidden="true">*</span> Required fields</p>
+  </div>
+</section>
+
+{% if checkout_status == 'success' %}
+<p class="pill initialization-banner" style="background:#edf4f2;color:#1e5f53;">Billing confirmed. We’re finalizing your portal access now.</p>
+{% elif checkout_status == 'cancel' %}
+<p class="pill initialization-banner" style="background:#fff4e8;color:#7a4a1a;">Checkout was canceled. You can retry billing when you’re ready.</p>
+{% elif checkout_status == 'processing' %}
+<p class="pill initialization-banner" style="background:#fff4e8;color:#7a4a1a;">We’re still confirming your Stripe checkout. Refresh in a moment if this doesn’t advance automatically.</p>
+{% endif %}
+
+<section class="initialization-shell" data-portal-initialize data-current-step="{{ initialization.current_step }}">
+  <div class="initialization-progress" role="list" aria-label="Account setup progress">
+    {% for step in initialization.steps if step.key != 'complete' %}
+    <button
+      type="button"
+      class="initialization-progress-step {{ 'is-complete' if step.key in initialization.completed_steps else '' }} {{ 'is-active' if step.key == initialization.current_step else '' }}"
+      data-step-indicator="{{ step.key }}"
+      data-step-jump="{{ step.key }}"
+      title="{{ step.description }}"
+      aria-label="{{ step.label }}. {{ step.description }}"
+      {% if step.key not in initialization.completed_steps and step.key != initialization.current_step %}disabled{% endif %}
+    >
+      <span class="initialization-progress-index">{{ loop.index }}</span>
+      <span>
+        <strong>{{ step.label }}</strong>
+      </span>
+    </button>
+    {% endfor %}
+  </div>
+
+  <div class="initialization-grid">
+    <article class="card initialization-panel">
+      <div class="initialization-panel-head">
+        <div class="initialization-panel-summary">
+          <p class="meta-label" id="initialization-step-meta">
+            {% if initialization.current_step == 'complete' %}
+            Setup complete
+            {% else %}
+              {% for step in initialization.steps if step.key != 'complete' %}
+                {% if step.key == initialization.current_step %}Step {{ loop.index }} of {{ initialization.steps|length - 1 }}{% endif %}
+              {% endfor %}
+            {% endif %}
+          </p>
+          <h3 id="initialization-step-title">
+            {% if initialization.current_step == 'complete' %}
+            Complete
+            {% else %}
+              {% for step in initialization.steps %}
+                {% if step.key == initialization.current_step %}{{ step.label }}{% endif %}
+              {% endfor %}
+            {% endif %}
+          </h3>
+          <p class="subtle initialization-step-description" id="initialization-step-description">
+            {% if initialization.current_step == 'complete' %}
+            Everything is ready. You can head straight into the dashboard.
+            {% else %}
+              {% for step in initialization.steps %}
+                {% if step.key == initialization.current_step %}{{ step.description }}{% endif %}
+              {% endfor %}
+            {% endif %}
+          </p>
+        </div>
+        <p class="pill" id="initialization-save-indicator">Saved --</p>
+      </div>
+
+      <form id="portal-initialize-form" class="grid">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <section class="initialization-step-panel {{ 'is-active' if initialization.current_step == 'welcome' else '' }}" data-step-panel="welcome" {% if initialization.current_step != 'welcome' %}hidden{% endif %}>
+          <div class="initialization-copy">
+            <h4>Welcome to the parent portal</h4>
+            <p class="subtle">
+              This setup should only take a few minutes. We’ll collect your household details, one child/profile,
+              a few safety and communication defaults, and your plan so Resona is ready to use right away.
+            </p>
+          </div>
+        </section>
+
+        <section class="initialization-step-panel {{ 'is-active' if initialization.current_step == 'household' else '' }}" data-step-panel="household" {% if initialization.current_step != 'household' %}hidden{% endif %}>
+          <div class="grid">
+            <label><span class="field-label-row"><span>Who is this setup for?<span class="required-indicator" aria-hidden="true">*</span></span><span class="field-help" tabindex="0" aria-label="Explain who this setup is for"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">Choose <strong>For myself</strong> if the account owner is also the person using Resona. Choose <strong>For someone else</strong> if you are setting Resona up for a child or another supported person.</span></span></span>
+              <select name="mode">
+                <option value="for_myself" {{ 'selected' if initialization.snapshot.mode == 'for_myself' else '' }}>For myself</option>
+                <option value="for_someone_else" {{ 'selected' if initialization.snapshot.mode != 'for_myself' else '' }}>For someone else</option>
+              </select>
+              <small class="field-error" data-error-for="mode"></small>
+            </label>
+            <label><span class="field-label-row"><span>Your relationship<span class="required-indicator" aria-hidden="true">*</span></span><span class="field-help" tabindex="0" aria-label="Explain relationship"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">This tells Resona how you relate to the child or supported person on the account, such as parent, guardian, or caregiver.</span></span></span>
+              <select name="relationship">
+                {% for option in ['owner', 'parent', 'guardian', 'caregiver', 'other'] %}
+                <option value="{{ option }}" {{ 'selected' if initialization.snapshot.relationship == option else '' }}>{{ option|replace('_', ' ')|title }}</option>
+                {% endfor %}
+              </select>
+              <small class="field-error" data-error-for="relationship"></small>
+            </label>
+            <label><span class="field-label-row"><span>Household name<span class="required-indicator" aria-hidden="true">*</span></span><span class="field-help" tabindex="0" aria-label="Explain household name"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">This is the label used for your account workspace inside the parent portal. Most families use a last name, family name, or something simple like <strong>Anderson Home</strong>.</span></span></span>
+              <input name="household_name" value="{{ initialization.snapshot.household_name }}">
+              <small class="field-error" data-error-for="household_name"></small>
+            </label>
+            <label><span class="field-label-row"><span>Timezone<span class="required-indicator" aria-hidden="true">*</span></span><span class="field-help" tabindex="0" aria-label="Explain timezone"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">Timezone keeps quiet hours, suggested check-in timing, and portal timestamps aligned to your household instead of the server clock.</span></span></span>
+              <select name="timezone">
+                {% for option in timezone_options %}
+                <option value="{{ option.value }}" {{ 'selected' if initialization.snapshot.timezone == option.value else '' }}>{{ option.label }}</option>
+                {% endfor %}
+              </select>
+              <small class="field-error" data-error-for="timezone"></small>
+            </label>
+          </div>
+        </section>
+
+        <section class="initialization-step-panel {{ 'is-active' if initialization.current_step == 'child' else '' }}" data-step-panel="child" {% if initialization.current_step != 'child' %}hidden{% endif %}>
+          <div class="grid">
+            <label><span class="field-label-row"><span>Child or profile name<span class="required-indicator" aria-hidden="true">*</span></span><span class="field-help" tabindex="0" aria-label="Explain child or profile name"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">This is the name Resona will use in the companion experience and inside the parent portal. Use the name that feels most natural and comfortable for your child.</span></span></span>
+              <input name="profile_name" value="{{ initialization.snapshot.profile_name }}">
+              <small class="field-error" data-error-for="profile_name"></small>
+            </label>
+            <label><span class="field-label-row"><span>Phone number</span><span class="field-help" tabindex="0" aria-label="Explain phone number"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">Optional. Add this if you want Resona to be able to text that profile directly through the connected messaging setup.</span></span></span>
+              <input name="child_phone_number" value="{{ initialization.snapshot.child_phone_number }}" placeholder="+16105551234">
+              <small class="subtle">Optional, but it enables SMS continuity immediately.</small>
+            </label>
+            <label><span class="field-label-row"><span>Birth year</span><span class="field-help" tabindex="0" aria-label="Explain birth year"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">Optional. This helps keep tone, pacing, and examples age-appropriate without needing a full birthdate.</span></span></span>
+              <input name="birth_year" value="{{ initialization.snapshot.birth_year }}" inputmode="numeric" placeholder="2010">
+              <small class="field-error" data-error-for="birth_year"></small>
+            </label>
+            <label><span class="field-label-row"><span>Notes</span><span class="field-help" tabindex="0" aria-label="Explain notes"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">Share anything useful for setup, like routines, sensitivities, favorite topics, or context that would help the portal and companion start in a better place.</span></span></span>
+              <textarea name="notes" placeholder="Anything helpful for setup, routines, or context.">{{ initialization.snapshot.notes }}</textarea>
+            </label>
+          </div>
+        </section>
+
+        <section class="initialization-step-panel {{ 'is-active' if initialization.current_step == 'preferences' else '' }}" data-step-panel="preferences" {% if initialization.current_step != 'preferences' %}hidden{% endif %}>
+          <div class="initialization-copy initialization-step-note">
+            <p class="subtle">
+              These are starting defaults, not permanent rules. You can revisit Setup later and change them any time as your child’s needs become clearer.
+            </p>
+          </div>
+          <div class="grid">
+            <div>
+              <label class="initialization-field-label field-label-row"><span>Preferred pacing<span class="required-indicator" aria-hidden="true">*</span></span><span class="field-help" tabindex="0" aria-label="Explain preferred pacing"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">Pacing controls how quickly Resona moves through a conversation. You can mix styles here instead of locking the experience to one rigid mode.</span></span></label>
+              <p class="subtle initialization-field-hint">Pick one or more that feel right for your child.</p>
+              <div class="choice-chip-grid">
+                {% for option in ['gentle', 'balanced', 'direct', 'reflective', 'playful', 'steady'] %}
+                <label class="choice-chip">
+                  <input type="checkbox" name="preferred_pacing" value="{{ option }}" {{ 'checked' if option in (initialization.snapshot.preferred_pacing or []) else '' }}>
+                  <span>{{ option|title }}</span>
+                </label>
+                {% endfor %}
+              </div>
+              <small class="field-error" data-error-for="preferred_pacing"></small>
+              <label class="stacked-label"><span class="field-label-row"><span>Or describe the pacing in your own words</span><span class="field-help" tabindex="0" aria-label="Explain custom pacing"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">Use this if the preset choices are close but not quite right. You can describe the pacing in plain language and Resona will use that guidance when generating the example.</span></span></span>
+                <input
+                  name="preferred_pacing_custom"
+                  value="{{ initialization.snapshot.preferred_pacing_custom or '' }}"
+                  maxlength="160"
+                  placeholder="ex. calm at first, then gently more direct if they seem stuck"
+                >
+              </label>
+              <small class="field-error" data-error-for="preferred_pacing_custom"></small>
+            </div>
+            <div>
+              <label class="initialization-field-label field-label-row"><span>Response style<span class="required-indicator" aria-hidden="true">*</span></span><span class="field-help" tabindex="0" aria-label="Explain response style"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">Response style shapes the emotional feel of the message, like whether it sounds more warm, calm, reassuring, upbeat, or straightforward.</span></span></label>
+              <p class="subtle initialization-field-hint">You can blend multiple tones instead of forcing just one.</p>
+              <div class="choice-chip-grid">
+                {% for option in ['warm', 'calm', 'encouraging', 'reassuring', 'upbeat', 'straightforward'] %}
+                <label class="choice-chip">
+                  <input type="checkbox" name="response_style" value="{{ option }}" {{ 'checked' if option in (initialization.snapshot.response_style or []) else '' }}>
+                  <span>{{ option|title }}</span>
+                </label>
+                {% endfor %}
+              </div>
+              <small class="field-error" data-error-for="response_style"></small>
+              <label class="stacked-label"><span class="field-label-row"><span>Or describe the tone in your own words</span><span class="field-help" tabindex="0" aria-label="Explain custom response style"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">Use your own words if you want something more specific, like <strong>soft but still clear</strong> or <strong>encouraging without sounding overly cheerful</strong>.</span></span></span>
+                <input
+                  name="response_style_custom"
+                  value="{{ initialization.snapshot.response_style_custom or '' }}"
+                  maxlength="160"
+                  placeholder="ex. supportive, never too clinical, and very easy to follow"
+                >
+              </label>
+              <small class="field-error" data-error-for="response_style_custom"></small>
+            </div>
+            <label class="checkbox-row">
+              <input type="checkbox" name="voice_enabled" value="1" {{ 'checked' if initialization.snapshot.voice_enabled else '' }}>
+              <span class="checkbox-row-copy"><span class="field-label-row"><strong>Enable voice continuity</strong><span class="field-help" tabindex="0" aria-label="Explain voice continuity"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">If your plan includes voice, this keeps the same overall personality and memory continuity across both text and calls.</span></span></span><span>Enable voice continuity when the selected plan includes voice.</span></span>
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" name="proactive_check_ins" value="1" {{ 'checked' if initialization.snapshot.proactive_check_ins else '' }}>
+              <span class="checkbox-row-copy"><span class="field-label-row"><strong>Proactive check-ins</strong><span class="field-help" tabindex="0" aria-label="Explain proactive check-ins"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">When this is on, Resona can occasionally reach out on its own in a gentle, low-pressure way instead of only replying when your child starts the conversation.</span></span></span><span>Allow gentle proactive check-ins when helpful.</span></span>
+            </label>
+            <label><span class="field-label-row"><span>Parent visibility<span class="required-indicator" aria-hidden="true">*</span></span><span class="field-help" tabindex="0" aria-label="Explain parent visibility"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">This decides how much of the conversation appears in the parent portal by default. You can choose full transcript access or a more summary-first view with alerts emphasized.</span></span></span>
+              <select name="parent_visibility_mode">
+                <option value="" {{ 'selected' if not initialization.snapshot.parent_visibility_mode else '' }} disabled>Select a visibility mode</option>
+                <option value="full_transcript" {{ 'selected' if initialization.snapshot.parent_visibility_mode == 'full_transcript' else '' }}>Full transcript + events</option>
+                <option value="summary_with_alerts" {{ 'selected' if initialization.snapshot.parent_visibility_mode == 'summary_with_alerts' else '' }}>Summary + alerts emphasis</option>
+              </select>
+              <small class="field-error" data-error-for="parent_visibility_mode"></small>
+              <div class="field-preview" data-preview-box="parent_visibility_mode" hidden>
+                <p class="field-preview-message" data-preview-message></p>
+                <p class="subtle field-preview-caption" data-preview-caption></p>
+              </div>
+            </label>
+            <label><span class="field-label-row"><span>Alert threshold<span class="required-indicator" aria-hidden="true">*</span></span><span class="field-help" tabindex="0" aria-label="Explain alert threshold"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip"><strong>Alert threshold</strong> controls how sensitive the parent portal is when deciding what to surface.<br><br><strong>Low</strong>: show more early concerns and lighter signals.<br><strong>Medium</strong>: balanced default with fewer low-level notifications.<br><strong>High</strong>: only stronger or clearer issues are pushed forward.<br><br>Lower means more visibility but more noise. Higher means fewer alerts, but some lower-level patterns may stay in the background.</span></span></span>
+              <select name="alert_threshold">
+                <option value="" {{ 'selected' if not initialization.snapshot.alert_threshold else '' }} disabled>Select an alert threshold</option>
+                {% for option in ['low', 'medium', 'high'] %}
+                <option value="{{ option }}" {{ 'selected' if initialization.snapshot.alert_threshold == option else '' }}>{{ option|title }}</option>
+                {% endfor %}
+              </select>
+              <small class="field-error" data-error-for="alert_threshold"></small>
+              <div class="field-preview" data-preview-box="alert_threshold" hidden>
+                <p class="field-preview-message" data-preview-message></p>
+                <p class="subtle field-preview-caption" data-preview-caption></p>
+              </div>
+            </label>
+            <div class="grid two">
+              <label><span class="field-label-row"><span>Quiet hours start</span><span class="field-help" tabindex="0" aria-label="Explain quiet hours start"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">This is when Resona should begin treating the household as being in a quieter, lower-interruption window.</span></span></span>
+                <input type="time" name="quiet_hours_start" value="{{ initialization.snapshot.quiet_hours_start }}">
+              </label>
+              <label><span class="field-label-row"><span>Quiet hours end</span><span class="field-help" tabindex="0" aria-label="Explain quiet hours end"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">This is when the quiet-hours window ends and normal timing can resume.</span></span></span>
+                <input type="time" name="quiet_hours_end" value="{{ initialization.snapshot.quiet_hours_end }}">
+              </label>
+            </div>
+            <label><span class="field-label-row"><span>Daily cadence</span><span class="field-help" tabindex="0" aria-label="Explain daily cadence"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">Daily cadence gives Resona a rough sense of when conversations are most likely to feel natural, like after school, in the evening, or flexibly based on the day.</span></span></span>
+              <select name="daily_cadence">
+                <option value="" {{ 'selected' if not initialization.snapshot.daily_cadence else '' }} disabled>Select a cadence</option>
+                {% for option in ['adaptive', 'after_school', 'evening'] %}
+                <option value="{{ option }}" {{ 'selected' if initialization.snapshot.daily_cadence == option else '' }}>{{ option|replace('_', ' ')|title }}</option>
+                {% endfor %}
+              </select>
+              <div class="field-preview" data-preview-box="daily_cadence" hidden>
+                <p class="field-preview-message" data-preview-message></p>
+                <p class="subtle field-preview-caption" data-preview-caption></p>
+              </div>
+            </label>
+            <label><span class="field-label-row"><span>Anything else you want Resona to keep in mind?</span><span class="field-help" tabindex="0" aria-label="Explain additional communication notes"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">Use this for extra guidance that does not fit neatly into the other fields, like sensory needs, humor preferences, language level, or things to avoid.</span></span></span>
+              <textarea
+                name="communication_notes"
+                maxlength="280"
+                placeholder="Optional: mention sensory needs, language level, humor, reassurance preferences, or anything else that would help the companion feel more natural."
+              >{{ initialization.snapshot.communication_notes or '' }}</textarea>
+              <small class="field-error" data-error-for="communication_notes"></small>
+            </label>
+          </div>
+        </section>
+
+        <section class="initialization-step-panel {{ 'is-active' if initialization.current_step == 'plan' else '' }}" data-step-panel="plan" {% if initialization.current_step != 'plan' %}hidden{% endif %}>
+          <div class="grid">
+            <p class="subtle field-label-row"><span>Choose the plan you want to activate during setup.<span class="required-indicator" aria-hidden="true">*</span></span><span class="field-help" tabindex="0" aria-label="Explain plan selection"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip"><strong>Resona Chat</strong> is text-first. <strong>Resona Voice</strong> includes everything in Chat plus voice continuity and calls. You can review billing and change plans later.</span></span></p>
+            <div class="initialization-plan-grid">
+              {% for plan in plan_options %}
+              <label class="initialization-plan-card">
+                <input type="radio" name="selected_plan_key" value="{{ plan.key }}" {{ 'checked' if initialization.selected_plan_key == plan.key else '' }}>
+                <span class="initialization-plan-card-copy">
+                  <strong>{{ plan.label }}</strong>
+                  <span>{{ plan.summary }}</span>
+                  <small>${{ plan.included_credits_usd }} in monthly included usage credits</small>
+                </span>
+              </label>
+              {% endfor %}
+            </div>
+            <small class="field-error" data-error-for="selected_plan_key"></small>
+            <div class="field-preview" data-preview-box="selected_plan_key" hidden>
+              <p class="field-preview-message" data-preview-message></p>
+              <p class="subtle field-preview-caption" data-preview-caption></p>
+            </div>
+          </div>
+        </section>
+
+        <section class="initialization-step-panel {{ 'is-active' if initialization.current_step == 'billing' else '' }}" data-step-panel="billing" {% if initialization.current_step != 'billing' %}hidden{% endif %}>
+          <div class="initialization-copy">
+            <h4>Complete billing to unlock the full portal</h4>
+            <p class="subtle">
+              Your plan selection is saved. Once Stripe checkout succeeds, Resona will unlock the full
+              dashboard, timeline, safety feed, and billing views for this account.
+            </p>
+            <div class="graphic-card">
+              <p class="meta-label">Selected plan</p>
+              <p class="meta-value" id="billing-selected-plan">
+                {% if initialization.summary.selected_plan_key == 'voice' %}Resona Voice{% elif initialization.summary.selected_plan_key == 'chat' %}Resona Chat{% else %}No plan selected yet{% endif %}
+              </p>
+              <p class="meta-label">Subscription status</p>
+              <p class="meta-value" id="billing-subscription-status">{{ initialization.billing_status|replace('_', ' ')|title }}</p>
+            </div>
+            <div class="hero-actions">
+              <button type="button" class="button" id="initialization-billing-button">Continue to Stripe</button>
+            </div>
+            <small class="field-error" data-error-for="billing"></small>
+          </div>
+        </section>
+
+        <section class="initialization-step-panel {{ 'is-active' if initialization.current_step == 'complete' else '' }}" data-step-panel="complete" {% if initialization.current_step != 'complete' %}hidden{% endif %}>
+          <div class="initialization-copy">
+            <h4>Your parent portal is ready.</h4>
+            <p class="subtle">
+              Setup is complete. Household details, profile data, safety defaults, and billing are all in place.
+            </p>
+            <div class="hero-actions">
+              <a class="button" href="/app/dashboard">Open Dashboard</a>
+              <a class="button ghost" href="/app/timeline">View Timeline</a>
+            </div>
+          </div>
+        </section>
+
+        <div class="initialization-actions">
+          <button type="button" class="button ghost" id="initialization-back-button">Back</button>
+          <button type="button" class="button" id="initialization-next-button">Next</button>
+        </div>
+      </form>
+    </article>
+
+    <aside class="card initialization-summary-panel">
+      <p class="meta-label">Readiness Summary</p>
+      <div class="field-preview field-preview-emphasis initialization-summary-preview" id="initialization-ai-preview">
+        <div class="field-preview-head">
+          <strong>Example reply</strong>
+        </div>
+        <p class="field-preview-message" id="initialization-ai-preview-message"></p>
+        <p class="subtle field-preview-caption" id="initialization-ai-preview-caption"></p>
+      </div>
+      <div class="initialization-summary-group">
+        <p class="meta-label">Household</p>
+        <p class="meta-value" data-summary-field="household_name">{{ initialization.summary.household_name or 'Not set yet' }}</p>
+      </div>
+      <div class="initialization-summary-group">
+        <p class="meta-label">Relationship</p>
+        <p class="meta-value" data-summary-field="relationship_label">{{ initialization.summary.relationship_label or 'Not set yet' }}</p>
+      </div>
+      <div class="initialization-summary-group">
+        <p class="meta-label">Child/Profile</p>
+        <p class="meta-value" data-summary-field="child_name">{{ initialization.summary.child_name or 'Not set yet' }}</p>
+      </div>
+      <div class="initialization-summary-group">
+        <p class="meta-label">Communication defaults</p>
+        <p class="meta-value" data-summary-field="preferred_pacing">{{ initialization.summary.preferred_pacing or 'Not set yet' }}</p>
+      </div>
+      <div class="initialization-summary-group">
+        <p class="meta-label">Parent visibility</p>
+        <p class="meta-value" data-summary-field="parent_visibility_mode">{{ initialization.summary.parent_visibility_mode or 'Full transcript' }}</p>
+      </div>
+      <div class="initialization-summary-group">
+        <p class="meta-label">Plan</p>
+        <p class="meta-value" data-summary-field="selected_plan_key">
+          {% if initialization.summary.selected_plan_key == 'voice' %}Resona Voice{% elif initialization.summary.selected_plan_key == 'chat' %}Resona Chat{% else %}Not selected yet{% endif %}
+        </p>
+      </div>
+      <div class="initialization-summary-group">
+        <p class="meta-label">Billing status</p>
+        <p class="meta-value" data-summary-field="subscription_status">{{ initialization.summary.subscription_status|replace('_', ' ')|title }}</p>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<script id="portal-initialize-data" type="application/json">{{ initialization_payload | tojson }}</script>
+{% endblock %}
+{% block body_scripts %}
+<script src="/static/portal-init.js" defer></script>
+{% endblock %}

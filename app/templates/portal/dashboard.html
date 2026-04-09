@@ -13,6 +13,19 @@
   <div class="stat"><p class="subtle">Child</p><strong>{{ parent_context.child_name }}</strong></div>
   <div class="stat"><p class="subtle">Safety Events</p><strong>{{ safety_events|length }}</strong></div>
 </div>
+{% if parent_context.subscription_status in ['incomplete', 'canceled'] %}
+<article class="card" style="margin-top: 16px; background:#fff8ee;">
+  <h3>Portal access is ready</h3>
+  <p class="subtle">
+    You can complete setup, review household details, and explore the parent portal now.
+    Activate billing when you're ready to enable live Resona messaging and voice usage.
+  </p>
+  <div class="hero-actions">
+    <a class="button" href="/app/onboarding">Complete Setup</a>
+    <a class="button ghost" href="/app/billing">Activate Plan</a>
+  </div>
+</article>
+{% endif %}
 <article class="card" style="margin-top: 16px;">
   <h3>Usage and Credits</h3>
   <p><strong>Included credits:</strong> ${{ usage_summary.included_usd }} / month</p>

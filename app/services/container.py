@@ -9,6 +9,7 @@ from app.providers.elevenlabs import ElevenLabsProvider
 from app.providers.openai import OpenAIProvider
 from app.providers.twilio import TwilioProvider
 from app.services.alerting import AlertingService
+from app.services.admin_authz import AdminAuthzService
 from app.services.audit import AuditService
 from app.services.auth import AuthService
 from app.services.config import ConfigService
@@ -24,14 +25,19 @@ from app.services.image import ImageService
 from app.services.memory import MemoryService
 from app.services.message import MessageService
 from app.services.notifications import NotificationService
+from app.services.portal_initialization import PortalInitializationService
+from app.services.portal_preview import PortalPreviewService
 from app.services.prompt import PromptService
 from app.services.proactive import ProactiveService
+from app.services.pricing_simulation import PricingSimulationService
 from app.services.reply_ranker import ReplyRankerService
 from app.services.safety import SafetyService
 from app.services.safety_rewrite import SafetyRewriteService
 from app.services.schedule import ScheduleService
 from app.services.rate_limiter import RateLimiterService
 from app.services.turn_classifier import TurnClassifierService
+from app.services.usage_ingestion import UsageIngestionService
+from app.services.usage_reconciliation import UsageReconciliationService
 from app.services.voice import VoiceService
 
 
@@ -43,6 +49,7 @@ class ServiceContainer:
     elevenlabs_provider: ElevenLabsProvider
     twilio_provider: TwilioProvider
     alerting_service: AlertingService
+    admin_authz_service: AdminAuthzService
     audit_service: AuditService
     auth_service: AuthService
     config_service: ConfigService
@@ -55,6 +62,11 @@ class ServiceContainer:
     customer_auth_service: CustomerAuthService
     clerk_auth_service: ClerkAuthService
     billing_service: BillingService
+    portal_initialization_service: PortalInitializationService
+    portal_preview_service: PortalPreviewService
+    usage_ingestion_service: UsageIngestionService
+    usage_reconciliation_service: UsageReconciliationService
+    pricing_simulation_service: PricingSimulationService
     notification_service: NotificationService
     rate_limiter_service: RateLimiterService
     human_likeness_service: HumanLikenessService
@@ -91,7 +103,17 @@ class ServiceContainer:
         safety_rewrite_service = SafetyRewriteService(openai_provider, prompt_service)
         customer_auth_service = CustomerAuthService(actual_settings)
         clerk_auth_service = ClerkAuthService(actual_settings)
+        admin_authz_service = AdminAuthzService(actual_settings, clerk_auth_service=clerk_auth_service)
         billing_service = BillingService(actual_settings)
+        portal_initialization_service = PortalInitializationService(actual_settings, billing_service)
+        usage_ingestion_service = UsageIngestionService()
+        portal_preview_service = PortalPreviewService(
+            actual_settings,
+            openai_provider,
+            usage_ingestion_service,
+        )
+        usage_reconciliation_service = UsageReconciliationService(usage_ingestion_service)
+        pricing_simulation_service = PricingSimulationService()
         notification_service = NotificationService(actual_settings, twilio_provider)
         rate_limiter_service = RateLimiterService(actual_settings)
         human_likeness_service = HumanLikenessService(
@@ -111,6 +133,7 @@ class ServiceContainer:
             memory_service,
             daily_life_service,
             conversation_state_service,
+            usage_ingestion_service,
         )
         message_service = MessageService(
             actual_settings,
@@ -129,6 +152,7 @@ class ServiceContainer:
             candidate_reply_service,
             reply_ranker_service,
             safety_rewrite_service,
+            usage_ingestion_service,
         )
         proactive_service = ProactiveService(
             config_service,
@@ -141,6 +165,7 @@ class ServiceContainer:
             memory_service,
             voice_service,
             conversation_state_service,
+            usage_ingestion_service,
         )
         return cls(
             settings=actual_settings,
@@ -149,6 +174,7 @@ class ServiceContainer:
             elevenlabs_provider=elevenlabs_provider,
             twilio_provider=twilio_provider,
             alerting_service=alerting_service,
+            admin_authz_service=admin_authz_service,
             audit_service=audit_service,
             auth_service=auth_service,
             config_service=config_service,
@@ -161,6 +187,11 @@ class ServiceContainer:
             customer_auth_service=customer_auth_service,
             clerk_auth_service=clerk_auth_service,
             billing_service=billing_service,
+            portal_initialization_service=portal_initialization_service,
+            portal_preview_service=portal_preview_service,
+            usage_ingestion_service=usage_ingestion_service,
+            usage_reconciliation_service=usage_reconciliation_service,
+            pricing_simulation_service=pricing_simulation_service,
             notification_service=notification_service,
             rate_limiter_service=rate_limiter_service,
             human_likeness_service=human_likeness_service,

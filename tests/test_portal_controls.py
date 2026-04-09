@@ -22,10 +22,12 @@ def test_billing_entitlement_rules(settings):
     assert service.can_access_path(SubscriptionStatus.active, "/app/timeline") is True
     assert service.can_access_path(SubscriptionStatus.trialing, "/app/memory") is True
     assert service.can_access_path(SubscriptionStatus.past_due, "/app/team") is True
-    assert service.can_access_path(SubscriptionStatus.incomplete, "/app/timeline") is False
-    assert service.can_access_path(SubscriptionStatus.canceled, "/app/child") is False
+    assert service.can_access_path(SubscriptionStatus.incomplete, "/app/timeline") is True
+    assert service.can_access_path(SubscriptionStatus.incomplete, "/app/dashboard") is True
+    assert service.can_access_path(SubscriptionStatus.canceled, "/app/child") is True
     assert service.can_access_path(SubscriptionStatus.canceled, "/app/billing") is True
     assert service.can_access_path(SubscriptionStatus.canceled, "/app/security") is True
+    assert service.can_access_path(SubscriptionStatus.incomplete, "/app/internal/paid-action") is False
 
 
 async def test_account_status_defaults_incomplete(sqlite_session, settings):

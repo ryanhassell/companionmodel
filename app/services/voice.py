@@ -34,6 +34,7 @@ from app.services.daily_life import DailyLifeService
 from app.services.conversation_state import ConversationStateService
 from app.services.memory import MemoryService
 from app.services.prompt import PromptService
+from app.services.usage_ingestion import UsageIngestionService, UsageRecordInput
 from app.utils.files import ensure_parent
 from app.utils.text import normalize_text, truncate_text
 from app.utils.time import utc_now
@@ -74,6 +75,7 @@ class VoiceService:
         memory_service: MemoryService,
         daily_life_service: DailyLifeService,
         conversation_state_service: ConversationStateService,
+        usage_ingestion_service: UsageIngestionService,
     ) -> None:
         self.settings = settings
         self.twilio_provider = twilio_provider
@@ -83,6 +85,7 @@ class VoiceService:
         self.memory_service = memory_service
         self.daily_life_service = daily_life_service
         self.conversation_state_service = conversation_state_service
+        self.usage_ingestion_service = usage_ingestion_service
         self._sessionmaker = get_sessionmaker()
         self._session_tasks: dict[str, asyncio.Task[None]] = {}
 
@@ -188,6 +191,14 @@ class VoiceService:
                 output_format="mp3_44100_128",
             ):
                 collected.extend(chunk)
+            if user is not None:
+                await self._record_elevenlabs_usage(
+                    session,
+                    user=user,
+                    text=text,
+                    model_id=model_id,
+                    event_suffix="creative_clip",
+                )
             filename = f"{asset.id}_{secrets.token_hex(6)}.mp3"
             target = self.settings.media_root_path / "audio" / filename
             ensure_parent(target)
@@ -255,6 +266,13 @@ class VoiceService:
             twiml=twiml,
             status_callback=self.settings.twilio.voice_status_callback_url,
         )
+        await self._record_twilio_call_usage(
+            session,
+            user=user,
+            provider_sid=result.provider_sid,
+            twilio_response=result.raw_response,
+            event_type="twilio.voice.outbound",
+        )
         record.provider_call_sid = result.provider_sid
         try:
             record.status = CallStatus(result.status)
@@ -317,6 +335,13 @@ class VoiceService:
             to_number=user.phone_number,
             twiml=twiml,
             status_callback=self.settings.twilio.voice_status_callback_url,
+        )
+        await self._record_twilio_call_usage(
+            session,
+            user=user,
+            provider_sid=result.provider_sid,
+            twilio_response=result.raw_response,
+            event_type="twilio.voice.outbound.realtime",
         )
         record.provider_call_sid = result.provider_sid
         try:
@@ -565,6 +590,12 @@ class VoiceService:
             input_items=[{"role": "user", "content": rendered}],
             max_output_tokens=220,
         )
+        await self._record_openai_usage(
+            session,
+            user=user,
+            usage=response.usage,
+            event_type="openai.responses.voice_script",
+        )
         return response.text
 
     def build_twiml(self, script: str) -> str:
@@ -598,6 +629,11 @@ class VoiceService:
             record.started_at = utc_now()
         if record.status in {CallStatus.completed, CallStatus.failed, CallStatus.no_answer}:
             record.ended_at = utc_now()
+        await self._finalize_twilio_call_usage_from_status(
+            session,
+            record=record,
+            payload=payload or {},
+        )
         record.metadata_json = {
             **(record.metadata_json or {}),
             "twilio_status": payload or {"status": status},
@@ -773,10 +809,11 @@ class VoiceService:
             voice_id = self._selected_elevenlabs_voice(persona)
             if not voice_id:
                 return
+            selected_model = model_id or self._selected_elevenlabs_call_model(persona)
             async for chunk in self.elevenlabs_provider.stream_tts(
                 text=text,
                 voice_id=voice_id,
-                model_id=model_id or self._selected_elevenlabs_call_model(persona),
+                model_id=selected_model,
                 output_format="ulaw_8000",
             ):
                 if generation_id != generation_counter:
@@ -794,6 +831,13 @@ class VoiceService:
                         )
                     except WebSocketDisconnect:
                         return
+            await self._record_elevenlabs_usage(
+                session,
+                user=user,
+                text=text,
+                model_id=selected_model,
+                event_suffix="stream_call_tts",
+            )
 
         async def generate_and_speak(latest_user_text: str, generation_id: int) -> None:
             nonlocal transcript_entries
@@ -812,6 +856,12 @@ class VoiceService:
                 input_items=[{"role": "user", "content": input_text}],
                 model=self.settings.voice.text_model,
                 max_output_tokens=220 if song_mode else 45,
+            )
+            await self._record_openai_usage(
+                session,
+                user=user,
+                usage=response.usage,
+                event_type="openai.responses.voice_turn",
             )
             assistant_text = _clean_spoken_call_text(
                 response.text,
@@ -2099,6 +2149,177 @@ class VoiceService:
             )
         return details
 
+    async def _record_twilio_call_usage(
+        self,
+        session: AsyncSession,
+        *,
+        user: User,
+        provider_sid: str | None,
+        twilio_response: dict[str, Any],
+        event_type: str,
+    ) -> None:
+        if not provider_sid:
+            return
+        account_id = await self.usage_ingestion_service.resolve_account_id_for_user(session, user_id=user.id)
+        if account_id is None:
+            return
+        await self.usage_ingestion_service.record_event(
+            session,
+            UsageRecordInput(
+                account_id=account_id,
+                user_id=user.id,
+                conversation_id=None,
+                provider="twilio",
+                product_surface="voice",
+                event_type=event_type,
+                external_id=provider_sid,
+                idempotency_key=f"twilio:voice:{event_type}:{provider_sid}",
+                quantity=1.0,
+                unit="call",
+                occurred_at=utc_now(),
+                metadata_json={
+                    "status": twilio_response.get("status"),
+                    "price": twilio_response.get("price"),
+                    "price_unit": twilio_response.get("price_unit"),
+                },
+            ),
+        )
+
+    async def _finalize_twilio_call_usage_from_status(
+        self,
+        session: AsyncSession,
+        *,
+        record: CallRecord,
+        payload: dict[str, Any],
+    ) -> None:
+        if not record.provider_call_sid or record.user_id is None:
+            return
+        price_raw = payload.get("Price")
+        if price_raw in (None, ""):
+            return
+        try:
+            cost = abs(float(str(price_raw)))
+        except (TypeError, ValueError):
+            return
+        duration = 0.0
+        raw_duration = payload.get("CallDuration")
+        try:
+            duration = float(raw_duration) if raw_duration not in (None, "") else 0.0
+        except (TypeError, ValueError):
+            duration = 0.0
+        updated = await self.usage_ingestion_service.finalize_by_external_id(
+            session,
+            provider="twilio",
+            external_id=record.provider_call_sid,
+            event_type="twilio.voice.outbound",
+            cost_usd=cost,
+            source_ref="twilio_voice_status_webhook",
+            metadata_patch={
+                "price": str(price_raw),
+                "price_unit": str(payload.get("PriceUnit") or "USD"),
+                "call_status": str(payload.get("CallStatus") or ""),
+                "call_duration_seconds": duration,
+            },
+        )
+        if updated == 0:
+            account_id = await self.usage_ingestion_service.resolve_account_id_for_user(session, user_id=record.user_id)
+            if account_id is None:
+                return
+            await self.usage_ingestion_service.record_event(
+                session,
+                UsageRecordInput(
+                    account_id=account_id,
+                    user_id=record.user_id,
+                    conversation_id=None,
+                    provider="twilio",
+                    product_surface="voice",
+                    event_type="twilio.voice.outbound",
+                    external_id=record.provider_call_sid,
+                    idempotency_key=f"twilio:voice:twilio.voice.outbound:{record.provider_call_sid}",
+                    quantity=max(duration, 1.0),
+                    unit="second",
+                    occurred_at=utc_now(),
+                    cost_usd=cost,
+                    source_ref="twilio_voice_status_webhook",
+                    metadata_json={"price": str(price_raw)},
+                ),
+            )
+
+    async def _record_openai_usage(
+        self,
+        session: AsyncSession,
+        *,
+        user: User,
+        usage: dict[str, Any],
+        event_type: str,
+    ) -> None:
+        if not usage:
+            return
+        account_id = await self.usage_ingestion_service.resolve_account_id_for_user(session, user_id=user.id)
+        if account_id is None:
+            return
+        prompt_tokens = _usage_int(usage, "input_tokens", "prompt_tokens")
+        completion_tokens = _usage_int(usage, "output_tokens", "completion_tokens")
+        total_tokens = _usage_int(usage, "total_tokens")
+        if total_tokens <= 0:
+            total_tokens = prompt_tokens + completion_tokens
+        if total_tokens <= 0:
+            return
+        await self.usage_ingestion_service.record_event(
+            session,
+            UsageRecordInput(
+                account_id=account_id,
+                user_id=user.id,
+                conversation_id=None,
+                provider="openai",
+                product_surface="voice",
+                event_type=event_type,
+                external_id=None,
+                idempotency_key=f"openai:voice:{event_type}:{user.id}:{utc_now().isoformat(timespec='seconds')}",
+                quantity=float(total_tokens),
+                unit="token",
+                occurred_at=utc_now(),
+                metadata_json={
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                },
+            ),
+        )
+
+    async def _record_elevenlabs_usage(
+        self,
+        session: AsyncSession,
+        *,
+        user: User,
+        text: str,
+        model_id: str | None,
+        event_suffix: str,
+    ) -> None:
+        account_id = await self.usage_ingestion_service.resolve_account_id_for_user(session, user_id=user.id)
+        if account_id is None:
+            return
+        char_count = len(text.strip())
+        if char_count <= 0:
+            return
+        await self.usage_ingestion_service.record_event(
+            session,
+            UsageRecordInput(
+                account_id=account_id,
+                user_id=user.id,
+                conversation_id=None,
+                provider="elevenlabs",
+                product_surface="voice",
+                event_type=f"elevenlabs.tts.{event_suffix}",
+                external_id=None,
+                idempotency_key=f"elevenlabs:{event_suffix}:{user.id}:{char_count}:{utc_now().isoformat(timespec='seconds')}",
+                quantity=float(char_count),
+                unit="character",
+                occurred_at=utc_now(),
+                metadata_json={"model_id": model_id},
+            ),
+        )
+
 
 def _extract_transcript_text(event: dict[str, Any]) -> str:
     if isinstance(event.get("delta"), str):
@@ -2404,6 +2625,20 @@ def _event_value(payload: dict[str, Any], *keys: str) -> str:
         if value:
             return str(value)
     return ""
+
+
+def _usage_int(payload: dict[str, Any], *keys: str) -> int:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            candidate = value.strip()
+            if candidate.isdigit():
+                return int(candidate)
+    return 0
 
 
 def _parse_tool_args(event: dict[str, Any]) -> dict[str, Any]:

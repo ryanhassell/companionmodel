@@ -19,6 +19,7 @@ from app.utils.time import utc_now
 
 logger = get_logger(__name__)
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_CLERK_LOCAL_EMAIL_RE = re.compile(r"^[^@\s]+@clerk\.local$", re.IGNORECASE)
 
 
 @dataclass(slots=True)
@@ -84,26 +85,30 @@ class ClerkAuthService:
             raw=decoded,
         )
 
-    def token_from_request(self, authorization: str | None, session_cookie: str | None) -> str | None:
+    def token_from_request(self, authorization: str | None, *session_cookies: str | None) -> str | None:
         if authorization and authorization.lower().startswith("bearer "):
             return authorization[7:].strip()
-        if session_cookie:
-            return session_cookie
+        for session_cookie in session_cookies:
+            if session_cookie:
+                return session_cookie
         return None
 
     async def resolve_tenant_context(self, session: AsyncSession, claims: ClerkClaims) -> TenantContext:
+        effective_org_id = claims.org_id or f"user:{claims.user_id}"
         if self.settings.clerk.require_org and not claims.org_id:
-            raise ValueError("Organization context is required")
-        if not claims.org_id:
-            raise ValueError("No organization in token")
+            logger.info(
+                "clerk_personal_tenant_fallback",
+                extra={"clerk_user_id": claims.user_id, "effective_org_id": effective_org_id},
+            )
 
-        account = await session.scalar(select(Account).where(Account.clerk_org_id == claims.org_id))
+        account = await session.scalar(select(Account).where(Account.clerk_org_id == effective_org_id))
+        display_name = self._extract_display_name(claims.raw)
         if account is None:
-            slug = self._safe_slug(claims.org_id)
+            slug = self._safe_slug(effective_org_id)
             account = Account(
-                name=f"Organization {claims.org_id}",
+                name=(f"Organization {claims.org_id}" if claims.org_id else (display_name or claims.email or "Resona Household")),
                 slug=f"org-{slug[:32]}",
-                clerk_org_id=claims.org_id,
+                clerk_org_id=effective_org_id,
             )
             session.add(account)
             await session.flush()
@@ -122,7 +127,7 @@ class ClerkAuthService:
                 account_id=account.id,
                 email=email,
                 password_hash=f"clerk:{secrets.token_hex(16)}",
-                display_name=(claims.raw.get("name") or None),
+                display_name=display_name,
                 clerk_user_id=claims.user_id,
                 verification_level="verified",
             )
@@ -133,9 +138,14 @@ class ClerkAuthService:
             customer_user.clerk_user_id = claims.user_id
             if claims.email and _EMAIL_RE.match(claims.email):
                 customer_user.email = claims.email
+            if display_name and (
+                not customer_user.display_name
+                or self._looks_like_clerk_placeholder(customer_user.display_name)
+            ):
+                customer_user.display_name = display_name
 
         customer_user.last_clerk_auth_at = utc_now()
-        role = self._map_role(claims.org_role)
+        role = HouseholdRole.owner if not claims.org_id else self._map_role(claims.org_role)
 
         session.add(
             AuthIdentityEvent(
@@ -144,8 +154,10 @@ class ClerkAuthService:
                 event_type="clerk_auth_seen",
                 details_json={
                     "org_id": claims.org_id,
+                    "effective_org_id": effective_org_id,
                     "org_role": claims.org_role,
                     "mfa_verified": claims.mfa_verified,
+                    "personal_tenant": claims.org_id is None,
                 },
                 created_at=utc_now(),
             )
@@ -166,7 +178,7 @@ class ClerkAuthService:
             customer_user=customer_user,
             role=role,
             clerk_user_id=claims.user_id,
-            clerk_org_id=claims.org_id,
+            clerk_org_id=effective_org_id,
             mfa_verified=claims.mfa_verified,
         )
 
@@ -187,6 +199,46 @@ class ClerkAuthService:
                     if isinstance(value, str) and _EMAIL_RE.match(value):
                         return value.lower()
         return None
+
+    def _extract_display_name(self, claims: dict[str, Any]) -> str | None:
+        candidates = [
+            claims.get("name"),
+            claims.get("full_name"),
+            claims.get("fullName"),
+            self._join_name_parts(claims.get("first_name"), claims.get("last_name")),
+            self._join_name_parts(claims.get("firstName"), claims.get("lastName")),
+            self._join_name_parts(claims.get("given_name"), claims.get("family_name")),
+            claims.get("username"),
+        ]
+        for candidate in candidates:
+            if not isinstance(candidate, str):
+                continue
+            cleaned = candidate.strip()
+            if not cleaned:
+                continue
+            if self._looks_like_clerk_placeholder(cleaned):
+                continue
+            return cleaned
+        return None
+
+    def _join_name_parts(self, first: Any, last: Any) -> str | None:
+        first_clean = str(first or "").strip()
+        last_clean = str(last or "").strip()
+        full = " ".join(part for part in [first_clean, last_clean] if part)
+        return full or None
+
+    def _looks_like_clerk_placeholder(self, value: str | None) -> bool:
+        if not value:
+            return True
+        cleaned = value.strip()
+        if not cleaned:
+            return True
+        lowered = cleaned.lower()
+        if _CLERK_LOCAL_EMAIL_RE.match(lowered):
+            return True
+        if lowered.startswith("user_") and "@" not in lowered:
+            return True
+        return False
 
     def _mfa_verified(self, claims: dict[str, Any]) -> bool:
         amr = claims.get("amr")

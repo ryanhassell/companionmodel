@@ -11,8 +11,21 @@
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=Fraunces:opsz,wght@9..144,500;9..144,700&display=swap" rel="stylesheet">
     <script>document.documentElement.classList.add("js");</script>
     <link rel="stylesheet" href="/static/style.css">
+    {% if clerk_enabled and clerk_publishable_key %}
+    <script
+      async
+      crossorigin="anonymous"
+      data-clerk-publishable-key="{{ clerk_publishable_key }}"
+      src="{% if clerk_frontend_api_url %}{{ clerk_frontend_api_url }}/npm/@clerk/clerk-js@6.6.0/dist/clerk.browser.js{% else %}https://cdn.jsdelivr.net/npm/@clerk/clerk-js@6.6.0/dist/clerk.browser.js{% endif %}"
+      type="text/javascript">
+    </script>
+    {% endif %}
   </head>
-  <body class="marketing-body">
+  <body
+    class="marketing-body"
+    data-clerk-enabled="{{ 'true' if clerk_enabled and clerk_publishable_key else 'false' }}"
+    data-clerk-publishable-key="{{ clerk_publishable_key or '' }}"
+    data-clerk-frontend-api-url="{{ clerk_frontend_api_url or '' }}">
     <header class="marketing-header-wrap">
       <div class="marketing-header">
         <a href="/" class="wordmark" aria-label="{{ site.brand_name }} home">
@@ -30,13 +43,49 @@
           <a href="/faq" class="{{ 'active' if request.url.path == '/faq' else '' }}" aria-current="{{ 'page' if request.url.path == '/faq' else 'false' }}">FAQ</a>
           <a href="/contact" class="{{ 'active' if request.url.path == '/contact' else '' }}" aria-current="{{ 'page' if request.url.path == '/contact' else 'false' }}">Contact</a>
           <div class="marketing-nav-cta">
-            <a class="button ghost" href="/app/login">Sign In</a>
-            <a class="button" href="/app/signup">Start Parent Setup</a>
+            <div class="marketing-cta-stack" data-auth-signed-out>
+              <a class="button ghost" href="/app/login">Sign in</a>
+              <a class="button" href="/app/signup">Get Started</a>
+            </div>
+            <div class="marketing-account marketing-account-mobile" data-auth-signed-in hidden>
+              <button class="marketing-account-trigger" type="button" aria-haspopup="menu">
+                <img src="/static/images/resona-mark.svg" alt="" class="marketing-account-avatar" data-user-avatar>
+                <span class="marketing-account-copy">
+                  <span class="marketing-account-label">Signed in</span>
+                  <span class="marketing-account-name" data-user-name>My account</span>
+                </span>
+              </button>
+              <div class="marketing-account-dropdown" role="menu">
+                <a href="/app/landing" data-auth-link="account">My Account</a>
+                <a href="/app/dashboard" data-auth-link="portal">Parent Portal</a>
+                <a href="/app/billing" data-auth-link="billing">Billing</a>
+                <a href="/app/security" data-auth-link="security">Security</a>
+                <button type="button" data-auth-signout>Sign out</button>
+              </div>
+            </div>
           </div>
         </nav>
         <div class="marketing-actions">
-          <a class="button ghost" href="/app/login">Sign In</a>
-          <a class="button" href="/app/signup">Start Parent Setup</a>
+          <div class="marketing-cta-stack" data-auth-signed-out>
+            <a class="button ghost" href="/app/login">Sign in</a>
+            <a class="button" href="/app/signup">Get Started</a>
+          </div>
+          <div class="marketing-account" data-auth-signed-in hidden>
+            <button class="marketing-account-trigger" type="button" aria-haspopup="menu">
+              <img src="/static/images/resona-mark.svg" alt="" class="marketing-account-avatar" data-user-avatar>
+              <span class="marketing-account-copy">
+                <span class="marketing-account-label">Signed in</span>
+                <span class="marketing-account-name" data-user-name>My account</span>
+              </span>
+            </button>
+            <div class="marketing-account-dropdown" role="menu">
+              <a href="/app/landing" data-auth-link="account">My Account</a>
+              <a href="/app/dashboard" data-auth-link="portal">Parent Portal</a>
+              <a href="/app/billing" data-auth-link="billing">Billing</a>
+              <a href="/app/security" data-auth-link="security">Security</a>
+              <button type="button" data-auth-signout>Sign out</button>
+            </div>
+          </div>
         </div>
       </div>
     </header>

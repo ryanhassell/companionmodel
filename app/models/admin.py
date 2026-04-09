@@ -23,6 +23,7 @@ class AdminUser(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     audit_events: Mapped[list[AuditEvent]] = relationship("AuditEvent", back_populates="admin_user")
+    identities: Mapped[list[AdminIdentity]] = relationship("AdminIdentity", back_populates="admin_user")
 
 
 class AuditEvent(UUIDPrimaryKeyMixin, Base):
@@ -54,3 +55,26 @@ class JobRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     details_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class AdminIdentity(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "admin_identities"
+    __table_args__ = (
+        Index("ix_admin_identities_admin_user", "admin_user_id"),
+        Index("ix_admin_identities_clerk_user_id", "clerk_user_id", unique=True),
+        Index("ix_admin_identities_email", "email"),
+    )
+
+    admin_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("admin_users.id"), nullable=False)
+    provider: Mapped[str] = mapped_column(String(40), nullable=False, default="clerk")
+    clerk_user_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    clerk_org_id: Mapped[str | None] = mapped_column(String(120))
+    email: Mapped[str | None] = mapped_column(String(255))
+    org_role: Mapped[str | None] = mapped_column(String(80))
+    mfa_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    allowlisted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_auth_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+    admin_user: Mapped[AdminUser] = relationship("AdminUser", back_populates="identities")

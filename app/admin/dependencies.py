@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import SessionPayload, decode_session_token, validate_csrf
+from app.core.security import decode_session_token, validate_csrf
 from app.db.session import get_db_session
 from app.models.admin import AdminUser
 from app.services.container import ServiceContainer
@@ -15,12 +15,12 @@ from app.services.container import ServiceContainer
 @dataclass(slots=True)
 class AdminRequestContext:
     admin_user: AdminUser
-    session_payload: SessionPayload
+    csrf_token_value: str
     container: ServiceContainer
 
     @property
     def csrf_token(self) -> str:
-        return self.session_payload.csrf_token
+        return self.csrf_token_value
 
 
 def get_container(request: Request) -> ServiceContainer:
@@ -34,19 +34,36 @@ async def get_optional_admin_context(
 ) -> AdminRequestContext | None:
     cookie_name = container.settings.admin.session_cookie_name
     token = request.cookies.get(cookie_name)
-    if not token:
-        return None
-    session_payload = decode_session_token(token, container.settings)
-    if session_payload is None:
-        return None
-    try:
-        admin_id = UUID(session_payload.admin_user_id)
-    except ValueError:
-        return None
-    admin_user = await session.get(AdminUser, admin_id)
-    if admin_user is None or not admin_user.is_active:
-        return None
-    return AdminRequestContext(admin_user=admin_user, session_payload=session_payload, container=container)
+    if token:
+        session_payload = decode_session_token(token, container.settings)
+        if session_payload is not None:
+            try:
+                admin_id = UUID(session_payload.admin_user_id)
+            except ValueError:
+                admin_id = None
+            if admin_id is not None:
+                admin_user = await session.get(AdminUser, admin_id)
+                if admin_user is not None and admin_user.is_active:
+                    return AdminRequestContext(
+                        admin_user=admin_user,
+                        csrf_token_value=session_payload.csrf_token,
+                        container=container,
+                    )
+
+    if container.settings.admin.clerk_enabled:
+        authz = await container.admin_authz_service.authenticate_request(
+            session,
+            authorization=request.headers.get("Authorization"),
+            session_cookie=request.cookies.get(container.settings.clerk.backend_session_cookie_name)
+            or request.cookies.get(container.settings.clerk.session_cookie_name),
+        )
+        if authz is not None:
+            return AdminRequestContext(
+                admin_user=authz.admin_user,
+                csrf_token_value=authz.csrf_token,
+                container=container,
+            )
+    return None
 
 
 async def require_admin_context(
