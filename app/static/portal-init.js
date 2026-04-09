@@ -725,41 +725,6 @@ import {
 
   const preferencePreviewKey = (previewPayload) => JSON.stringify(previewPayload);
 
-  const buildLocalExamplePreview = (previewPayload) => {
-    const childName = previewPayload.profile_name || "there";
-    const pacing = Array.isArray(previewPayload.preferred_pacing) ? previewPayload.preferred_pacing : [];
-    const tones = Array.isArray(previewPayload.response_style) ? previewPayload.response_style : [];
-    const firstPacing = pacing[0] || "";
-    const firstTone = tones[0] || "";
-    let opener = `Hey ${childName}, tell me what happened when you're ready.`;
-    if (firstPacing === "direct") {
-      opener = `${childName}, tell me the main part first.`;
-    } else if (firstPacing === "steady") {
-      opener = `${childName}, start at the beginning and we can go one step at a time.`;
-    } else if (firstPacing === "reflective") {
-      opener = `${childName}, what part of today is still sitting with you?`;
-    } else if (firstPacing === "playful") {
-      opener = `Hey ${childName}, what part of today felt the biggest?`;
-    }
-    const closers = {
-      warm: "I'm here with you.",
-      calm: "We can keep it simple.",
-      encouraging: "We'll figure it out together.",
-      reassuring: "You're okay, and you can say it however you want.",
-      upbeat: "We've got this.",
-      straightforward: "We can work through the main part first.",
-    };
-    return {
-      message: `${opener} ${closers[firstTone] || "I'm listening."}`,
-      caption:
-        "Example only. This blends " +
-        listSummary(pacing, previewPayload.preferred_pacing_custom, "pacing") +
-        " with " +
-        listSummary(tones, previewPayload.response_style_custom, "tone") +
-        ", and you can change these later.",
-    };
-  };
-
   const setAiPreviewState = ({ message = "", caption = "", pending = false }) => {
     if (aiPreviewBox) {
       aiPreviewBox.dataset.state = pending ? "loading" : message ? "ready" : "idle";
@@ -845,7 +810,6 @@ import {
     }
     pendingPreviewKey = cacheKey;
     setAiPreviewState(loadingPreviewState());
-    const fallback = buildLocalExamplePreview(previewPayload);
     try {
       const runPreview = () =>
         fetchJson(payload.preview_url, {
@@ -891,13 +855,13 @@ import {
         const data = result.data || {};
         const errorCaption =
           result.response?.status === 429
-            ? "Preview limit reached for now, so we’re showing the local example instead."
-            : data.detail || fallback.caption;
+            ? "Preview limit reached for now."
+            : data.detail || "Live AI wording is unavailable right now.";
         if (currentPreferencePreviewKey() !== cacheKey) {
           return;
         }
         setAiPreviewState({
-          message: fallback.message,
+          message: "Preview unavailable right now.",
           caption: errorCaption,
           pending: false,
         });
@@ -906,15 +870,15 @@ import {
       const data = result.data || {};
       previewPendingOnReconnect = false;
       pendingPreviewPayload = null;
-      if (!String(data.source || "").startsWith("fallback")) {
+      if (String(data.source || "") === "openai") {
         aiPreviewCache.set(cacheKey, { message: data.message, caption: data.caption });
       }
       if (currentPreferencePreviewKey() !== cacheKey) {
         return;
       }
       setAiPreviewState({
-        message: data.message,
-        caption: data.caption,
+        message: data.message || "Preview unavailable right now.",
+        caption: data.caption || data.detail || "Live AI wording is unavailable right now.",
         pending: false,
       });
     } catch (error) {

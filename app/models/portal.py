@@ -111,6 +111,49 @@ class ChildProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     household: Mapped[Household] = relationship("Household", back_populates="child_profiles")
     companion_user: Mapped[User | None] = relationship("User")
+    parent_chat_threads: Mapped[list[PortalChatThread]] = relationship("PortalChatThread", back_populates="child_profile")
+
+
+class PortalChatThread(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "portal_chat_threads"
+    __table_args__ = (
+        Index("ix_portal_chat_threads_customer_child", "customer_user_id", "child_profile_id", unique=True),
+        Index("ix_portal_chat_threads_account_updated", "account_id", "updated_at"),
+    )
+
+    account_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("accounts.id"), nullable=False)
+    customer_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("customer_users.id"), nullable=False)
+    child_profile_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("child_profiles.id"), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    last_parent_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_assistant_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    account: Mapped[Account] = relationship("Account")
+    customer_user: Mapped[CustomerUser] = relationship("CustomerUser")
+    child_profile: Mapped[ChildProfile] = relationship("ChildProfile", back_populates="parent_chat_threads")
+    messages: Mapped[list[PortalChatMessage]] = relationship(
+        "PortalChatMessage",
+        back_populates="thread",
+        cascade="all, delete-orphan",
+    )
+
+
+class PortalChatMessage(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "portal_chat_messages"
+    __table_args__ = (
+        Index("ix_portal_chat_messages_thread_created", "thread_id", "created_at"),
+    )
+
+    thread_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portal_chat_threads.id", ondelete="CASCADE"), nullable=False)
+    sender: Mapped[str] = mapped_column(String(20), nullable=False)
+    body: Mapped[str] = mapped_column(Text(), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    model_name: Mapped[str | None] = mapped_column(String(120))
+    tokens_in: Mapped[int | None] = mapped_column(Integer)
+    tokens_out: Mapped[int | None] = mapped_column(Integer)
+
+    thread: Mapped[PortalChatThread] = relationship("PortalChatThread", back_populates="messages")
 
 
 class RoleAssignment(UUIDPrimaryKeyMixin, TimestampMixin, Base):

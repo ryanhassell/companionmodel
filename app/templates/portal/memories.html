@@ -6,25 +6,40 @@
 <section class="page-header memory-page-header">
   <div>
     <p class="eyebrow">Memories</p>
-    <h2>{% if memory_view == 'map' %}Memory Map{% else %}Memory Library{% endif %}</h2>
-    <p class="subtle">Explore what Resona remembers, how those memories connect, and update anything that needs a parent’s touch.</p>
+    <h2>{% if memory_view == 'map' %}Memory Web{% elif memory_view == 'routine' %}Daily Routine{% else %}Memory Library{% endif %}</h2>
+    <p class="subtle">
+      {% if memory_view == 'map' %}
+      Explore the bigger picture of what Resona knows about {{ child.display_name if child and child.display_name else "your child" }} beyond the day-to-day routine.
+      {% elif memory_view == 'routine' %}
+      Follow how routines, recurring plans, and daily rhythms have been grouped over time.
+      {% else %}
+      Browse everything Resona remembers in a clear library and update anything that needs a parent’s touch.
+      {% endif %}
+    </p>
   </div>
 </section>
 
 <nav class="portal-subnav" aria-label="Memories section">
-  <a href="/app/memories/map{% if show_archived %}?archived=1{% endif %}" class="{{ 'active' if memory_view == 'map' else '' }}">Memory Map</a>
+  <a href="/app/memories/map{% if show_archived %}?archived=1{% endif %}" class="{{ 'active' if memory_view == 'map' else '' }}">Memory Web</a>
+  <a href="/app/memories/daily-routine{% if show_archived %}?archived=1{% endif %}" class="{{ 'active' if memory_view == 'routine' else '' }}">Daily Routine</a>
   <a href="/app/memories/library" class="{{ 'active' if memory_view == 'library' else '' }}">Memory Library</a>
 </nav>
 
 {% if child and child.companion_user_id %}
 <div class="memory-shell">
   <section class="memory-main-column">
-    {% if memory_view == 'map' %}
+    {% if memory_view in ['map', 'routine'] %}
     <article class="card memory-map-card">
       <div class="memory-toolbar">
         <div>
-          <h3>Spiderweb View</h3>
-          <p class="subtle">Solid lines show structural links. Dashed lines show softer similarity between memories.</p>
+          <h3>{% if memory_view == 'map' %}Semantic Web{% else %}Routine Timeline{% endif %}</h3>
+          <p class="subtle">
+            {% if memory_view == 'map' %}
+            Resona groups recurring themes into a smarter web so important people, topics, and connected memories stay easier to follow.
+            {% else %}
+            Solid lines organize recurring routine memories into days and weeks. Dashed lines show softer related moments inside those routines.
+            {% endif %}
+          </p>
         </div>
         <label class="memory-toggle">
           <input id="memory-show-archived" type="checkbox" {% if show_archived %}checked{% endif %}>
@@ -32,13 +47,28 @@
         </label>
       </div>
       <div class="memory-legend" aria-hidden="true">
+        {% if memory_view == 'map' %}
+        <span><i class="memory-legend-dot memory-legend-dot-person"></i>Person hub</span>
+        <span><i class="memory-legend-dot memory-legend-dot-topic"></i>Topic cluster</span>
+        <span><i class="memory-legend-dot memory-legend-dot-memory"></i>Memory</span>
+        <span><i class="memory-legend-line memory-legend-line-anchor"></i>Organizing link</span>
+        {% else %}
+        <span><i class="memory-legend-dot memory-legend-dot-week"></i>Week</span>
+        <span><i class="memory-legend-dot memory-legend-dot-day"></i>Day</span>
+        {% endif %}
         <span><i class="memory-legend-line memory-legend-line-structural"></i>Structural link</span>
         <span><i class="memory-legend-line memory-legend-line-similarity"></i>Similarity link</span>
       </div>
-      <div id="memory-graph" class="memory-graph" data-view="map"></div>
+      <div id="memory-graph" class="memory-graph" data-view="{{ memory_view }}"></div>
       <div id="memory-graph-empty" class="portal-inline-alert" hidden>
         <strong>No connected memories to draw yet.</strong>
-        <p>Your child’s memory map will appear here once Resona has enough stored context to connect.</p>
+        <p>
+          {% if memory_view == 'map' %}
+          The memory web will appear here once Resona has enough non-routine memories to organize into a clearer picture.
+          {% else %}
+          The daily routine graph will appear here once Resona has enough routine memories to organize by day and week.
+          {% endif %}
+        </p>
       </div>
     </article>
     {% else %}
@@ -102,6 +132,13 @@
         <p class="eyebrow">Inspector</p>
         <h3>Select a memory</h3>
         <p class="subtle">Click a node in the map or open a memory from the library to review it, adjust it, or remove it safely.</p>
+      </div>
+
+      <div id="memory-inspector-group" class="memory-inspector-empty" hidden>
+        <p class="eyebrow">Timeline Group</p>
+        <h3 id="memory-group-title"></h3>
+        <p class="subtle" id="memory-group-meta"></p>
+        <p class="subtle" id="memory-group-summary"></p>
       </div>
 
       <div id="memory-inspector-body" hidden>

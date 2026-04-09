@@ -4,17 +4,17 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai import AiRuntime
 from app.models.communication import Conversation, Message
 from app.models.persona import Persona
 from app.models.user import User
-from app.providers.openai import OpenAIProvider
 from app.services.prompt import PromptService
 from app.utils.text import normalize_text
 
 
 class TurnClassifierService:
-    def __init__(self, openai_provider: OpenAIProvider, prompt_service: PromptService) -> None:
-        self.openai_provider = openai_provider
+    def __init__(self, ai_runtime: AiRuntime, prompt_service: PromptService) -> None:
+        self.ai_runtime = ai_runtime
         self.prompt_service = prompt_service
 
     async def classify(
@@ -31,7 +31,7 @@ class TurnClassifierService:
     ) -> dict[str, Any]:
         text = inbound_message.body or ""
         fallback = self._heuristic(text)
-        if not self.openai_provider.enabled:
+        if not self.ai_runtime.enabled:
             return fallback
 
         context = {
@@ -54,14 +54,14 @@ class TurnClassifierService:
             "response_energy should be: low, medium, high.\n"
             f"Message: {text}\n"
         )
-        response = await self.openai_provider.generate_json(
-            instructions=instructions,
-            input_items=[{"role": "user", "content": payload}],
-            max_output_tokens=220,
-        )
-        if not isinstance(response, dict):
+        try:
+            response = await self.ai_runtime.classify_turn(
+                instructions=instructions,
+                prompt=payload,
+            )
+        except Exception:
             return fallback
-        merged = {**fallback, **response}
+        merged = {**fallback, **response.output.model_dump(mode="json")}
         merged["risk_flags"] = [str(item).strip() for item in (merged.get("risk_flags") or []) if str(item).strip()][:6]
         merged["direct_question"] = bool(merged.get("direct_question"))
         merged["needs_reassurance"] = bool(merged.get("needs_reassurance"))

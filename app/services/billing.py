@@ -146,6 +146,7 @@ class BillingService:
             "/app/initialize",
             "/app/child",
             "/app/timeline",
+            "/app/parent-chat",
             "/app/memory",
             "/app/safety",
             "/app/team",

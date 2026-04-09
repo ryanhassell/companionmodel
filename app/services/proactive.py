@@ -143,16 +143,20 @@ class ProactiveService:
             }
             instructions = await self.prompt_service.render(session, "system_prompt", context)
             prompt = await self.prompt_service.render(session, "proactive_message", context)
-            if self.message_service.openai_provider.enabled:
-                response = await self.message_service.openai_provider.generate_text(
-                    instructions=instructions,
-                    input_items=[{"role": "user", "content": prompt}],
-                    max_output_tokens=int(config["openai"]["proactive_max_output_tokens"]),
-                    temperature=float(config["openai"]["temperature"]),
-                )
-                body = response.text
-            else:
-                body = "Thinking of you and hoping your day is going gently. What have you been up to?"
+            body = ""
+            if self.message_service.ai_runtime.enabled:
+                try:
+                    response = await self.message_service.ai_runtime.proactive_message(
+                        instructions=instructions,
+                        prompt=prompt,
+                        max_tokens=int(config["openai"]["proactive_max_output_tokens"]),
+                        temperature=float(config["openai"]["temperature"]),
+                    )
+                    body = response.output.text
+                except Exception:
+                    body = ""
+            if not body.strip():
+                continue
             media_assets = None
             if random.random() <= float(config["messaging"]["proactive_image_probability"]):
                 image_count = await self.schedule_service.image_count_today(
@@ -268,15 +272,17 @@ class ProactiveService:
             "Do not ask more than one short question.\n"
             "Keep it under 140 characters."
         )
-        if self.message_service.openai_provider.enabled:
-            response = await self.message_service.openai_provider.generate_text(
-                instructions=instructions,
-                input_items=[{"role": "user", "content": prompt}],
-                model=self.voice_service.settings.voice.text_model,
-                max_output_tokens=70,
-            )
-            return response.text.strip()
-        return f"hi {user.display_name or ''}, just calling to say hey and tell you a little bit about my day".strip()
+        if self.message_service.ai_runtime.enabled:
+            try:
+                response = await self.message_service.ai_runtime.proactive_call_opening(
+                    instructions=instructions,
+                    prompt=prompt,
+                    max_tokens=70,
+                )
+                return response.output.text.strip()
+            except Exception:
+                return ""
+        return ""
 
     def _persona_can_call_user(self, persona, phone_number: str) -> bool:
         prompt_overrides = getattr(persona, "prompt_overrides", {}) or {}

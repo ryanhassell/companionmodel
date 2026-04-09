@@ -3,13 +3,18 @@ const payloadNode = document.getElementById("portal-memories-data");
 if (payloadNode) {
   const payload = JSON.parse(payloadNode.textContent || "{}");
   const graphElement = document.getElementById("memory-graph");
+  const graphView = String(payload.view || graphElement?.dataset.view || "map");
   const graphEmpty = document.getElementById("memory-graph-empty");
   const showArchivedToggle = document.getElementById("memory-show-archived");
   const inspectorEmpty = document.getElementById("memory-inspector-empty");
+  const inspectorGroup = document.getElementById("memory-inspector-group");
   const inspectorBody = document.getElementById("memory-inspector-body");
   const inspectorStatus = document.getElementById("memory-inspector-status");
   const inspectorTitle = document.getElementById("memory-inspector-title");
   const inspectorMeta = document.getElementById("memory-inspector-meta");
+  const groupTitle = document.getElementById("memory-group-title");
+  const groupMeta = document.getElementById("memory-group-meta");
+  const groupSummary = document.getElementById("memory-group-summary");
   const linkedList = document.getElementById("memory-linked-list");
   const deletePreview = document.getElementById("memory-delete-preview");
   const deletePreviewList = document.getElementById("memory-delete-preview-list");
@@ -101,6 +106,7 @@ if (payloadNode) {
   const fillInspector = (memory) => {
     selectedMemoryId = memory.id;
     if (inspectorEmpty) inspectorEmpty.hidden = true;
+    if (inspectorGroup) inspectorGroup.hidden = true;
     if (inspectorBody) inspectorBody.hidden = false;
     if (inspectorTitle) inspectorTitle.textContent = memory.title;
     if (inspectorMeta) {
@@ -119,6 +125,36 @@ if (payloadNode) {
     renderLinkedMemories(Array.isArray(memory.linked_memories) ? memory.linked_memories : []);
     clearDeletePreview();
     highlightSelectedMemory(memory.id);
+  };
+
+  const showGroupInspector = (nodeData) => {
+    selectedMemoryId = null;
+    if (inspectorEmpty) inspectorEmpty.hidden = true;
+    if (inspectorBody) inspectorBody.hidden = true;
+    if (inspectorGroup) inspectorGroup.hidden = false;
+    if (groupTitle) groupTitle.textContent = nodeData.label || "Timeline group";
+    if (groupMeta) {
+      const count = Number(nodeData.itemCount || 0);
+      const kindLabel =
+        nodeData.kind === "week"
+          ? "Weekly routine group"
+          : nodeData.kind === "day"
+            ? "Daily routine group"
+            : nodeData.kind === "person"
+              ? "Person hub"
+              : "Topic cluster";
+      groupMeta.textContent = count > 0 ? `${kindLabel} · ${count} memor${count === 1 ? "y" : "ies"}` : kindLabel;
+    }
+    if (groupSummary) {
+      groupSummary.textContent =
+        nodeData.summary ||
+        (graphView === "routine"
+          ? "This group helps organize related memories into a clearer timeline."
+          : "This cluster helps organize related memories into a clearer relationship web.");
+    }
+    clearDeletePreview();
+    highlightSelectedMemory(nodeData.id);
+    setStatus("", "info");
   };
 
   const loadMemory = async (memoryId) => {
@@ -264,8 +300,10 @@ if (payloadNode) {
           label: node.label,
           summary: node.summary,
           memoryType: node.memory_type,
+          kind: node.kind || "memory",
+          itemCount: node.item_count || 0,
         },
-        classes: [node.pinned ? "is-pinned" : "", node.archived ? "is-archived" : ""].join(" ").trim(),
+        classes: [node.pinned ? "is-pinned" : "", node.archived ? "is-archived" : "", `is-${node.kind || "memory"}`].join(" ").trim(),
       })),
       ...structuralEdges.map((edge) => ({
         data: {
@@ -274,7 +312,16 @@ if (payloadNode) {
           target: edge.target,
           label: edge.label || "",
         },
-        classes: `is-structural ${edge.relationship_type || ""}`,
+        classes: [
+          "is-structural",
+          edge.relationship_type || "",
+          String(edge.relationship_type || "").startsWith("time_") ? "is-time" : "",
+          ["person_cluster", "topic_member", "person_memory"].includes(String(edge.relationship_type || ""))
+            ? "is-anchor"
+            : "",
+        ]
+          .join(" ")
+          .trim(),
       })),
       ...similarityEdges.map((edge) => ({
         data: {
@@ -311,6 +358,55 @@ if (payloadNode) {
             width: 58,
             height: 58,
             padding: 8,
+          },
+        },
+        {
+          selector: "node.is-week",
+          style: {
+            shape: "round-rectangle",
+            width: 124,
+            height: 48,
+            "background-color": "#e7efe7",
+            "border-color": "#516b62",
+            "font-size": 12,
+            "text-max-width": 108,
+          },
+        },
+        {
+          selector: "node.is-day",
+          style: {
+            shape: "round-rectangle",
+            width: 106,
+            height: 40,
+            "background-color": "#f4efe5",
+            "border-color": "#8d7a5f",
+            "font-size": 11,
+            "text-max-width": 94,
+          },
+        },
+        {
+          selector: "node.is-person",
+          style: {
+            shape: "ellipse",
+            width: 88,
+            height: 88,
+            "background-color": "#e8f1ee",
+            "border-color": "#1e5f53",
+            "font-size": 13,
+            "font-weight": 700,
+            "text-max-width": 74,
+          },
+        },
+        {
+          selector: "node.is-topic",
+          style: {
+            shape: "round-rectangle",
+            width: 112,
+            height: 52,
+            "background-color": "#f0eee8",
+            "border-color": "#76684f",
+            "font-size": 11,
+            "text-max-width": 98,
           },
         },
         {
@@ -353,6 +449,22 @@ if (payloadNode) {
           },
         },
         {
+          selector: "edge.is-anchor",
+          style: {
+            width: 1.8,
+            "line-color": "#a39b8d",
+            opacity: 0.72,
+          },
+        },
+        {
+          selector: "edge.is-time",
+          style: {
+            width: 2,
+            "line-color": "#c4bbad",
+            opacity: 0.8,
+          },
+        },
+        {
           selector: "edge.is-similarity",
           style: {
             width: 1.5,
@@ -362,18 +474,42 @@ if (payloadNode) {
           },
         },
       ],
-      layout: {
-        name: "cose",
-        animate: true,
-        animationDuration: 360,
-        fit: true,
-        padding: 28,
-        nodeRepulsion: 9000,
-        idealEdgeLength: 110,
-      },
+      layout:
+        graphView === "routine"
+          ? {
+              name: "breadthfirst",
+              animate: true,
+              animationDuration: 360,
+              fit: true,
+              padding: 28,
+              directed: true,
+              spacingFactor: 1.15,
+              avoidOverlap: true,
+              roots: "[kind = 'week']",
+            }
+          : {
+              name: "cose",
+              animate: true,
+              animationDuration: 380,
+              fit: true,
+              padding: 32,
+              nodeRepulsion: 18000,
+              idealEdgeLength: 116,
+              edgeElasticity: 110,
+              gravity: 0.18,
+              componentSpacing: 70,
+              nestingFactor: 0.95,
+              randomize: false,
+              avoidOverlap: true,
+            },
     });
 
     graph.on("tap", "node", (event) => {
+      const nodeData = event.target.data();
+      if ((nodeData.kind || "memory") !== "memory") {
+        showGroupInspector(nodeData);
+        return;
+      }
       void loadMemory(event.target.id());
     });
     highlightSelectedMemory(selectedMemoryId);

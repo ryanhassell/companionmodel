@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import math
+import re
 import uuid
+from collections import Counter
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import delete, desc, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai import AiRuntime
 from app.core.logging import get_logger
 from app.core.settings import RuntimeSettings
 from app.models.communication import Message
@@ -23,7 +27,6 @@ from app.schemas.site import (
     MemoryLinkedMemory,
 )
 from app.models.user import User
-from app.providers.openai import OpenAIProvider
 from app.services.prompt import PromptService
 from app.utils.time import utc_now
 
@@ -53,15 +56,22 @@ class MemoryGraphResult:
     similarity_edges: list[MemoryGraphEdge]
 
 
+@dataclass(slots=True)
+class MemoryConceptAssignment:
+    key: str | None
+    label: str
+    kind: str
+
+
 class MemoryService:
     def __init__(
         self,
         settings: RuntimeSettings,
-        openai_provider: OpenAIProvider,
+        ai_runtime: AiRuntime,
         prompt_service: PromptService,
     ) -> None:
         self.settings = settings
-        self.openai_provider = openai_provider
+        self.ai_runtime = ai_runtime
         self.prompt_service = prompt_service
 
     async def extract_from_message(
@@ -86,16 +96,15 @@ class MemoryService:
         rendered = await self.prompt_service.render(session, "memory_extraction", context)
 
         facts: list[dict[str, Any]] = []
-        if self.openai_provider.enabled:
-            response = await self.openai_provider.generate_json(
-                instructions="Return JSON only.",
-                input_items=[{"role": "user", "content": rendered}],
-                max_output_tokens=self.settings.openai.memory_max_output_tokens,
-            )
-            if isinstance(response, list):
-                facts = [item for item in response if isinstance(item, dict)]
-            elif isinstance(response, dict) and isinstance(response.get("facts"), list):
-                facts = [item for item in response["facts"] if isinstance(item, dict)]
+        if self.ai_runtime.enabled:
+            try:
+                response = await self.ai_runtime.extract_memories(
+                    prompt=rendered,
+                    max_tokens=self.settings.openai.memory_max_output_tokens,
+                )
+                facts = [item.model_dump(mode="json") for item in response.output.facts]
+            except Exception:
+                facts = []
         if not facts:
             facts = self._heuristic_facts(message.body)
 
@@ -143,10 +152,10 @@ class MemoryService:
         *,
         config: dict[str, Any],
     ) -> None:
-        if not items or not self.openai_provider.enabled:
+        if not items or not self.ai_runtime.enabled:
             return
         texts = [self._embedding_text(item) for item in items]
-        embeddings = await self.openai_provider.embed_texts(texts)
+        embeddings = await self.ai_runtime.embed_documents(texts)
         for item, embedding, text_value in zip(items, embeddings, texts):
             item.embedding_model = self.settings.openai.embedding_model
             item.embedding_text = text_value
@@ -185,12 +194,14 @@ class MemoryService:
             items = [item for item in items if item.persona_id in (None, persona_id)]
         if not items:
             return []
-        if not self.openai_provider.enabled:
+        if not self.ai_runtime.enabled:
             return [
                 RetrievedMemory(memory=item, score=item.importance_score, explanation="fallback_rank")
                 for item in items[:top_k]
             ]
-        embedding = (await self.openai_provider.embed_texts([query]))[0]
+        embedding = await self.ai_runtime.embed_query(query)
+        if not embedding:
+            return []
         dialect_name = session.bind.dialect.name if session.bind is not None else ""
         if dialect_name == "postgresql":
             results = await self._retrieve_postgres(
@@ -302,16 +313,18 @@ class MemoryService:
             f"{item.direction.value}: {item.body or ''}" for item in messages if item.body
         )
         summary_text = transcript[:4000]
-        if self.openai_provider.enabled:
+        if self.ai_runtime.enabled:
             fake_user = type("SummaryUser", (), {"id": user_id})()
             context = {"transcript": transcript, "config": config, "user": fake_user, "persona": None}
             rendered = await self.prompt_service.render(session, "summarization", context)
-            response = await self.openai_provider.generate_text(
-                instructions="Summarize concisely for long-term memory.",
-                input_items=[{"role": "user", "content": rendered}],
-                max_output_tokens=self.settings.openai.memory_max_output_tokens,
-            )
-            summary_text = response.text or summary_text
+            try:
+                response = await self.ai_runtime.consolidate_memory(
+                    prompt=rendered,
+                    max_tokens=self.settings.openai.memory_max_output_tokens,
+                )
+                summary_text = response.output.summary or summary_text
+            except Exception:
+                pass
         memory = MemoryItem(
             user_id=user_id,
             persona_id=persona_id,
@@ -419,7 +432,7 @@ class MemoryService:
         *,
         user_id: uuid.UUID | str,
         include_archived: bool = False,
-        limit: int = 60,
+        limit: int = 72,
         similarity_limit: int = 2,
     ) -> MemoryGraphResult:
         normalized_user_id = _normalize_uuid(user_id)
@@ -427,17 +440,78 @@ class MemoryService:
             return MemoryGraphResult(nodes=[], structural_edges=[], similarity_edges=[])
 
         await self.sync_relationships_for_user(session, user_id=normalized_user_id)
-        memories = await self.list_memories_for_user(
-            session,
-            user_id=normalized_user_id,
-            include_archived=include_archived,
-            limit=limit,
-        )
+        stmt = select(MemoryItem).where(MemoryItem.user_id == normalized_user_id)
+        if not include_archived:
+            stmt = stmt.where(MemoryItem.disabled.is_(False))
+        stmt = stmt.order_by(desc(MemoryItem.updated_at), desc(MemoryItem.created_at)).limit(max(limit * 3, 180))
+        all_memories = list((await session.execute(stmt)).scalars().all())
+        memories = [memory for memory in all_memories if not _is_daily_routine_memory(memory)][: max(limit, 1)]
         if not memories:
             return MemoryGraphResult(nodes=[], structural_edges=[], similarity_edges=[])
 
         memory_ids = [memory.id for memory in memories]
-        by_id = {memory.id: memory for memory in memories}
+        structural_rows = list(
+            (
+                await session.execute(
+                    select(MemoryRelationship).where(
+                        MemoryRelationship.user_id == normalized_user_id,
+                        MemoryRelationship.parent_memory_id.in_(memory_ids),
+                        MemoryRelationship.child_memory_id.in_(memory_ids),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        anchor_user = await session.get(User, normalized_user_id)
+        concept_assignments = self._semantic_assignments(memories)
+        nodes, anchor_edges = self._semantic_cluster_graph(
+            memories,
+            concept_assignments=concept_assignments,
+            person_label=_person_anchor_label(anchor_user),
+        )
+        nodes.extend(self._graph_node(memory) for memory in memories)
+        structural_edges = anchor_edges + [self._graph_edge(row) for row in structural_rows]
+        structural_pairs = {
+            frozenset((row.parent_memory_id, row.child_memory_id))
+            for row in structural_rows
+        }
+        similarity_edges = self._cluster_similarity_edges(
+            memories,
+            structural_pairs=structural_pairs,
+            concept_by_memory={memory_id: assignment.key for memory_id, assignment in concept_assignments.items()},
+            per_node_limit=similarity_limit,
+        )
+        return MemoryGraphResult(
+            nodes=nodes,
+            structural_edges=structural_edges,
+            similarity_edges=similarity_edges,
+        )
+
+    async def routine_graph_snapshot(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: uuid.UUID | str,
+        include_archived: bool = False,
+        limit: int = 72,
+        similarity_limit: int = 1,
+    ) -> MemoryGraphResult:
+        normalized_user_id = _normalize_uuid(user_id)
+        if normalized_user_id is None:
+            return MemoryGraphResult(nodes=[], structural_edges=[], similarity_edges=[])
+
+        await self.sync_relationships_for_user(session, user_id=normalized_user_id)
+        stmt = select(MemoryItem).where(MemoryItem.user_id == normalized_user_id)
+        if not include_archived:
+            stmt = stmt.where(MemoryItem.disabled.is_(False))
+        stmt = stmt.order_by(desc(MemoryItem.updated_at), desc(MemoryItem.created_at)).limit(max(limit * 3, 180))
+        all_memories = list((await session.execute(stmt)).scalars().all())
+        memories = [memory for memory in all_memories if _is_daily_routine_memory(memory)][: max(limit, 1)]
+        if not memories:
+            return MemoryGraphResult(nodes=[], structural_edges=[], similarity_edges=[])
+
+        memory_ids = [memory.id for memory in memories]
         structural_rows = list(
             (
                 await session.execute(
@@ -452,8 +526,8 @@ class MemoryService:
             .all()
         )
 
-        nodes = [self._graph_node(memory) for memory in memories]
-        structural_edges = [self._graph_edge(row) for row in structural_rows]
+        timeline_nodes, timeline_edges, week_by_memory = self._time_bucket_graph(memories)
+        structural_edges = timeline_edges + [self._graph_edge(row) for row in structural_rows]
         structural_pairs = {
             frozenset((row.parent_memory_id, row.child_memory_id))
             for row in structural_rows
@@ -462,9 +536,10 @@ class MemoryService:
             memories,
             structural_pairs=structural_pairs,
             per_node_limit=similarity_limit,
+            week_by_memory=week_by_memory,
         )
         return MemoryGraphResult(
-            nodes=nodes,
+            nodes=timeline_nodes + [self._graph_node(memory) for memory in memories],
             structural_edges=structural_edges,
             similarity_edges=similarity_edges,
         )
@@ -938,7 +1013,7 @@ class MemoryService:
         raw_item: dict[str, Any],
         source_message: Message,
     ) -> dict[str, Any]:
-        if not self.openai_provider.enabled:
+        if not self.ai_runtime.enabled:
             return {
                 "same_entity": True,
                 "title": existing.title or raw_item.get("title"),
@@ -947,35 +1022,28 @@ class MemoryService:
                 "tags": raw_item.get("tags", []),
                 "importance_score": raw_item.get("importance_score", 0.5),
             }
-        response = await self.openai_provider.generate_json(
-            instructions="Return JSON only.",
-            input_items=[
-                {
-                    "role": "user",
-                    "content": (
-                        "Decide whether this new memory candidate is about the same entity as the existing entity memory, "
-                        "and if so merge it into an updated compact profile.\n"
-                        "Return JSON only in this format: "
-                        "{\"same_entity\": true/false, \"title\": \"...\", \"content\": \"...\", "
-                        "\"summary\": \"...\", \"tags\": [\"...\"], \"importance_score\": 0.0}.\n"
-                        "- Prefer same_entity=true when the names clearly match and the new fact adds detail.\n"
-                        "- Keep merged content compact but cumulative, like a living memory/profile.\n"
-                        "- Include only factual information that has actually been mentioned.\n\n"
-                        f"Existing memory title: {existing.title or ''}\n"
-                        f"Existing memory content: {existing.content}\n"
-                        f"Existing summary: {existing.summary or ''}\n\n"
-                        f"New message: {source_message.body or ''}\n"
-                        f"New candidate title: {raw_item.get('title', '')}\n"
-                        f"New candidate content: {raw_item.get('content', '')}\n"
-                        f"New candidate summary: {raw_item.get('summary', '')}\n"
-                        f"New candidate tags: {raw_item.get('tags', [])}\n"
-                    ),
-                }
-            ],
-            max_output_tokens=self.settings.openai.memory_max_output_tokens,
-        )
-        if isinstance(response, dict):
-            return response
+        try:
+            response = await self.ai_runtime.merge_entity_memory(
+                prompt=(
+                    "Decide whether this new memory candidate is about the same entity as the existing entity memory, "
+                    "and if so merge it into an updated compact profile.\n"
+                    "- Prefer same_entity=true when the names clearly match and the new fact adds detail.\n"
+                    "- Keep merged content compact but cumulative, like a living memory/profile.\n"
+                    "- Include only factual information that has actually been mentioned.\n\n"
+                    f"Existing memory title: {existing.title or ''}\n"
+                    f"Existing memory content: {existing.content}\n"
+                    f"Existing summary: {existing.summary or ''}\n\n"
+                    f"New message: {source_message.body or ''}\n"
+                    f"New candidate title: {raw_item.get('title', '')}\n"
+                    f"New candidate content: {raw_item.get('content', '')}\n"
+                    f"New candidate summary: {raw_item.get('summary', '')}\n"
+                    f"New candidate tags: {raw_item.get('tags', [])}\n"
+                ),
+                max_tokens=self.settings.openai.memory_max_output_tokens,
+            )
+            return response.output.model_dump(mode="json")
+        except Exception:
+            pass
         return {
             "same_entity": True,
             "title": existing.title or raw_item.get("title"),
@@ -1060,6 +1128,7 @@ class MemoryService:
         return MemoryGraphNode(
             id=str(memory.id),
             label=_memory_graph_label(memory),
+            kind="memory",
             memory_type=memory.memory_type.value,
             memory_type_label=_memory_type_label(memory.memory_type),
             summary=_memory_display_summary(memory),
@@ -1079,12 +1148,133 @@ class MemoryService:
             cascades=relationship.relationship_type in _CASCADE_RELATIONSHIP_TYPES,
         )
 
+    def _semantic_assignments(
+        self,
+        memories: list[MemoryItem],
+    ) -> dict[uuid.UUID, MemoryConceptAssignment]:
+        candidate_rows: dict[uuid.UUID, list[MemoryConceptAssignment]] = {}
+        frequencies: Counter[str] = Counter()
+        for memory in memories:
+            candidates = self._concept_candidates(memory)
+            candidate_rows[memory.id] = candidates
+            frequencies.update(candidate.key for candidate in candidates if candidate.key)
+
+        assignments: dict[uuid.UUID, MemoryConceptAssignment] = {}
+        for memory in memories:
+            candidates = candidate_rows.get(memory.id, [])
+            if not candidates:
+                assignments[memory.id] = MemoryConceptAssignment(
+                    key=None,
+                    label="Memory",
+                    kind="topic",
+                )
+                continue
+            ranked = sorted(
+                candidates,
+                key=lambda candidate: (
+                    frequencies.get(candidate.key or "", 0) + _concept_priority(candidate.key),
+                    candidate.kind == "person",
+                ),
+                reverse=True,
+            )
+            assignments[memory.id] = ranked[0]
+        return assignments
+
+    def _semantic_cluster_graph(
+        self,
+        memories: list[MemoryItem],
+        *,
+        concept_assignments: dict[uuid.UUID, MemoryConceptAssignment],
+        person_label: str,
+    ) -> tuple[list[MemoryGraphNode], list[MemoryGraphEdge]]:
+        person_node_id = f"person:{_slugify(person_label) or 'child'}"
+        person_node = MemoryGraphNode(
+            id=person_node_id,
+            label=person_label,
+            kind="person",
+            memory_type="person_anchor",
+            memory_type_label="Person",
+            summary=f"The main relationship hub for {person_label}. Related memories branch out from here.",
+            item_count=len(memories),
+        )
+
+        concept_counts = Counter(
+            assignment.key
+            for assignment in concept_assignments.values()
+            if assignment.key
+        )
+        cluster_nodes: list[MemoryGraphNode] = [person_node]
+        edges: list[MemoryGraphEdge] = []
+        cluster_ids: dict[str, str] = {}
+
+        for concept_key, count in concept_counts.items():
+            if count < 2:
+                continue
+            assignment = next(
+                (item for item in concept_assignments.values() if item.key == concept_key),
+                None,
+            )
+            if assignment is None:
+                continue
+            cluster_id = f"cluster:{_slugify(concept_key) or uuid.uuid4().hex[:8]}"
+            cluster_ids[concept_key] = cluster_id
+            cluster_nodes.append(
+                MemoryGraphNode(
+                    id=cluster_id,
+                    label=assignment.label,
+                    kind=assignment.kind if assignment.kind in {"person", "topic"} else "topic",
+                    memory_type="topic_cluster",
+                    memory_type_label="Memory cluster",
+                    summary=f"{count} memories connect around {assignment.label.lower()}.",
+                    item_count=count,
+                )
+            )
+            edges.append(
+                MemoryGraphEdge(
+                    id=f"anchor:{person_node_id}:{cluster_id}",
+                    source=person_node_id,
+                    target=cluster_id,
+                    kind="structural",
+                    relationship_type="person_cluster",
+                    label="",
+                )
+            )
+
+        for memory in memories:
+            assignment = concept_assignments.get(memory.id)
+            concept_key = assignment.key if assignment else None
+            if concept_key and concept_key in cluster_ids:
+                edges.append(
+                    MemoryGraphEdge(
+                        id=f"cluster-member:{cluster_ids[concept_key]}:{memory.id}",
+                        source=cluster_ids[concept_key],
+                        target=str(memory.id),
+                        kind="structural",
+                        relationship_type="topic_member",
+                        label="",
+                    )
+                )
+            else:
+                edges.append(
+                    MemoryGraphEdge(
+                        id=f"anchor-memory:{person_node_id}:{memory.id}",
+                        source=person_node_id,
+                        target=str(memory.id),
+                        kind="structural",
+                        relationship_type="person_memory",
+                        label="",
+                    )
+                )
+
+        return cluster_nodes, edges
+
     def _similarity_edges(
         self,
         memories: list[MemoryItem],
         *,
         structural_pairs: set[frozenset[uuid.UUID]],
         per_node_limit: int,
+        week_by_memory: dict[uuid.UUID, str],
     ) -> list[MemoryGraphEdge]:
         if per_node_limit <= 0:
             return []
@@ -1098,6 +1288,8 @@ class MemoryService:
                     continue
                 pair_key = frozenset((left.id, right.id))
                 if pair_key in structural_pairs:
+                    continue
+                if week_by_memory.get(left.id) != week_by_memory.get(right.id):
                     continue
                 score = cosine_similarity(left.embedding_vector, right.embedding_vector)
                 if score < max(0.72, float(self.settings.memory.similarity_threshold)):
@@ -1123,6 +1315,138 @@ class MemoryService:
             counts[left.id] = counts.get(left.id, 0) + 1
             counts[right.id] = counts.get(right.id, 0) + 1
         return edges
+
+    def _cluster_similarity_edges(
+        self,
+        memories: list[MemoryItem],
+        *,
+        structural_pairs: set[frozenset[uuid.UUID]],
+        concept_by_memory: dict[uuid.UUID, str | None],
+        per_node_limit: int,
+    ) -> list[MemoryGraphEdge]:
+        if per_node_limit <= 0:
+            return []
+
+        pair_candidates: list[tuple[float, MemoryItem, MemoryItem]] = []
+        for left_index, left in enumerate(memories):
+            if not _has_embedding(left.embedding_vector):
+                continue
+            left_concept = concept_by_memory.get(left.id)
+            for right in memories[left_index + 1 :]:
+                if not _has_embedding(right.embedding_vector):
+                    continue
+                pair_key = frozenset((left.id, right.id))
+                if pair_key in structural_pairs:
+                    continue
+                right_concept = concept_by_memory.get(right.id)
+                score = cosine_similarity(left.embedding_vector, right.embedding_vector)
+                if left_concept and right_concept and left_concept == right_concept:
+                    if score < max(0.76, float(self.settings.memory.similarity_threshold)):
+                        continue
+                elif score < max(0.88, float(self.settings.memory.similarity_threshold) + 0.08):
+                    continue
+                pair_candidates.append((score, left, right))
+
+        pair_candidates.sort(key=lambda item: item[0], reverse=True)
+        counts: dict[uuid.UUID, int] = {}
+        edges: list[MemoryGraphEdge] = []
+        for score, left, right in pair_candidates:
+            if counts.get(left.id, 0) >= per_node_limit or counts.get(right.id, 0) >= per_node_limit:
+                continue
+            edge_id = f"similarity:{min(str(left.id), str(right.id))}:{max(str(left.id), str(right.id))}"
+            edges.append(
+                MemoryGraphEdge(
+                    id=edge_id,
+                    source=str(left.id),
+                    target=str(right.id),
+                    kind="similarity",
+                    label=f"{score:.2f}",
+                )
+            )
+            counts[left.id] = counts.get(left.id, 0) + 1
+            counts[right.id] = counts.get(right.id, 0) + 1
+        return edges
+
+    def _time_bucket_graph(
+        self,
+        memories: list[MemoryItem],
+    ) -> tuple[list[MemoryGraphNode], list[MemoryGraphEdge], dict[uuid.UUID, str]]:
+        if not memories:
+            return [], [], {}
+
+        week_nodes: dict[str, MemoryGraphNode] = {}
+        day_nodes: dict[str, MemoryGraphNode] = {}
+        edges: dict[str, MemoryGraphEdge] = {}
+        week_counts: dict[str, int] = {}
+        day_counts: dict[str, int] = {}
+        week_by_memory: dict[uuid.UUID, str] = {}
+
+        for memory in memories:
+            timestamp = memory.updated_at or memory.created_at or utc_now()
+            bucket_day = timestamp.date()
+            week_start = bucket_day - timedelta(days=bucket_day.weekday())
+            week_id = f"week:{week_start.isoformat()}"
+            day_id = f"day:{bucket_day.isoformat()}"
+
+            week_by_memory[memory.id] = week_id
+            week_counts[week_id] = week_counts.get(week_id, 0) + 1
+            day_counts[day_id] = day_counts.get(day_id, 0) + 1
+
+            week_nodes.setdefault(
+                week_id,
+                MemoryGraphNode(
+                    id=week_id,
+                    label=_week_bucket_label(week_start),
+                    kind="week",
+                    memory_type="time_group",
+                    memory_type_label="Week",
+                    summary="",
+                ),
+            )
+            day_nodes.setdefault(
+                day_id,
+                MemoryGraphNode(
+                    id=day_id,
+                    label=_day_bucket_label(bucket_day),
+                    kind="day",
+                    memory_type="time_group",
+                    memory_type_label="Day",
+                    summary="",
+                ),
+            )
+
+            edges[f"time-week:{week_id}:{day_id}"] = MemoryGraphEdge(
+                id=f"time-week:{week_id}:{day_id}",
+                source=week_id,
+                target=day_id,
+                kind="structural",
+                relationship_type="time_week",
+                label="",
+            )
+            edges[f"time-day:{day_id}:{memory.id}"] = MemoryGraphEdge(
+                id=f"time-day:{day_id}:{memory.id}",
+                source=day_id,
+                target=str(memory.id),
+                kind="structural",
+                relationship_type="time_day",
+                label="",
+            )
+
+        for week_id, node in week_nodes.items():
+            count = week_counts.get(week_id, 0)
+            node.item_count = count
+            node.summary = f"{count} memor{'y' if count == 1 else 'ies'} grouped into this week."
+
+        for day_id, node in day_nodes.items():
+            count = day_counts.get(day_id, 0)
+            node.item_count = count
+            node.summary = f"{count} memor{'y' if count == 1 else 'ies'} captured on this day."
+
+        return (
+            sorted([*week_nodes.values(), *day_nodes.values()], key=lambda item: (0 if item.kind == "week" else 1, item.id)),
+            list(edges.values()),
+            week_by_memory,
+        )
 
     async def _similar_memories_for_inspector(
         self,
@@ -1174,6 +1498,45 @@ class MemoryService:
             for _, candidate in scored[:limit]
         ]
 
+    def _concept_candidates(self, memory: MemoryItem) -> list[MemoryConceptAssignment]:
+        metadata = dict(memory.metadata_json or {})
+        candidates: list[MemoryConceptAssignment] = []
+        seen: set[str] = set()
+
+        entity_name = str(metadata.get("entity_name") or "").strip()
+        entity_kind = str(metadata.get("entity_kind") or "topic").strip().lower() or "topic"
+        if entity_name:
+            key = f"entity:{entity_kind}:{entity_name.casefold()}"
+            candidates.append(
+                MemoryConceptAssignment(
+                    key=key,
+                    label=_display_phrase(entity_name),
+                    kind="person" if entity_kind in {"person", "friend", "family", "caregiver", "artist", "teacher"} else "topic",
+                )
+            )
+            seen.add(key)
+
+        for raw_tag in list(memory.tags or []):
+            normalized_tag = _normalize_concept_tag(raw_tag)
+            if not normalized_tag:
+                continue
+            key = f"tag:{normalized_tag.casefold()}"
+            if key in seen:
+                continue
+            candidates.append(MemoryConceptAssignment(key=key, label=normalized_tag, kind="topic"))
+            seen.add(key)
+
+        inferred_key, inferred_label = _infer_theme(memory)
+        if inferred_key and inferred_key not in seen:
+            candidates.append(MemoryConceptAssignment(key=inferred_key, label=inferred_label, kind="topic"))
+            seen.add(inferred_key)
+
+        fallback_key, fallback_label = _type_cluster(memory.memory_type)
+        if fallback_key not in seen:
+            candidates.append(MemoryConceptAssignment(key=fallback_key, label=fallback_label, kind="topic"))
+
+        return candidates
+
 
 def cosine_similarity(left: list[float], right: list[float]) -> float:
     dot = sum(a * b for a, b in zip(left, right))
@@ -1191,6 +1554,14 @@ def _has_embedding(vector: Any) -> bool:
         return len(vector) > 0
     except TypeError:
         return True
+
+
+def _week_bucket_label(bucket_day) -> str:
+    return f"Week of {bucket_day.strftime('%b')} {bucket_day.day}"
+
+
+def _day_bucket_label(bucket_day) -> str:
+    return f"{bucket_day.strftime('%a %b')} {bucket_day.day}"
 
 
 def _merge_tags(*tag_groups: list[str] | Any) -> list[str]:
@@ -1292,6 +1663,165 @@ def _memory_graph_label(memory: MemoryItem) -> str:
     if len(title) <= 36:
         return title
     return f"{title[:33].rstrip()}..."
+
+
+def _person_anchor_label(user: User | None) -> str:
+    if user is None:
+        return "Person"
+    label = str(user.display_name or "").strip()
+    return label or "Person"
+
+
+def _concept_priority(key: str | None) -> float:
+    normalized = str(key or "")
+    if normalized.startswith("entity:"):
+        return 1.6
+    if normalized.startswith("tag:"):
+        return 1.2
+    if normalized.startswith("theme:"):
+        return 0.9
+    if normalized.startswith("type:"):
+        return 0.35
+    return 0.0
+
+
+def _display_phrase(value: str) -> str:
+    cleaned = re.sub(r"[_-]+", " ", str(value or "").strip())
+    if not cleaned:
+        return "Topic"
+    return " ".join(part.capitalize() if part.islower() else part for part in cleaned.split())
+
+
+def _slugify(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "-", str(value or "").casefold()).strip("-")
+    return normalized[:80]
+
+
+def _normalize_concept_tag(value: str) -> str | None:
+    cleaned = re.sub(r"[_-]+", " ", str(value or "").strip())
+    normalized = cleaned.casefold()
+    if not normalized:
+        return None
+    if normalized in {
+        "parent guidance",
+        "preference",
+        "guidance",
+        "memory",
+        "operator note",
+        "summary",
+        "fact",
+        "episode",
+        "follow up",
+        "followup",
+    }:
+        return None
+    if any(marker in normalized for marker in _ROUTINE_TEXT_MARKERS):
+        return None
+    if len(normalized) < 3:
+        return None
+    return _display_phrase(cleaned)
+
+
+def _infer_theme(memory: MemoryItem) -> tuple[str | None, str]:
+    haystack = " ".join(
+        part
+        for part in [
+            memory.title or "",
+            memory.summary or "",
+            memory.content or "",
+            " ".join(list(memory.tags or [])),
+        ]
+        if part
+    ).casefold()
+    if not haystack:
+        return None, "Topic"
+
+    themes = {
+        "theme:music": ("Music", ("taylor swift", "music", "song", "songs", "sing", "singing", "playlist", "album")),
+        "theme:school": ("School", ("school", "teacher", "class", "homework", "bus", "classroom")),
+        "theme:family": ("Family", ("mom", "mother", "dad", "father", "sister", "brother", "grandma", "grandpa", "family")),
+        "theme:friends": ("Friends", ("friend", "friends", "bestie", "buddy")),
+        "theme:creativity": ("Creativity", ("draw", "drawing", "art", "paint", "lego", "craft", "game", "gaming")),
+        "theme:comfort": ("Comfort", ("calm", "comfort", "safe", "reassur", "worried", "anxious", "overwhelmed", "upset", "stress")),
+        "theme:food": ("Food", ("food", "snack", "eat", "lunch", "dinner", "breakfast")),
+    }
+    for key, (label, markers) in themes.items():
+        if any(marker in haystack for marker in markers):
+            return key, label
+    return None, "Topic"
+
+
+def _type_cluster(memory_type: MemoryType) -> tuple[str, str]:
+    mapping = {
+        MemoryType.preference: ("type:preferences", "Preferences"),
+        MemoryType.safety: ("type:safety", "Safety"),
+        MemoryType.summary: ("type:summaries", "Summaries"),
+        MemoryType.operator_note: ("type:guidance", "Parent Guidance"),
+        MemoryType.follow_up: ("type:follow-ups", "Follow-Ups"),
+        MemoryType.episode: ("type:shared-moments", "Shared Moments"),
+        MemoryType.fact: ("type:key-details", "Key Details"),
+    }
+    return mapping.get(memory_type, ("type:memories", "Memories"))
+
+
+_ROUTINE_TEXT_MARKERS = (
+    "daily",
+    "routine",
+    "morning",
+    "evening",
+    "bedtime",
+    "wake up",
+    "wakeup",
+    "after school",
+    "after-school",
+    "homework",
+    "quiet hours",
+    "getting ready",
+    "wind down",
+    "check in",
+    "check-in",
+    "schedule",
+    "cadence",
+    "transition",
+    "school night",
+    "breakfast",
+    "lunch",
+    "dinner",
+    "bath",
+    "brushing teeth",
+    "toothbrush",
+    "plan ",
+    "plans ",
+)
+
+
+def _is_daily_routine_memory(memory: MemoryItem) -> bool:
+    metadata = dict(memory.metadata_json or {})
+    if str(metadata.get("source_kind") or "").strip().casefold() in {"call_follow_up"}:
+        return True
+
+    tag_text = " ".join(str(tag or "").strip() for tag in list(memory.tags or [])).casefold()
+    haystack = " ".join(
+        part
+        for part in [
+            memory.title or "",
+            memory.summary or "",
+            memory.content or "",
+            tag_text,
+            str(metadata.get("entity_name") or ""),
+            str(metadata.get("entity_kind") or ""),
+        ]
+        if part
+    ).casefold()
+    if any(marker in haystack for marker in _ROUTINE_TEXT_MARKERS):
+        return True
+
+    if memory.memory_type == MemoryType.follow_up and any(
+        marker in haystack
+        for marker in ("later today", "tomorrow", "tonight", "again later", "check in", "follow up")
+    ):
+        return True
+    return False
 
 
 def _relationship_type_label(relationship_type: MemoryRelationshipType) -> str:

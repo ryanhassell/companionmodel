@@ -4,16 +4,16 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai import AiRuntime
 from app.models.communication import Conversation, Message
 from app.models.persona import Persona
 from app.models.user import User
-from app.providers.openai import OpenAIProvider
 from app.services.prompt import PromptService
 
 
 class CandidateReplyService:
-    def __init__(self, openai_provider: OpenAIProvider, prompt_service: PromptService) -> None:
-        self.openai_provider = openai_provider
+    def __init__(self, ai_runtime: AiRuntime, prompt_service: PromptService) -> None:
+        self.ai_runtime = ai_runtime
         self.prompt_service = prompt_service
 
     async def generate_candidates(
@@ -44,8 +44,8 @@ class CandidateReplyService:
         instructions = await self.prompt_service.render(session, "system_prompt", context)
         user_prompt = await self.prompt_service.render(session, "reactive_reply", context)
 
-        if not self.openai_provider.enabled:
-            return [user_prompt[:240]]
+        if not self.ai_runtime.enabled:
+            return []
 
         payload = (
             "Generate 3 distinct SMS reply candidates as JSON only. "
@@ -59,20 +59,13 @@ class CandidateReplyService:
             "- Avoid robotic disclaimers.\n\n"
             f"Planning context:\n{user_prompt}"
         )
-        response = await self.openai_provider.generate_json(
-            instructions=instructions,
-            input_items=[{"role": "user", "content": payload}],
-            max_output_tokens=480,
-        )
-        if isinstance(response, dict) and isinstance(response.get("candidates"), list):
-            candidates = [str(item).strip() for item in response["candidates"] if str(item).strip()]
-            if candidates:
-                return candidates[:3]
-        fallback = await self.openai_provider.generate_text(
-            instructions=instructions,
-            input_items=[{"role": "user", "content": user_prompt}],
-            max_output_tokens=int(config["openai"].get("max_output_tokens", 220)),
-            temperature=float(config["openai"].get("temperature", 0.8)),
-        )
-        text = fallback.text.strip()
-        return [text] if text else []
+        try:
+            response = await self.ai_runtime.candidate_replies(
+                instructions=instructions,
+                prompt=payload,
+                max_tokens=480,
+                temperature=float(config["openai"].get("temperature", 0.8)),
+            )
+        except Exception:
+            return []
+        return response.output.candidates[:3]

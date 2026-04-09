@@ -52,7 +52,8 @@ async def test_safety_detects_distress(sqlite_session, settings):
         recent_inbound_count=0,
     )
     assert result.distress is True
-    assert result.safe_reply
+    assert result.safe_reply is None
+    assert result.reasons == ["distress:i want to die"]
 
 
 async def test_safety_blocks_exclusive_outbound(sqlite_session, settings):

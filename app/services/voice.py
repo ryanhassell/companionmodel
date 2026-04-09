@@ -19,6 +19,8 @@ from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai import AiRuntime
+from app.ai.toolsets import voice_realtime_tool_definitions
 from app.core.logging import get_logger
 from app.core.settings import RuntimeSettings
 from app.db.session import get_sessionmaker
@@ -70,6 +72,7 @@ class VoiceService:
         settings: RuntimeSettings,
         twilio_provider: TwilioProvider,
         openai_provider: OpenAIProvider,
+        ai_runtime: AiRuntime,
         elevenlabs_provider: ElevenLabsProvider,
         prompt_service: PromptService,
         memory_service: MemoryService,
@@ -80,6 +83,7 @@ class VoiceService:
         self.settings = settings
         self.twilio_provider = twilio_provider
         self.openai_provider = openai_provider
+        self.ai_runtime = ai_runtime
         self.elevenlabs_provider = elevenlabs_provider
         self.prompt_service = prompt_service
         self.memory_service = memory_service
@@ -583,12 +587,12 @@ class VoiceService:
             "opening_line": opening_line or "",
         }
         rendered = await self.prompt_service.render(session, "call_script", context)
-        if not self.openai_provider.enabled:
-            return opening_line or "Hi, I wanted to check in and say hello."
-        response = await self.openai_provider.generate_text(
+        if not self.ai_runtime.enabled:
+            return opening_line or ""
+        response = await self.ai_runtime.voice_script(
             instructions="Write a brief, calm, safe call script for a voice assistant.",
-            input_items=[{"role": "user", "content": rendered}],
-            max_output_tokens=220,
+            prompt=rendered,
+            max_tokens=220,
         )
         await self._record_openai_usage(
             session,
@@ -596,7 +600,7 @@ class VoiceService:
             usage=response.usage,
             event_type="openai.responses.voice_script",
         )
-        return response.text
+        return response.output.script
 
     def build_twiml(self, script: str) -> str:
         safe_script = html.escape(script)
@@ -851,11 +855,10 @@ class VoiceService:
                 companion_led=_user_prefers_companion_led_calls(user),
                 song_mode=song_mode,
             )
-            response = await self.openai_provider.generate_text(
+            response = await self.ai_runtime.voice_script(
                 instructions=instructions,
-                input_items=[{"role": "user", "content": input_text}],
-                model=self.settings.voice.text_model,
-                max_output_tokens=220 if song_mode else 45,
+                prompt=input_text,
+                max_tokens=220 if song_mode else 45,
             )
             await self._record_openai_usage(
                 session,
@@ -864,7 +867,7 @@ class VoiceService:
                 event_type="openai.responses.voice_turn",
             )
             assistant_text = _clean_spoken_call_text(
-                response.text,
+                response.output.script,
                 persona_name=persona.display_name if persona else "companion",
             )
             if not assistant_text or generation_id != generation_counter:
@@ -1248,48 +1251,7 @@ class VoiceService:
                     },
                 },
                 "tool_choice": "auto",
-                "tools": [
-                    {
-                        "type": "function",
-                        "name": "get_recent_context",
-                        "description": "Fetch recent messages, memories, and current daily-life context for this caller.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "query": {"type": "string"},
-                            },
-                        },
-                    },
-                    {
-                        "type": "function",
-                        "name": "save_call_memory",
-                        "description": "Save an explicit memory worth remembering from the call.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "title": {"type": "string"},
-                                "content": {"type": "string"},
-                                "summary": {"type": "string"},
-                                "memory_type": {"type": "string"},
-                                "tags": {"type": "array", "items": {"type": "string"}},
-                                "entity_name": {"type": "string"},
-                                "entity_kind": {"type": "string"},
-                            },
-                            "required": ["content"],
-                        },
-                    },
-                    {
-                        "type": "function",
-                        "name": "end_call",
-                        "description": "Gracefully end the call when it makes sense.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "reason": {"type": "string"},
-                            },
-                        },
-                    },
-                ],
+                "tools": voice_realtime_tool_definitions(),
             },
         }
 
@@ -1557,7 +1519,7 @@ class VoiceService:
         transcript_entries: list[tuple[str, str]],
         latest_user_text: str,
     ) -> dict[str, str] | None:
-        if user is None or not _user_has_speech_support_needs(user) or not self.openai_provider.enabled:
+        if user is None or not _user_has_speech_support_needs(user) or not self.ai_runtime.enabled:
             return None
         text = (latest_user_text or "").strip()
         if len(text) < 2 or len(text) > 24:
@@ -1568,31 +1530,24 @@ class VoiceService:
             transcript_entries,
             persona_name=persona.display_name if persona else "companion",
         )
-        response = await self.openai_provider.generate_json(
-            instructions="Return JSON only.",
-            input_items=[
-                {
-                    "role": "user",
-                    "content": (
-                        "The caller may have speech differences and sometimes says words unclearly.\n"
-                        "Decide if the latest short phrase likely means a more common word or phrase.\n"
-                        "Only suggest a meaning if it is a strong, context-aware guess.\n"
-                        'Return JSON as {"should_confirm": true/false, "candidate": "...", "confirmation_text": "..."}.\n'
-                        "If you suggest a candidate, make the confirmation text one short natural spoken sentence like "
-                        "\"wait, did you mean sunday?\" and keep it casual.\n\n"
-                        f"Latest caller phrase: {text}\n\n"
-                        f"Recent call context:\n{recent_context}\n"
-                    ),
-                }
-            ],
-            model=self.settings.voice.text_model,
-            max_output_tokens=80,
+        response = await self.ai_runtime.speech_dictionary_candidate(
+            prompt=(
+                "The caller may have speech differences and sometimes says words unclearly.\n"
+                "Decide if the latest short phrase likely means a more common word or phrase.\n"
+                "Only suggest a meaning if it is a strong, context-aware guess.\n"
+                "If you suggest a candidate, make the confirmation text one short natural spoken sentence like "
+                "\"wait, did you mean sunday?\" and keep it casual.\n\n"
+                f"Latest caller phrase: {text}\n\n"
+                f"Recent call context:\n{recent_context}\n"
+            ),
+            max_tokens=80,
         )
-        if not isinstance(response, dict) or not response.get("should_confirm"):
+        decision = response.output
+        if not decision.should_confirm:
             return None
-        candidate = str(response.get("candidate") or "").strip()
+        candidate = str(decision.candidate or "").strip()
         confirmation_text = _clean_spoken_call_text(
-            str(response.get("confirmation_text") or "").strip(),
+            str(decision.confirmation_text or "").strip(),
             persona_name=persona.display_name if persona else "companion",
         )
         if not candidate or not confirmation_text:
@@ -1607,27 +1562,19 @@ class VoiceService:
             return "yes"
         if normalized in {"no", "nope", "nah", "wrong"}:
             return "no"
-        if not self.openai_provider.enabled:
+        if not self.ai_runtime.enabled:
             return "unknown"
-        response = await self.openai_provider.generate_json(
-            instructions="Return JSON only.",
-            input_items=[
-                {
-                    "role": "user",
-                    "content": (
-                        'Classify whether this caller reply confirms a guessed meaning. Return JSON as {"answer": "yes"|"no"|"unknown"}.\n'
-                        f"Guessed meaning: {candidate}\n"
-                        f"Caller reply: {raw_text}\n"
-                    ),
-                }
-            ],
-            model=self.settings.voice.text_model,
-            max_output_tokens=20,
+        response = await self.ai_runtime.speech_dictionary_confirmation(
+            prompt=(
+                "Classify whether this caller reply confirms a guessed meaning.\n"
+                f"Guessed meaning: {candidate}\n"
+                f"Caller reply: {raw_text}\n"
+            ),
+            max_tokens=20,
         )
-        if isinstance(response, dict):
-            answer = str(response.get("answer") or "").strip().lower()
-            if answer in {"yes", "no", "unknown"}:
-                return answer
+        answer = str(response.output.answer or "").strip().lower()
+        if answer in {"yes", "no", "unknown"}:
+            return answer
         return "unknown"
 
     async def _save_speech_dictionary_entry(
@@ -1889,14 +1836,13 @@ class VoiceService:
         instructions: str,
     ) -> str:
         prompt = self._initial_greeting_payload(call_record=call_record, user=user, persona=persona)["response"]["instructions"]
-        response = await self.openai_provider.generate_text(
+        response = await self.ai_runtime.voice_greeting(
             instructions=instructions,
-            input_items=[{"role": "user", "content": prompt}],
-            model=self.settings.voice.text_model,
-            max_output_tokens=35,
+            prompt=prompt,
+            max_tokens=35,
         )
         return _clean_spoken_call_text(
-            response.text,
+            response.output.text,
             persona_name=persona.display_name if persona else "companion",
         )
 
@@ -1910,26 +1856,21 @@ class VoiceService:
         if not transcript:
             return ""
         normalized_speech_events = speech_events or _speech_events_from_text(transcript)
-        if not self.openai_provider.enabled:
+        if not self.ai_runtime.enabled:
             return transcript[:280]
-        response = await self.openai_provider.generate_text(
+        response = await self.ai_runtime.voice_summary(
             instructions=(
                 "Summarize this phone call for internal memory in 2-4 short sentences. "
                 "If there were notable vocal moments like laughter, giggling, humming, or singing, mention them briefly when relevant."
             ),
-            input_items=[
-                {
-                    "role": "user",
-                    "content": (
-                        f"Persona: {persona.display_name if persona else 'Companion'}\n"
-                        f"Speech events: {', '.join(normalized_speech_events) if normalized_speech_events else 'none'}\n"
-                        f"Transcript:\n{transcript[:8000]}"
-                    ),
-                }
-            ],
-                max_output_tokens=70,
+            prompt=(
+                f"Persona: {persona.display_name if persona else 'Companion'}\n"
+                f"Speech events: {', '.join(normalized_speech_events) if normalized_speech_events else 'none'}\n"
+                f"Transcript:\n{transcript[:8000]}"
+            ),
+            max_tokens=70,
         )
-        return response.text.strip()
+        return response.output.summary.strip()
 
     async def _extract_call_memories(
         self,

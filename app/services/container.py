@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from app.ai import AiRuntime
 from app.core.settings import RuntimeSettings, get_settings
 from app.providers.elevenlabs import ElevenLabsProvider
 from app.providers.openai import OpenAIProvider
@@ -25,6 +26,7 @@ from app.services.image import ImageService
 from app.services.memory import MemoryService
 from app.services.message import MessageService
 from app.services.notifications import NotificationService
+from app.services.parent_chat import ParentChatService
 from app.services.portal_initialization import PortalInitializationService
 from app.services.portal_preview import PortalPreviewService
 from app.services.prompt import PromptService
@@ -45,6 +47,7 @@ from app.services.voice import VoiceService
 class ServiceContainer:
     settings: RuntimeSettings
     http_client: httpx.AsyncClient
+    ai_runtime: AiRuntime
     openai_provider: OpenAIProvider
     elevenlabs_provider: ElevenLabsProvider
     twilio_provider: TwilioProvider
@@ -68,6 +71,7 @@ class ServiceContainer:
     usage_reconciliation_service: UsageReconciliationService
     pricing_simulation_service: PricingSimulationService
     notification_service: NotificationService
+    parent_chat_service: ParentChatService
     rate_limiter_service: RateLimiterService
     human_likeness_service: HumanLikenessService
     daily_life_service: DailyLifeService
@@ -85,6 +89,7 @@ class ServiceContainer:
     def build(cls, settings: RuntimeSettings | None = None) -> "ServiceContainer":
         actual_settings = settings or get_settings()
         http_client = httpx.AsyncClient(follow_redirects=True)
+        ai_runtime = AiRuntime(actual_settings, http_client)
         openai_provider = OpenAIProvider(actual_settings, http_client)
         elevenlabs_provider = ElevenLabsProvider(actual_settings, http_client)
         twilio_provider = TwilioProvider(actual_settings, http_client)
@@ -97,10 +102,10 @@ class ServiceContainer:
         prompt_service = PromptService(actual_settings)
         schedule_service = ScheduleService()
         safety_service = SafetyService(alerting_service)
-        turn_classifier_service = TurnClassifierService(openai_provider, prompt_service)
-        candidate_reply_service = CandidateReplyService(openai_provider, prompt_service)
+        turn_classifier_service = TurnClassifierService(ai_runtime, prompt_service)
+        candidate_reply_service = CandidateReplyService(ai_runtime, prompt_service)
         reply_ranker_service = ReplyRankerService()
-        safety_rewrite_service = SafetyRewriteService(openai_provider, prompt_service)
+        safety_rewrite_service = SafetyRewriteService(ai_runtime, prompt_service)
         customer_auth_service = CustomerAuthService(actual_settings)
         clerk_auth_service = ClerkAuthService(actual_settings)
         admin_authz_service = AdminAuthzService(actual_settings, clerk_auth_service=clerk_auth_service)
@@ -109,7 +114,7 @@ class ServiceContainer:
         usage_ingestion_service = UsageIngestionService()
         portal_preview_service = PortalPreviewService(
             actual_settings,
-            openai_provider,
+            ai_runtime,
             usage_ingestion_service,
         )
         usage_reconciliation_service = UsageReconciliationService(usage_ingestion_service)
@@ -121,13 +126,21 @@ class ServiceContainer:
             candidate_reply_service,
             reply_ranker_service,
         )
-        memory_service = MemoryService(actual_settings, openai_provider, prompt_service)
+        memory_service = MemoryService(actual_settings, ai_runtime, prompt_service)
+        parent_chat_service = ParentChatService(
+            actual_settings,
+            ai_runtime,
+            config_service,
+            conversation_service,
+            memory_service,
+        )
         daily_life_service = DailyLifeService(memory_service)
         image_service = ImageService(actual_settings, openai_provider, prompt_service)
         voice_service = VoiceService(
             actual_settings,
             twilio_provider,
             openai_provider,
+            ai_runtime,
             elevenlabs_provider,
             prompt_service,
             memory_service,
@@ -139,6 +152,7 @@ class ServiceContainer:
             actual_settings,
             twilio_provider,
             openai_provider,
+            ai_runtime,
             prompt_service,
             safety_service,
             memory_service,
@@ -170,6 +184,7 @@ class ServiceContainer:
         return cls(
             settings=actual_settings,
             http_client=http_client,
+            ai_runtime=ai_runtime,
             openai_provider=openai_provider,
             elevenlabs_provider=elevenlabs_provider,
             twilio_provider=twilio_provider,
@@ -193,6 +208,7 @@ class ServiceContainer:
             usage_reconciliation_service=usage_reconciliation_service,
             pricing_simulation_service=pricing_simulation_service,
             notification_service=notification_service,
+            parent_chat_service=parent_chat_service,
             rate_limiter_service=rate_limiter_service,
             human_likeness_service=human_likeness_service,
             daily_life_service=daily_life_service,

@@ -48,7 +48,6 @@ class SafetyService:
                 result.distress = True
                 result.severity = SafetySeverity.critical
                 result.reasons.append(f"distress:{pattern}")
-                result.safe_reply = (safety.get("distress_fallback") or [None])[0]
                 await self._record_event(
                     session,
                     user=user,
@@ -73,8 +72,6 @@ class SafetyService:
 
         if recent_inbound_count >= int(safety.get("obsessive_message_threshold", 10)):
             result.obsessive = True
-            if not result.safe_reply:
-                result.safe_reply = (safety.get("deescalation_templates") or [None])[0]
             result.reasons.append("obsessive_window_threshold")
 
         return result
@@ -104,7 +101,6 @@ class SafetyService:
                 detector="policy_validation",
                 details={"text": text, "reasons": result.reasons},
             )
-            result.safe_reply = "I want to keep our chats warm and safe, so I’m going to say that a different way."
         return result
 
     def check_outbound(self, *, text: str, config: dict[str, Any]) -> SafetyResult:

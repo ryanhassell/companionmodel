@@ -10,6 +10,7 @@ from urllib.parse import quote
 
 import httpx
 import jwt
+from itsdangerous import BadSignature, URLSafeTimedSerializer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,6 +46,16 @@ class TenantContext:
     mfa_verified: bool
 
 
+@dataclass(slots=True)
+class StoredPortalContext:
+    customer_user_id: str
+    account_id: str
+    role: HouseholdRole
+    clerk_user_id: str
+    clerk_org_id: str
+    mfa_verified: bool
+
+
 class ClerkAuthService:
     def __init__(self, settings: RuntimeSettings) -> None:
         self.settings = settings
@@ -57,6 +68,9 @@ class ClerkAuthService:
     def enabled(self) -> bool:
         cfg = self.settings.clerk
         return bool(cfg.enabled and cfg.issuer and self._jwks_client)
+
+    def _portal_session_serializer(self) -> URLSafeTimedSerializer:
+        return URLSafeTimedSerializer(self.settings.app.secret_key, salt="clerk-portal-session")
 
     def verify_token(self, token: str) -> ClerkClaims:
         if not self.enabled:
@@ -189,6 +203,95 @@ class ClerkAuthService:
         payload = f"{clerk_user_id}:{clerk_org_id}".encode("utf-8")
         key = self.settings.app.secret_key.encode("utf-8")
         return hmac.new(key, payload, hashlib.sha256).hexdigest()
+
+    def create_portal_session_token(self, tenant: TenantContext) -> str:
+        payload = {
+            "customer_user_id": str(tenant.customer_user.id),
+            "account_id": str(tenant.account.id),
+            "role": tenant.role.value,
+            "clerk_user_id": tenant.clerk_user_id,
+            "clerk_org_id": tenant.clerk_org_id,
+            "mfa_verified": tenant.mfa_verified,
+            "issued_at": int(utc_now().timestamp()),
+        }
+        return self._portal_session_serializer().dumps(payload)
+
+    def decode_portal_session_token(self, token: str) -> StoredPortalContext | None:
+        try:
+            data = self._portal_session_serializer().loads(
+                token,
+                max_age=self.settings.customer_portal.session_max_age_seconds,
+            )
+        except BadSignature:
+            return None
+        try:
+            role = HouseholdRole(str(data["role"]))
+        except Exception:
+            return None
+        return StoredPortalContext(
+            customer_user_id=str(data["customer_user_id"]),
+            account_id=str(data["account_id"]),
+            role=role,
+            clerk_user_id=str(data["clerk_user_id"]),
+            clerk_org_id=str(data["clerk_org_id"]),
+            mfa_verified=bool(data.get("mfa_verified")),
+        )
+
+    async def build_tenant_context(
+        self,
+        session: AsyncSession,
+        *,
+        customer_user: CustomerUser,
+        role: HouseholdRole | None = None,
+        clerk_user_id: str | None = None,
+        clerk_org_id: str | None = None,
+        mfa_verified: bool = False,
+    ) -> TenantContext | None:
+        account = await session.get(Account, customer_user.account_id)
+        if account is None or not customer_user.is_active:
+            return None
+        resolved_role = role or HouseholdRole.owner
+        if role is None:
+            assignment = await session.scalar(
+                select(RoleAssignment).where(
+                    RoleAssignment.account_id == account.id,
+                    RoleAssignment.customer_user_id == customer_user.id,
+                )
+            )
+            if assignment is not None:
+                resolved_role = assignment.role
+        resolved_clerk_user_id = clerk_user_id or customer_user.clerk_user_id or "unknown"
+        resolved_clerk_org_id = clerk_org_id or account.clerk_org_id or f"user:{resolved_clerk_user_id}"
+        return TenantContext(
+            account=account,
+            customer_user=customer_user,
+            role=resolved_role,
+            clerk_user_id=resolved_clerk_user_id,
+            clerk_org_id=resolved_clerk_org_id,
+            mfa_verified=mfa_verified,
+        )
+
+    async def resolve_stored_portal_context(
+        self,
+        session: AsyncSession,
+        token: str | None,
+    ) -> TenantContext | None:
+        if not token:
+            return None
+        stored = self.decode_portal_session_token(token)
+        if stored is None:
+            return None
+        customer_user = await session.get(CustomerUser, stored.customer_user_id)
+        if customer_user is None or str(customer_user.account_id) != stored.account_id:
+            return None
+        return await self.build_tenant_context(
+            session,
+            customer_user=customer_user,
+            role=stored.role,
+            clerk_user_id=stored.clerk_user_id,
+            clerk_org_id=stored.clerk_org_id,
+            mfa_verified=stored.mfa_verified,
+        )
 
     async def verify_current_password(self, *, clerk_user_id: str, password: str) -> bool:
         secret_key = str(self.settings.clerk.secret_key or "").strip()

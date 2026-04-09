@@ -40,12 +40,14 @@ class PortalNavSection(BaseModel):
 class MemoryGraphNode(BaseModel):
     id: str
     label: str
+    kind: str = "memory"
     memory_type: str
     memory_type_label: str
     summary: str
     pinned: bool = False
     archived: bool = False
     updated_at: str | None = None
+    item_count: int = 0
 
 
 class MemoryGraphEdge(BaseModel):
@@ -93,6 +95,23 @@ class MemoryDeletePreview(BaseModel):
     memory_id: str
     deleted_count: int
     affected: list[MemoryDeletePreviewEntry]
+
+
+class PortalChatSavedMemoryView(BaseModel):
+    id: str | None = None
+    title: str
+    content: str
+    memory_type: str | None = None
+
+
+class PortalChatMessageView(BaseModel):
+    id: str
+    sender: str
+    body: str
+    created_at: str | None = None
+    memory_saved: bool = False
+    memory_saved_label: str | None = None
+    memory_saved_details: list[PortalChatSavedMemoryView] = []
 
 
 class PortalInitializationStep(BaseModel):

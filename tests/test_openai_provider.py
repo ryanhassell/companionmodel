@@ -11,23 +11,6 @@ from app.providers.openai import OpenAIProvider
 
 
 @respx.mock
-async def test_openai_generate_text_parses_output_text(settings):
-    settings.openai.api_key = "key"
-    client = httpx.AsyncClient()
-    provider = OpenAIProvider(settings, client)
-    route = respx.post("https://api.openai.com/v1/responses").mock(
-        return_value=httpx.Response(
-            200,
-            json={"model": "gpt-test", "output_text": "hello world", "usage": {"total_tokens": 3}},
-        )
-    )
-    response = await provider.generate_text(input_items="hello")
-    assert route.called
-    assert response.text == "hello world"
-    await client.aclose()
-
-
-@respx.mock
 async def test_openai_accept_realtime_call_hits_expected_endpoint(settings):
     settings.openai.api_key = "key"
     client = httpx.AsyncClient()
@@ -55,6 +38,32 @@ async def test_openai_transcribe_audio_hits_expected_endpoint(settings):
     result = await provider.transcribe_audio(audio_bytes=b"RIFF....", filename="call.wav")
     assert route.called
     assert result.text == "hello there"
+    await client.aclose()
+
+
+@respx.mock
+async def test_openai_generate_image_hits_expected_endpoint(settings):
+    settings.openai.api_key = "key"
+    client = httpx.AsyncClient()
+    provider = OpenAIProvider(settings, client)
+    route = respx.post("https://api.openai.com/v1/images/generations").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "mime_type": "image/png",
+                        "b64_json": base64.b64encode(b"png-bytes").decode("utf-8"),
+                        "revised_prompt": "sunrise over a lake",
+                    }
+                ]
+            },
+        )
+    )
+    result = await provider.generate_image(prompt="sunrise over a lake")
+    assert route.called
+    assert result.mime_type == "image/png"
+    assert result.binary == b"png-bytes"
     await client.aclose()
 
 

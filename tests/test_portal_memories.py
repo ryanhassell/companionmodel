@@ -101,7 +101,7 @@ async def test_memory_routes_render_grouped_navigation_and_redirect_legacy(sqlit
     sqlite_session.add_all(
         [
             MemoryItem(user_id=companion.id, memory_type=MemoryType.fact, title="Favorite song", content="Katie loves singing in the kitchen."),
-            MemoryItem(user_id=companion.id, memory_type=MemoryType.preference, title="Evening rhythm", content="Evening check-ins feel easiest."),
+            MemoryItem(user_id=companion.id, memory_type=MemoryType.preference, title="Evening rhythm", content="Evening routine and after school check-ins feel easiest."),
         ]
     )
     await sqlite_session.commit()
@@ -109,44 +109,61 @@ async def test_memory_routes_render_grouped_navigation_and_redirect_legacy(sqlit
     async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         legacy = await client.get("/app/memory", follow_redirects=False)
         map_page = await client.get("/app/memories/map")
+        routine_page = await client.get("/app/memories/daily-routine")
         library_page = await client.get("/app/memories/library")
 
     assert legacy.status_code == 303
     assert legacy.headers["location"] == "/app/memories/map"
     assert map_page.status_code == 200
-    assert "Memory Map" in map_page.text
+    assert "Memory Web" in map_page.text
+    assert "Daily Routine" in map_page.text
     assert "Memory Library" in map_page.text
+    assert "data-portal-nav-toggle" in map_page.text
+    assert 'id="portal-sidebar"' in map_page.text
     assert "Overview" in map_page.text
     assert "Household" in map_page.text
+    assert routine_page.status_code == 200
+    assert "Routine Timeline" in routine_page.text
     assert library_page.status_code == 200
     assert "Favorite song" in library_page.text
 
 
-async def test_graph_data_separates_structural_and_similarity_edges(sqlite_session, settings):
+async def test_memory_web_graph_builds_person_and_topic_clusters(sqlite_session, settings):
     app, _, companion = await _portal_fixture(sqlite_session, settings)
     summary = MemoryItem(
         user_id=companion.id,
         memory_type=MemoryType.summary,
-        title="After-school summary",
+        title="Creativity summary",
         content="Katie had a strong afternoon with music and drawing.",
+        tags=["music"],
         embedding_vector=[1.0, 0.0, 0.0],
     )
     fact = MemoryItem(
         user_id=companion.id,
         memory_type=MemoryType.fact,
         title="Drawing memory",
-        content="Katie drew for twenty minutes after school.",
+        content="Katie drew for twenty minutes while listening to music.",
         consolidated_into_id=summary.id,
+        tags=["music"],
         embedding_vector=[0.99, 0.01, 0.0],
     )
     similar = MemoryItem(
         user_id=companion.id,
         memory_type=MemoryType.episode,
-        title="Music memory",
+        title="Taylor Swift memory",
         content="Katie sang while drawing in the afternoon.",
+        tags=["music"],
         embedding_vector=[0.98, 0.02, 0.0],
     )
-    sqlite_session.add_all([summary, fact, similar])
+    routine = MemoryItem(
+        user_id=companion.id,
+        memory_type=MemoryType.preference,
+        title="Evening routine",
+        content="After school and bedtime routines help Katie settle in.",
+        tags=["routine"],
+        embedding_vector=[0.97, 0.03, 0.0],
+    )
+    sqlite_session.add_all([summary, fact, similar, routine])
     await sqlite_session.flush()
     fact.consolidated_into_id = summary.id
     await sqlite_session.commit()
@@ -157,10 +174,54 @@ async def test_graph_data_separates_structural_and_similarity_edges(sqlite_sessi
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
-    assert len(payload["nodes"]) == 3
+    assert any(node["kind"] == "person" for node in payload["nodes"])
+    assert any(node["kind"] == "topic" for node in payload["nodes"])
+    assert any(node["kind"] == "memory" for node in payload["nodes"])
+    assert not any(node["kind"] == "week" for node in payload["nodes"])
+    assert not any(node["kind"] == "day" for node in payload["nodes"])
+    memory_labels = {node["label"] for node in payload["nodes"] if node["kind"] == "memory"}
+    assert "Evening routine" not in memory_labels
+    assert any(edge["relationship_type"] == "person_cluster" for edge in payload["structural_edges"])
+    assert any(edge["relationship_type"] == "topic_member" for edge in payload["structural_edges"])
     assert any(edge["relationship_type"] == "consolidated_into" for edge in payload["structural_edges"])
     assert payload["similarity_edges"]
     assert all(edge["kind"] == "similarity" for edge in payload["similarity_edges"])
+
+
+async def test_daily_routine_graph_keeps_week_and_day_grouping(sqlite_session, settings):
+    app, _, companion = await _portal_fixture(sqlite_session, settings)
+    routine = MemoryItem(
+        user_id=companion.id,
+        memory_type=MemoryType.preference,
+        title="Morning routine",
+        content="Morning routine and getting ready for school feel easier with music.",
+        tags=["routine", "morning"],
+        embedding_vector=[1.0, 0.0, 0.0],
+    )
+    non_routine = MemoryItem(
+        user_id=companion.id,
+        memory_type=MemoryType.fact,
+        title="Favorite artist",
+        content="Katie loves Taylor Swift.",
+        tags=["music"],
+        embedding_vector=[0.99, 0.01, 0.0],
+    )
+    sqlite_session.add_all([routine, non_routine])
+    await sqlite_session.commit()
+
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/app/memories/daily-routine-data")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert any(node["kind"] == "week" for node in payload["nodes"])
+    assert any(node["kind"] == "day" for node in payload["nodes"])
+    assert any(edge["relationship_type"] == "time_week" for edge in payload["structural_edges"])
+    assert any(edge["relationship_type"] == "time_day" for edge in payload["structural_edges"])
+    memory_labels = {node["label"] for node in payload["nodes"] if node["kind"] == "memory"}
+    assert "Morning routine" in memory_labels
+    assert "Favorite artist" not in memory_labels
 
 
 async def test_memory_update_and_delete_preview_respect_structural_orphans(sqlite_session, settings):

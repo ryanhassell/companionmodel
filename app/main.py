@@ -12,6 +12,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from app.core.logging import configure_logging
 from app.core.settings import get_settings
 from app.db.session import get_sessionmaker
+from app.portal.dependencies import resolve_clerk_portal_session
 from app.jobs.scheduler import SchedulerService
 from app.portal.http import is_portal_interactive_request, portal_json_error_response
 from app.routers import admin, api, auth, health, portal, public, webhooks
@@ -243,28 +244,10 @@ async def portal_entitlement_middleware(request: Request, call_next):
             await session.commit()
         return await call_next(request)
 
-    token = container.clerk_auth_service.token_from_request(
-        request.headers.get("authorization"),
-        request.cookies.get(container.settings.clerk.backend_session_cookie_name),
-        request.cookies.get(container.settings.clerk.session_cookie_name),
-    )
-    if not token:
-        if wants_json:
-            return portal_json_error_response(
-                request,
-                status_code=401,
-                code="auth_expired",
-                detail="A Clerk session is required to continue.",
-                login_reason="auth_required",
-            )
-        return RedirectResponse(url="/app/login?reason=auth_required", status_code=303)
-
     sessionmaker = get_sessionmaker()
     async with sessionmaker() as session:
-        try:
-            claims = container.clerk_auth_service.verify_token(token)
-            tenant = await container.clerk_auth_service.resolve_tenant_context(session, claims)
-        except Exception:
+        context, _ = await resolve_clerk_portal_session(request, session, container)
+        if context is None:
             await session.rollback()
             if wants_json:
                 response = portal_json_error_response(
@@ -276,11 +259,14 @@ async def portal_entitlement_middleware(request: Request, call_next):
                 )
                 response.delete_cookie(container.settings.clerk.session_cookie_name)
                 response.delete_cookie(container.settings.clerk.backend_session_cookie_name)
+                response.delete_cookie(container.settings.customer_portal.session_cookie_name)
                 return response
             response = RedirectResponse(url="/app/login?reason=invalid_session", status_code=303)
             response.delete_cookie(container.settings.clerk.session_cookie_name)
+            response.delete_cookie(container.settings.clerk.backend_session_cookie_name)
+            response.delete_cookie(container.settings.customer_portal.session_cookie_name)
             return response
-        request.state.portal_tenant_context = tenant
+        tenant = request.state.portal_tenant_context
 
         if not tenant.clerk_org_id:
             await session.rollback()

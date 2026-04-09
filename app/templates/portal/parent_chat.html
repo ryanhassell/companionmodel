@@ -1,0 +1,84 @@
+{% extends "portal/base.html" %}
+{% set active_nav = 'parent-chat' %}
+{% block content %}
+{% if child and child.companion_user_id %}
+<section class="parent-chat-shell parent-chat-shell-full">
+  <article class="card parent-chat-main parent-chat-main-full">
+    <div class="parent-chat-toolbar">
+      <div>
+        <p class="eyebrow">Parent Chat</p>
+        <h2>Talk to Resona about how to show up</h2>
+        <p class="subtle">Use this space to tell Resona what to remember, what to avoid, and what helps {{ child.display_name or child.first_name }} feel more understood.</p>
+      </div>
+    </div>
+
+    <div id="parent-chat-thread" class="parent-chat-thread" aria-live="polite">
+      {% for message in chat_messages %}
+      <article class="parent-chat-bubble {{ 'assistant' if message.sender == 'assistant' else 'parent' }}" data-parent-chat-message>
+        <div class="parent-chat-bubble-meta">
+          <strong>{{ 'Resona' if message.sender == 'assistant' else 'You' }}</strong>
+          {% if message.created_at %}<span data-parent-chat-timestamp="{{ message.created_at }}"></span>{% endif %}
+        </div>
+        <div class="parent-chat-bubble-body">{{ message.body }}</div>
+        {% if message.memory_saved %}
+        <div class="parent-chat-bubble-flags">
+          <button
+            class="parent-chat-memory-chip"
+            type="button"
+            data-parent-chat-memory-toggle
+            aria-expanded="false">
+            {{ message.memory_saved_label or 'Saved to memory' }}
+          </button>
+          {% if message.memory_saved_details %}
+          <div class="parent-chat-memory-popover" data-parent-chat-memory-popover hidden>
+            <p class="parent-chat-memory-popover-title">Created memories</p>
+            <ul class="parent-chat-memory-list">
+              {% for detail in message.memory_saved_details %}
+              <li class="parent-chat-memory-list-item">
+                <strong>{{ detail.title }}</strong>
+                <span>{{ detail.content }}</span>
+              </li>
+              {% endfor %}
+            </ul>
+          </div>
+          {% endif %}
+        </div>
+        {% endif %}
+      </article>
+      {% endfor %}
+    </div>
+
+    <form id="parent-chat-form" class="parent-chat-form" method="post" action="/app/parent-chat/send">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="parent-chat-composer-row">
+        <textarea
+          id="parent-chat-input"
+          name="message"
+          rows="3"
+          maxlength="2400"
+          aria-label="Message"
+          placeholder="Tell Resona what to remember or avoid..."></textarea>
+        <button id="parent-chat-submit" class="button" type="submit">Send</button>
+      </div>
+      <div class="parent-chat-actions">
+        <p id="parent-chat-status" class="subtle" aria-live="polite"></p>
+      </div>
+    </form>
+  </article>
+</section>
+{% else %}
+<article class="card">
+  <h3>Parent chat unlocks once a child profile is connected.</h3>
+  <p class="subtle">Finish setup first and this page will turn into a parent-side conversation space for shaping how Resona shows up.</p>
+  <div class="hero-actions">
+    <a class="button" href="/app/initialize">Finish Setup</a>
+    <a class="button ghost" href="/app/child">View Child Profile</a>
+  </div>
+</article>
+{% endif %}
+
+<script id="portal-parent-chat-data" type="application/json">{{ chat_payload|tojson }}</script>
+{% endblock %}
+{% block body_scripts %}
+<script type="module" src="/static/portal-parent-chat.js"></script>
+{% endblock %}

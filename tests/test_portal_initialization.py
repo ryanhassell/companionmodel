@@ -5,10 +5,11 @@ from fastapi import FastAPI
 from httpx import ASGITransport
 from sqlalchemy import select
 
+from app.ai.runtime import AIGeneration
+from app.ai.schemas import PortalPreferencePreview
 from app.db.session import get_db_session
 from app.models.enums import HouseholdRole, SubscriptionStatus
 from app.models.portal import ChildProfile, Household, Subscription
-from app.providers.base import GeneratedText
 from app.models.user import User
 from app.portal.dependencies import PortalRequestContext, require_portal_context
 from app.routers import portal
@@ -400,7 +401,7 @@ async def test_initialization_accepts_custom_preference_text_without_preset_choi
 async def test_portal_preview_service_falls_back_without_openai(sqlite_session, settings):
     user = await _register_customer(sqlite_session, settings, email="preview@example.com")
 
-    class _DisabledOpenAIProvider:
+    class _DisabledAiRuntime:
         enabled = False
 
     class _UnusedUsageIngestionService:
@@ -409,7 +410,7 @@ async def test_portal_preview_service_falls_back_without_openai(sqlite_session, 
 
     preview_service = PortalPreviewService(
         settings,
-        openai_provider=_DisabledOpenAIProvider(),  # type: ignore[arg-type]
+        ai_runtime=_DisabledAiRuntime(),  # type: ignore[arg-type]
         usage_ingestion_service=_UnusedUsageIngestionService(),  # type: ignore[arg-type]
     )
 
@@ -429,25 +430,25 @@ async def test_portal_preview_service_falls_back_without_openai(sqlite_session, 
         },
     )
 
-    assert "Katie" in result["message"]
-    assert "changed any time" in result["caption"]
-    assert result["source"] == "fallback_disabled"
+    assert result["message"] == ""
+    assert "OpenAI key" in result["detail"]
+    assert result["source"] == "unavailable_disabled"
 
 
 async def test_portal_preview_service_caches_generated_result(sqlite_session, settings):
     user = await _register_customer(sqlite_session, settings, email="preview-cache@example.com")
 
-    class _FakeOpenAIProvider:
+    class _FakeAiRuntime:
         enabled = True
 
         def __init__(self):
             self.calls = []
 
-        async def generate_text(self, **kwargs):
+        async def portal_preview(self, **kwargs):
             self.calls.append(kwargs)
-            return GeneratedText(
-                text="Hey Katie, tell me what happened. I'm here with you.",
-                model=kwargs.get("model"),
+            return AIGeneration(
+                output=PortalPreferencePreview(message="Hey Katie, tell me what happened. I'm here with you."),
+                model=settings.openai.portal_preview_model,
                 usage={"input_tokens": 11, "output_tokens": 9, "total_tokens": 20},
             )
 
@@ -458,11 +459,11 @@ async def test_portal_preview_service_caches_generated_result(sqlite_session, se
         async def record_event(self, *args, **kwargs):
             self.calls += 1
 
-    fake_openai = _FakeOpenAIProvider()
+    fake_openai = _FakeAiRuntime()
     usage_ingestion = _RecordingUsageIngestionService()
     preview_service = PortalPreviewService(
         settings,
-        openai_provider=fake_openai,  # type: ignore[arg-type]
+        ai_runtime=fake_openai,  # type: ignore[arg-type]
         usage_ingestion_service=usage_ingestion,  # type: ignore[arg-type]
     )
     payload = {
@@ -492,7 +493,6 @@ async def test_portal_preview_service_caches_generated_result(sqlite_session, se
         customer_user=user,
     )
 
-    assert fake_openai.calls[0]["model"] == settings.openai.portal_preview_model
     assert usage_ingestion.calls == 1
     assert cached is not None
     assert cached["message"] == generated["message"]
@@ -503,10 +503,10 @@ async def test_portal_preview_service_caches_generated_result(sqlite_session, se
 async def test_portal_preview_service_falls_back_when_remote_preview_errors(sqlite_session, settings):
     user = await _register_customer(sqlite_session, settings, email="preview-remote-failure@example.com")
 
-    class _BrokenOpenAIProvider:
+    class _BrokenAiRuntime:
         enabled = True
 
-        async def generate_text(self, **kwargs):
+        async def portal_preview(self, **kwargs):
             raise RuntimeError("preview backend unavailable")
 
     class _UnusedUsageIngestionService:
@@ -515,7 +515,7 @@ async def test_portal_preview_service_falls_back_when_remote_preview_errors(sqli
 
     preview_service = PortalPreviewService(
         settings,
-        openai_provider=_BrokenOpenAIProvider(),  # type: ignore[arg-type]
+        ai_runtime=_BrokenAiRuntime(),  # type: ignore[arg-type]
         usage_ingestion_service=_UnusedUsageIngestionService(),  # type: ignore[arg-type]
     )
 
@@ -550,6 +550,6 @@ async def test_portal_preview_service_falls_back_when_remote_preview_errors(sqli
         },
     )
 
-    assert result["source"] == "fallback_remote_unavailable"
-    assert "temporarily unavailable" in result["caption"]
+    assert result["source"] == "unavailable_remote"
+    assert "unavailable" in result["detail"]
     assert cached is None

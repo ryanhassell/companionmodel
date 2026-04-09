@@ -8,6 +8,8 @@ from fastapi import FastAPI
 from httpx import ASGITransport
 from sqlalchemy import select
 
+from app.ai.runtime import AIGeneration
+from app.ai.schemas import SpeechDictionaryCandidate, SpeechDictionaryConfirmation, VoiceCallScript, VoiceGreeting, VoiceSummary
 from app.admin.dependencies import get_container, require_admin_context
 from app.db.session import get_db_session
 from app.models.communication import CallRecord
@@ -24,6 +26,7 @@ from app.services.daily_life import DailyLifeService
 from app.services.conversation_state import ConversationStateService
 from app.services.memory import MemoryService
 from app.services.prompt import PromptService
+from app.services.usage_ingestion import UsageIngestionService
 from app.services.voice import (
     VoiceService,
     _clean_spoken_call_text,
@@ -56,22 +59,70 @@ class FakeWebsocket:
         return self.events.pop(0)
 
 
+class FakeAiRuntime:
+    enabled = True
+
+    async def embed_documents(self, texts):
+        return [[1.0, 0.0, 0.0] for _ in texts]
+
+    async def embed_query(self, text):
+        return [1.0, 0.0, 0.0]
+
+    async def voice_script(self, *, instructions, prompt, max_tokens=None):
+        return AIGeneration(
+            output=VoiceCallScript(script="hey, just wanted to check in and say hi"),
+            model="gpt-test",
+            usage={"input_tokens": 10, "output_tokens": 10},
+        )
+
+    async def voice_greeting(self, *, instructions, prompt, max_tokens=None):
+        return AIGeneration(
+            output=VoiceGreeting(text="hey, it's me"),
+            model="gpt-test",
+            usage={"input_tokens": 4, "output_tokens": 4},
+        )
+
+    async def voice_summary(self, *, instructions, prompt, max_tokens=None):
+        return AIGeneration(
+            output=VoiceSummary(summary="The call covered a quick check-in and one memory-worthy detail."),
+            model="gpt-test",
+            usage={"input_tokens": 8, "output_tokens": 8},
+        )
+
+    async def speech_dictionary_candidate(self, *, prompt, max_tokens=None):
+        return AIGeneration(
+            output=SpeechDictionaryCandidate(should_confirm=False),
+            model="gpt-test",
+            usage={"input_tokens": 2, "output_tokens": 2},
+        )
+
+    async def speech_dictionary_confirmation(self, *, prompt, max_tokens=None):
+        return AIGeneration(
+            output=SpeechDictionaryConfirmation(answer="unknown"),
+            model="gpt-test",
+            usage={"input_tokens": 2, "output_tokens": 2},
+        )
+
+
 def _build_voice_service(settings) -> tuple[VoiceService, OpenAIProvider]:
     client = httpx.AsyncClient()
     openai_provider = OpenAIProvider(settings, client)
     elevenlabs_provider = ElevenLabsProvider(settings, client)
     prompt_service = PromptService(settings)
-    memory_service = MemoryService(settings, openai_provider, prompt_service)
+    ai_runtime = FakeAiRuntime()
+    memory_service = MemoryService(settings, ai_runtime, prompt_service)
     daily_life_service = DailyLifeService(memory_service)
     service = VoiceService(
         settings,
         FakeTwilioProvider(),  # type: ignore[arg-type]
         openai_provider,
+        ai_runtime,
         elevenlabs_provider,
         prompt_service,
         memory_service,
         daily_life_service,
         ConversationStateService(),
+        UsageIngestionService(),
     )
     return service, openai_provider
 

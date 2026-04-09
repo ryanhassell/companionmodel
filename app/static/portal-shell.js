@@ -2,6 +2,10 @@ import { createPortalBanner, currentPathWithQuery, publishSessionEvent, subscrib
 import { loadClerkClient } from "/static/portal-clerk.js";
 
 const body = document.body;
+const sidebar = document.querySelector("[data-portal-sidebar]");
+const navToggle = document.querySelector("[data-portal-nav-toggle]");
+const navCloseButtons = document.querySelectorAll("[data-portal-nav-close]");
+const navLinks = document.querySelectorAll(".portal-sidebar .nav a");
 const clerkEnabled = body?.dataset.clerkEnabled === "true";
 const signOutLinks = document.querySelectorAll("[data-portal-signout]");
 const banner = createPortalBanner();
@@ -9,9 +13,66 @@ const currentPath = body?.dataset.currentPath || window.location.pathname;
 const isAuthSurface = /^\/app\/(login|signup|session\/callback|logout)/.test(currentPath);
 const resumeUrl = currentPathWithQuery();
 const sessionLossRedirect = `/app/login?reason=invalid_session&resume=${encodeURIComponent(resumeUrl)}`;
+const mobileNavMedia = window.matchMedia("(max-width: 980px)");
 
 let inFlight = false;
 let redirectingForSessionLoss = false;
+
+const setNavOpen = (nextOpen) => {
+  if (!body || !sidebar) {
+    return;
+  }
+  const isMobile = mobileNavMedia.matches;
+  const open = Boolean(nextOpen) && isMobile;
+  body.classList.toggle("portal-nav-open", open);
+  sidebar.setAttribute("aria-hidden", open ? "false" : isMobile ? "true" : "false");
+  if (navToggle) {
+    navToggle.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+};
+
+if (sidebar) {
+  sidebar.setAttribute("aria-hidden", mobileNavMedia.matches ? "true" : "false");
+}
+
+if (navToggle) {
+  navToggle.addEventListener("click", () => {
+    setNavOpen(!body?.classList.contains("portal-nav-open"));
+  });
+}
+
+navCloseButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    setNavOpen(false);
+  });
+});
+
+navLinks.forEach((link) => {
+  link.addEventListener("click", () => {
+    if (mobileNavMedia.matches) {
+      setNavOpen(false);
+    }
+  });
+});
+
+mobileNavMedia.addEventListener("change", (event) => {
+  if (!event.matches) {
+    setNavOpen(false);
+    if (sidebar) {
+      sidebar.setAttribute("aria-hidden", "false");
+    }
+    return;
+  }
+  if (sidebar) {
+    sidebar.setAttribute("aria-hidden", body?.classList.contains("portal-nav-open") ? "false" : "true");
+  }
+});
+
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && body?.classList.contains("portal-nav-open")) {
+    setNavOpen(false);
+  }
+});
 
 const redirectForSessionLoss = (message) => {
   if (redirectingForSessionLoss || isAuthSurface) {

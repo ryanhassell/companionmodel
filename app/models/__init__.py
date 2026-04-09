@@ -34,6 +34,8 @@ from app.models.portal import (
     PhoneOtpChallenge,
     PlanSimulationRun,
     PlanSimulationScenario,
+    PortalChatMessage,
+    PortalChatThread,
     PortalSession,
     RoleAssignment,
     Subscription,
@@ -95,6 +97,8 @@ __all__ = [
     "PhoneOtpChallenge",
     "PlanSimulationRun",
     "PlanSimulationScenario",
+    "PortalChatMessage",
+    "PortalChatThread",
     "UsageEvent",
     "UsageReconciliationRun",
 ]

@@ -10,6 +10,7 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai import AIUnavailableError
 from app.core.logging import get_logger
 from app.core.settings import RuntimeSettings
 from app.core.templating import templates
@@ -113,13 +114,15 @@ def _portal_response(request: Request, template: str, **context):
             label="Conversations",
             items=[
                 PortalNavItem(href="/app/timeline", label="Timeline", key="timeline"),
+                PortalNavItem(href="/app/parent-chat", label="Parent Chat", key="parent-chat"),
             ],
         ),
         PortalNavSection(
             key="memories",
             label="Memories",
             items=[
-                PortalNavItem(href="/app/memories/map", label="Memory Map", key="memories-map"),
+                PortalNavItem(href="/app/memories/map", label="Memory Web", key="memories-map"),
+                PortalNavItem(href="/app/memories/daily-routine", label="Daily Routine", key="memories-routine"),
                 PortalNavItem(href="/app/memories/library", label="Memory Library", key="memories-library"),
             ],
         ),
@@ -350,6 +353,33 @@ def _memory_filter_options() -> list[dict[str, str]]:
     ]
 
 
+def _portal_chat_context_items(customer_user: CustomerUser, child: ChildProfile | None) -> list[dict[str, str]]:
+    if child is None:
+        return []
+    preferences = dict(child.preferences_json or {})
+    boundaries = dict(child.boundaries_json or {})
+    routines = dict(child.routines_json or {})
+    return [
+        {"label": "You are chatting as", "value": f"{_humanize_profile_value(customer_user.relationship_label)} of {child.display_name or child.first_name}"},
+        {"label": "Preferred pacing", "value": _humanize_profile_value(preferences.get("preferred_pacing"))},
+        {"label": "Response style", "value": _humanize_profile_value(preferences.get("response_style"))},
+        {"label": "Voice enabled", "value": _humanize_profile_value(preferences.get("voice_enabled"))},
+        {"label": "Parent visibility", "value": _humanize_profile_value(boundaries.get("parent_visibility_mode"))},
+        {"label": "Alert threshold", "value": _humanize_profile_value(boundaries.get("alert_threshold"))},
+        {"label": "Daily cadence", "value": _humanize_profile_value(routines.get("daily_cadence"))},
+    ]
+
+
+def _portal_chat_starters(child: ChildProfile | None) -> list[str]:
+    child_name = child.display_name if child and child.display_name else (child.first_name if child else "my child")
+    return [
+        f"What should Resona lean into more with {child_name}?",
+        f"What should Resona avoid doing with {child_name}?",
+        f"Help me phrase a few do and don't rules for {child_name}.",
+        f"What questions do you have for me so Resona understands {child_name} better?",
+    ]
+
+
 @router.get("")
 async def portal_root(
     request: Request,
@@ -572,6 +602,11 @@ async def portal_logout_page(
         _clear_security_confirm_cookie(response)
         return response
 
+    token = request.cookies.get(container.settings.customer_portal.session_cookie_name)
+    if token:
+        await container.customer_auth_service.revoke_portal_session(session, raw_token=token)
+        await session.commit()
+
     response = _portal_response(
         request,
         "portal/logout.html",
@@ -584,6 +619,7 @@ async def portal_logout_page(
     )
     response.delete_cookie(container.settings.clerk.backend_session_cookie_name)
     response.delete_cookie(container.settings.clerk.session_cookie_name)
+    response.delete_cookie(container.settings.customer_portal.session_cookie_name)
     _clear_security_confirm_cookie(response)
     return response
 
@@ -651,6 +687,13 @@ async def portal_clerk_auth_sync(
                 "full_name": claims.raw.get("full_name") or hinted_display_name,
             }
         tenant = await container.clerk_auth_service.resolve_tenant_context(session, claims)
+        portal_session_token, _ = await container.customer_auth_service.create_portal_session(
+            session,
+            customer_user=tenant.customer_user,
+            user_agent=request.headers.get("user-agent"),
+            ip_address=_client_ip(request),
+            trusted_device=True,
+        )
         await session.commit()
     except Exception as exc:
         await session.rollback()
@@ -682,7 +725,15 @@ async def portal_clerk_auth_sync(
     )
     response.set_cookie(
         container.settings.clerk.backend_session_cookie_name,
-        raw_token,
+        container.clerk_auth_service.create_portal_session_token(tenant),
+        httponly=True,
+        secure=container.settings.customer_portal.secure_cookies or request.url.scheme == "https",
+        samesite="lax",
+        max_age=container.settings.customer_portal.session_max_age_seconds,
+    )
+    response.set_cookie(
+        container.settings.customer_portal.session_cookie_name,
+        portal_session_token,
         httponly=True,
         secure=container.settings.customer_portal.secure_cookies or request.url.scheme == "https",
         samesite="lax",
@@ -694,10 +745,19 @@ async def portal_clerk_auth_sync(
 @router.post("/auth/clear")
 async def portal_clerk_auth_clear(
     request: Request,
+    session: AsyncSession = Depends(get_db_session),
 ):
     container = request.app.state.container
+    portal_token = request.cookies.get(container.settings.customer_portal.session_cookie_name)
+    if portal_token:
+        try:
+            await container.customer_auth_service.revoke_portal_session(session, raw_token=portal_token)
+            await session.commit()
+        except Exception:
+            await session.rollback()
     response = JSONResponse({"ok": True})
     response.delete_cookie(container.settings.clerk.backend_session_cookie_name)
+    response.delete_cookie(container.settings.customer_portal.session_cookie_name)
     _clear_security_confirm_cookie(response)
     return response
 
@@ -1525,8 +1585,113 @@ async def portal_timeline(
             )
             .scalars()
             .all()
-        )
+    )
     return _portal_response(request, "portal/timeline.html", customer_user=context.customer_user, child=child, timeline=timeline)
+
+
+@router.get("/parent-chat")
+async def portal_parent_chat(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    context: PortalRequestContext = Depends(require_portal_context),
+):
+    child = await _portal_child_profile(session, account_id=context.customer_user.account_id)
+    chat_messages = []
+    if child and child.companion_user_id:
+        thread = await context.container.parent_chat_service.get_or_create_thread(
+            session,
+            account_id=context.customer_user.account_id,
+            customer_user=context.customer_user,
+            child_profile=child,
+        )
+        chat_messages = context.container.parent_chat_service.serialize_messages(
+            await context.container.parent_chat_service.list_messages(session, thread_id=thread.id)
+        )
+
+    payload = {
+        "csrf_token": context.csrf_token,
+        "send_url": "/app/parent-chat/send",
+        "resume_url": request.url.path,
+        "child_name": child.display_name if child and child.display_name else (child.first_name if child else "your child"),
+        "status_message": "Parent chat is unavailable right now." if request.query_params.get("error") == "unavailable" else "",
+        "status_tone": "danger" if request.query_params.get("error") == "unavailable" else "muted",
+    }
+    return _portal_response(
+        request,
+        "portal/parent_chat.html",
+        customer_user=context.customer_user,
+        child=child,
+        chat_messages=[message.model_dump(mode="json") for message in chat_messages],
+        chat_payload=payload,
+        chat_context_items=_portal_chat_context_items(context.customer_user, child),
+        chat_starter_prompts=_portal_chat_starters(child),
+    )
+
+
+@router.post("/parent-chat/send")
+async def portal_parent_chat_send(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    context: PortalRequestContext = Depends(require_portal_context),
+):
+    content_type = (request.headers.get("content-type") or "").lower()
+    expects_html_redirect = "application/x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type
+    if expects_html_redirect:
+        payload = await request.form()
+    else:
+        payload = await request.json()
+    csrf_token = str(payload.get("csrf_token") or "")
+    if not csrf_token or csrf_token != context.csrf_token:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+
+    child = await _portal_child_profile(session, account_id=context.customer_user.account_id)
+    if child is None or not child.companion_user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No child profile is linked yet.")
+
+    await _enforce_rate_limit(
+        request,
+        key=f"portal-parent-chat:{context.account_id}:{context.customer_user.id}",
+        limit=40,
+        window_seconds=3600,
+    )
+    try:
+        _, parent_message, assistant_message = await context.container.parent_chat_service.send_message(
+            session,
+            account_id=context.customer_user.account_id,
+            customer_user=context.customer_user,
+            child_profile=child,
+            text=str(payload.get("message") or ""),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except AIUnavailableError as exc:
+        await session.rollback()
+        if expects_html_redirect:
+            return RedirectResponse(url="/app/parent-chat?error=unavailable", status_code=303)
+        return JSONResponse(
+            {
+                "ok": False,
+                "code": "ai_unavailable",
+                "detail": str(exc),
+                "resume_url": "/app/parent-chat",
+                "retryable": True,
+            },
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    await session.commit()
+
+    if expects_html_redirect:
+        return RedirectResponse(url="/app/parent-chat?sent=1", status_code=303)
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "messages": [
+                message.model_dump(mode="json")
+                for message in context.container.parent_chat_service.serialize_messages([parent_message, assistant_message])
+            ],
+        }
+    )
 
 
 async def _render_portal_memories_page(
@@ -1558,10 +1723,11 @@ async def _render_portal_memories_page(
         "csrf_token": context.csrf_token,
         "view": view,
         "child_name": child.display_name if child and child.display_name else (child.first_name if child else "your child"),
-        "graph_url": "/app/memories/graph-data",
+        "graph_url": "/app/memories/daily-routine-data" if view == "routine" else "/app/memories/graph-data",
         "detail_base_url": "/app/memories",
         "library_url": "/app/memories/library",
         "map_url": "/app/memories/map",
+        "routine_url": "/app/memories/daily-routine",
         "resume_url": request.url.path,
         "show_archived": include_archived,
         "search": search,
@@ -1570,7 +1736,13 @@ async def _render_portal_memories_page(
     return _portal_response(
         request,
         "portal/memories.html",
-        active_nav="memories-map" if view == "map" else "memories-library",
+        active_nav=(
+            "memories-map"
+            if view == "map"
+            else "memories-routine"
+            if view == "routine"
+            else "memories-library"
+        ),
         customer_user=context.customer_user,
         child=child,
         memory_view=view,
@@ -1612,6 +1784,15 @@ async def portal_memories_library(
     return await _render_portal_memories_page(request, session, context, view="library")
 
 
+@router.get("/memories/daily-routine")
+async def portal_memories_daily_routine(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    context: PortalRequestContext = Depends(require_portal_context),
+):
+    return await _render_portal_memories_page(request, session, context, view="routine")
+
+
 @router.get("/memories/graph-data")
 async def portal_memories_graph_data(
     request: Request,
@@ -1630,6 +1811,39 @@ async def portal_memories_graph_data(
         )
     include_archived = str(request.query_params.get("archived") or "").strip().lower() in {"1", "true", "yes", "on"}
     graph = await context.container.memory_service.graph_snapshot(
+        session,
+        user_id=child.companion_user_id,
+        include_archived=include_archived,
+    )
+    await session.commit()
+    return JSONResponse(
+        {
+            "ok": True,
+            "nodes": [node.model_dump(mode="json") for node in graph.nodes],
+            "structural_edges": [edge.model_dump(mode="json") for edge in graph.structural_edges],
+            "similarity_edges": [edge.model_dump(mode="json") for edge in graph.similarity_edges],
+        }
+    )
+
+
+@router.get("/memories/daily-routine-data")
+async def portal_memories_daily_routine_data(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    context: PortalRequestContext = Depends(require_portal_context),
+):
+    child = await _portal_child_profile(session, account_id=context.customer_user.account_id)
+    if child is None or child.companion_user_id is None:
+        return JSONResponse(
+            {
+                "ok": True,
+                "nodes": [],
+                "structural_edges": [],
+                "similarity_edges": [],
+            }
+        )
+    include_archived = str(request.query_params.get("archived") or "").strip().lower() in {"1", "true", "yes", "on"}
+    graph = await context.container.memory_service.routine_graph_snapshot(
         session,
         user_id=child.companion_user_id,
         include_archived=include_archived,

@@ -27,6 +27,95 @@ async def get_container(request: Request) -> ServiceContainer:
     return request.app.state.container
 
 
+async def resolve_clerk_portal_session(
+    request: Request,
+    session: AsyncSession,
+    container: ServiceContainer,
+) -> tuple[PortalRequestContext | None, bool]:
+    existing = getattr(request.state, "portal_tenant_context", None)
+    if existing is not None:
+        csrf_token = getattr(request.state, "portal_csrf_token", "")
+        context = PortalRequestContext(
+            customer_user=existing.customer_user,
+            account_id=str(existing.account.id),
+            role=existing.role,
+            clerk_user_id=existing.clerk_user_id,
+            clerk_org_id=existing.clerk_org_id,
+            mfa_verified=existing.mfa_verified,
+            csrf_token=csrf_token or container.clerk_auth_service.csrf_token(
+                clerk_user_id=existing.clerk_user_id,
+                clerk_org_id=existing.clerk_org_id,
+            ),
+            container=container,
+        )
+        return context, False
+
+    portal_token = request.cookies.get(container.settings.customer_portal.session_cookie_name)
+    if portal_token:
+        authd = await container.customer_auth_service.resolve_portal_session(session, raw_token=portal_token)
+        if authd is not None:
+            tenant = await container.clerk_auth_service.resolve_stored_portal_context(
+                session,
+                request.cookies.get(container.settings.clerk.backend_session_cookie_name),
+            )
+            if tenant is None:
+                tenant = await container.clerk_auth_service.build_tenant_context(
+                    session,
+                    customer_user=authd.customer_user,
+                    clerk_user_id=authd.customer_user.clerk_user_id,
+                    clerk_org_id=None,
+                    mfa_verified=False,
+                )
+            if tenant is not None:
+                request.state.portal_tenant_context = tenant
+                request.state.portal_csrf_token = authd.csrf_token
+                return (
+                    PortalRequestContext(
+                        customer_user=tenant.customer_user,
+                        account_id=str(tenant.account.id),
+                        role=tenant.role,
+                        clerk_user_id=tenant.clerk_user_id,
+                        clerk_org_id=tenant.clerk_org_id,
+                        mfa_verified=tenant.mfa_verified,
+                        csrf_token=authd.csrf_token,
+                        container=container,
+                    ),
+                    True,
+                )
+
+    token = container.clerk_auth_service.token_from_request(
+        request.headers.get("authorization"),
+        request.cookies.get(container.settings.clerk.session_cookie_name),
+        request.cookies.get(container.settings.clerk.backend_session_cookie_name),
+    )
+    if not token:
+        return None, False
+    try:
+        claims = container.clerk_auth_service.verify_token(token)
+        tenant = await container.clerk_auth_service.resolve_tenant_context(session, claims)
+        csrf_token = container.clerk_auth_service.csrf_token(
+            clerk_user_id=tenant.clerk_user_id,
+            clerk_org_id=tenant.clerk_org_id,
+        )
+        request.state.portal_tenant_context = tenant
+        request.state.portal_csrf_token = csrf_token
+        return (
+            PortalRequestContext(
+                customer_user=tenant.customer_user,
+                account_id=str(tenant.account.id),
+                role=tenant.role,
+                clerk_user_id=tenant.clerk_user_id,
+                clerk_org_id=tenant.clerk_org_id,
+                mfa_verified=tenant.mfa_verified,
+                csrf_token=csrf_token,
+                container=container,
+            ),
+            True,
+        )
+    except Exception:
+        return None, False
+
+
 async def get_optional_portal_context(
     request: Request,
     session: AsyncSession = Depends(get_db_session),
@@ -50,40 +139,13 @@ async def get_optional_portal_context(
             container=container,
         )
 
-    existing = getattr(request.state, "portal_tenant_context", None)
-    if existing is not None:
-        tenant = existing
-    else:
-        token = container.clerk_auth_service.token_from_request(
-            request.headers.get("authorization"),
-            request.cookies.get(container.settings.clerk.backend_session_cookie_name),
-            request.cookies.get(container.settings.clerk.session_cookie_name),
-        )
-        if not token:
-            return None
-        try:
-            claims = container.clerk_auth_service.verify_token(token)
-            tenant = await container.clerk_auth_service.resolve_tenant_context(session, claims)
-            await session.commit()
-            request.state.portal_tenant_context = tenant
-        except Exception:
-            await session.rollback()
-            return None
-
-    csrf_token = container.clerk_auth_service.csrf_token(
-        clerk_user_id=tenant.clerk_user_id,
-        clerk_org_id=tenant.clerk_org_id,
-    )
-    return PortalRequestContext(
-        customer_user=tenant.customer_user,
-        account_id=str(tenant.account.id),
-        role=tenant.role,
-        clerk_user_id=tenant.clerk_user_id,
-        clerk_org_id=tenant.clerk_org_id,
-        mfa_verified=tenant.mfa_verified,
-        csrf_token=csrf_token,
-        container=container,
-    )
+    context, should_commit = await resolve_clerk_portal_session(request, session, container)
+    if context is None:
+        await session.rollback()
+        return None
+    if should_commit:
+        await session.commit()
+    return context
 
 
 async def require_portal_context(

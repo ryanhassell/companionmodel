@@ -5,14 +5,6 @@ from typing import Any
 
 
 @dataclass(slots=True)
-class GeneratedText:
-    text: str
-    raw_response: dict[str, Any] = field(default_factory=dict)
-    model: str | None = None
-    usage: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
 class GeneratedImage:
     model: str
     mime_type: str

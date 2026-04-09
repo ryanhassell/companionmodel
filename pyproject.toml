@@ -39,6 +39,7 @@ dependencies = [
   "tenacity>=9.0.0",
   "uvicorn[standard]>=0.34.0",
   "websockets>=15.0.1",
+  "pydantic-ai-slim[openai]>=1.22.0",
 ]
 
 [project.optional-dependencies]

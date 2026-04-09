@@ -5,10 +5,10 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai import AIUnavailableError, AiRuntime
 from app.core.logging import get_logger
 from app.core.settings import RuntimeSettings
 from app.models.portal import AccountInitialization, CustomerUser
-from app.providers.openai import OpenAIProvider
 from app.services.usage_ingestion import UsageIngestionService, UsageRecordInput
 from app.utils.text import make_idempotency_key, normalize_text, truncate_text
 from app.utils.time import utc_now
@@ -41,11 +41,11 @@ class PortalPreviewService:
     def __init__(
         self,
         settings: RuntimeSettings,
-        openai_provider: OpenAIProvider,
+        ai_runtime: AiRuntime,
         usage_ingestion_service: UsageIngestionService,
     ) -> None:
         self.settings = settings
-        self.openai_provider = openai_provider
+        self.ai_runtime = ai_runtime
         self.usage_ingestion_service = usage_ingestion_service
 
     def normalize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -88,11 +88,12 @@ class PortalPreviewService:
         if cached is None:
             return None
         source = str(cached.get("source") or "cache")
-        if source.startswith("fallback") and self.openai_provider.enabled:
+        if source.startswith("unavailable") and self.ai_runtime.enabled:
             return None
         return {
             "message": str(cached.get("message") or ""),
-            "caption": str(cached.get("caption") or self._build_caption(normalized)),
+            "caption": str(cached.get("caption") or ""),
+            "detail": str(cached.get("detail") or ""),
             "source": source,
             "cached": True,
         }
@@ -113,36 +114,18 @@ class PortalPreviewService:
             raise ValueError("Choose at least one response style or describe one in your own words.")
 
         caption = self._build_caption(normalized)
-        fallback_message = self._fallback_preview_message(normalized)
-        if not self.openai_provider.enabled:
-            await self._cache_preview(
-                session,
-                account_id=customer_user.account_id,
-                payload=normalized,
-                message=fallback_message,
-                caption=self._fallback_caption(configured=False),
-                source="fallback_disabled",
-            )
-            return {
-                "message": fallback_message,
-                "caption": self._fallback_caption(configured=False),
-                "source": "fallback_disabled",
-            }
+        if not self.ai_runtime.enabled:
+            return self._unavailable_response(configured=False)
 
         try:
-            response = await self.openai_provider.generate_text(
-                instructions=self._instructions(),
-                input_items=[
-                    {
-                        "role": "user",
-                        "content": self._input_prompt(normalized),
-                    }
-                ],
-                model=self.settings.openai.portal_preview_model,
+            response = await self.ai_runtime.portal_preview(
+                prompt=self._input_prompt(normalized),
                 temperature=0.7,
-                max_output_tokens=90,
+                max_tokens=90,
             )
-            message = self._clean_message(response.text) or fallback_message
+            message = self._clean_message(response.output.message)
+            if not message:
+                raise AIUnavailableError("Empty portal preview output")
             await self._record_usage(
                 session,
                 customer_user=customer_user,
@@ -160,15 +143,11 @@ class PortalPreviewService:
             return {"message": message, "caption": caption, "source": "openai"}
         except Exception as exc:
             logger.warning(
-                "portal_preview_fallback_used",
+                "portal_preview_unavailable",
                 account_id=str(customer_user.account_id),
                 reason=type(exc).__name__,
             )
-            return {
-                "message": fallback_message,
-                "caption": self._fallback_caption(configured=True),
-                "source": "fallback_remote_unavailable",
-            }
+            return self._unavailable_response(configured=True)
 
     def _instructions(self) -> str:
         return (
@@ -259,50 +238,23 @@ class PortalPreviewService:
             "and you can come back and change these setup preferences any time."
         )
 
-    def _fallback_preview_message(self, payload: dict[str, Any]) -> str:
-        child_name = payload["profile_name"]
-        pacing = payload["preferred_pacing"]
-        styles = payload["response_style"]
-        pacing_hint = pacing[0] if pacing else ""
-        style_hint = styles[0] if styles else ""
-
-        if pacing_hint == "direct":
-            opener = f"{child_name}, tell me the main part first."
-        elif pacing_hint == "playful":
-            opener = f"Hey {child_name}, what part of today felt the biggest?"
-        elif pacing_hint == "steady":
-            opener = f"{child_name}, start at the beginning and we can go one step at a time."
-        elif pacing_hint == "reflective":
-            opener = f"{child_name}, what part of today is still sitting with you?"
-        else:
-            opener = f"Hey {child_name}, take your time and tell me what happened."
-
-        closers = {
-            "warm": "I'm here with you.",
-            "calm": "We can keep it simple.",
-            "encouraging": "We'll figure out the next step together.",
-            "reassuring": "You're okay, and you can say it however you want.",
-            "upbeat": "We've got this.",
-            "straightforward": "We can work through the main part first.",
+    def _unavailable_response(self, *, configured: bool) -> dict[str, str]:
+        detail = (
+            "Live AI wording is unavailable right now."
+            if configured
+            else "Add your OpenAI key to turn on live AI wording."
+        )
+        return {
+            "message": "",
+            "caption": "",
+            "detail": detail,
+            "source": "unavailable_remote" if configured else "unavailable_disabled",
         }
-        closer = closers.get(style_hint, "I'm listening.")
-        return truncate_text(f"{opener} {closer}", 160)
 
     def _clean_message(self, text: str) -> str:
         cleaned = " ".join(str(text or "").strip().split())
         cleaned = cleaned.strip("\"' ")
         return truncate_text(cleaned, 160) if cleaned else ""
-
-    def _fallback_caption(self, *, configured: bool) -> str:
-        if configured:
-            return (
-                "Instant example based on your selections. "
-                "Live AI wording is temporarily unavailable, so this preview is staying local for now."
-            )
-        return (
-            "Instant example based on your selections. "
-            "A connected AI preview can be enabled later, and these setup preferences can be changed any time."
-        )
 
     def cache_key_for_payload(self, payload: dict[str, Any]) -> str:
         normalized = self.normalize_payload(payload)

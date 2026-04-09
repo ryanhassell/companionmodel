@@ -26,8 +26,16 @@
     data-clerk-frontend-api-url="{{ clerk_frontend_api_url or '' }}"
     data-current-path="{{ request.url.path }}">
     <div class="portal-layout">
-      <aside class="portal-sidebar">
+      {% if customer_user %}
+      <button type="button" class="portal-sidebar-scrim" data-portal-nav-close aria-label="Close navigation"></button>
+      {% endif %}
+      <aside class="portal-sidebar" id="portal-sidebar" data-portal-sidebar aria-label="Parent portal navigation">
         <div class="portal-brand-lockup">
+          {% if customer_user %}
+          <button type="button" class="portal-sidebar-close" data-portal-nav-close aria-label="Close navigation">
+            <span aria-hidden="true">×</span>
+          </button>
+          {% endif %}
           <a href="/" class="portal-brand-link" aria-label="{{ brand_name }} home">
             <img src="/static/images/resona-mark.svg" alt="{{ brand_name }} logo" class="portal-brand-logo">
             <span class="portal-brand-word">{{ brand_name }}</span>
@@ -61,6 +69,25 @@
         <p class="subtle">{{ support_email }}</p>
       </aside>
       <main class="content">
+        {% if customer_user %}
+        <div class="portal-mobile-bar">
+          <button
+            type="button"
+            class="portal-menu-button"
+            data-portal-nav-toggle
+            aria-expanded="false"
+            aria-controls="portal-sidebar"
+            aria-label="Open navigation">
+            <span></span>
+            <span></span>
+            <span></span>
+          </button>
+          <div class="portal-mobile-bar-copy">
+            <strong>{{ brand_name }}</strong>
+            <span>Parent Portal</span>
+          </div>
+        </div>
+        {% endif %}
         <div id="portal-global-banner" class="portal-global-banner" hidden aria-live="polite" aria-atomic="true">
           <div class="portal-global-banner-copy">
             <strong data-portal-banner-title></strong>

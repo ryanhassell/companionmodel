@@ -14,8 +14,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 from app.core.logging import get_logger
 from app.core.security import redact_secrets
 from app.core.settings import RuntimeSettings
-from app.providers.base import GeneratedImage, GeneratedText, SpeechResult, TranscriptionResult
-from app.utils.text import extract_json_block
+from app.providers.base import GeneratedImage, SpeechResult, TranscriptionResult
 
 logger = get_logger(__name__)
 
@@ -62,23 +61,6 @@ class OpenAIProvider:
                 size=payload.get("size"),
                 prompt_preview=_preview_text(payload.get("prompt")),
             )
-        elif endpoint == "responses":
-            logger.info(
-                "openai_text_request",
-                endpoint=endpoint,
-                model=payload.get("model"),
-                max_output_tokens=payload.get("max_output_tokens"),
-                input_preview=_preview_input(payload.get("input")),
-                instructions_preview=_preview_text(payload.get("instructions")),
-            )
-        elif endpoint == "embeddings":
-            logger.info(
-                "openai_embeddings_request",
-                endpoint=endpoint,
-                model=payload.get("model"),
-                input_count=len(payload.get("input") or []),
-                input_preview=_preview_embedding_inputs(payload.get("input")),
-            )
         else:
             logger.info("openai_request", endpoint=endpoint, payload=redact_secrets(payload))
         response = await self.client.post(
@@ -91,20 +73,6 @@ class OpenAIProvider:
             if endpoint == "images/generations":
                 logger.info(
                     "openai_image_generation_error",
-                    endpoint=endpoint,
-                    status_code=response.status_code,
-                    body_preview=_preview_text(response.text, limit=400),
-                )
-            elif endpoint == "responses":
-                logger.info(
-                    "openai_text_error",
-                    endpoint=endpoint,
-                    status_code=response.status_code,
-                    body_preview=_preview_text(response.text, limit=400),
-                )
-            elif endpoint == "embeddings":
-                logger.info(
-                    "openai_embeddings_error",
                     endpoint=endpoint,
                     status_code=response.status_code,
                     body_preview=_preview_text(response.text, limit=400),
@@ -132,53 +100,9 @@ class OpenAIProvider:
                 has_url=bool(item.get("url")),
                 revised_prompt_preview=_preview_text(item.get("revised_prompt")),
             )
-        elif endpoint == "responses":
-            logger.info(
-                "openai_text_response",
-                endpoint=endpoint,
-                status_code=response.status_code,
-                output_preview=_preview_text(_extract_output_text(data)),
-            )
-        elif endpoint == "embeddings":
-            logger.info(
-                "openai_embeddings_response",
-                endpoint=endpoint,
-                status_code=response.status_code,
-                output_count=len(data.get("data") or []),
-            )
         else:
             logger.info("openai_response", endpoint=endpoint, status_code=response.status_code)
         return data
-
-    async def generate_text(
-        self,
-        *,
-        instructions: str | None = None,
-        input_items: list[dict[str, Any]] | str,
-        model: str | None = None,
-        temperature: float | None = None,
-        max_output_tokens: int | None = None,
-    ) -> GeneratedText:
-        chosen_model = model or self.settings.openai.chat_model
-        payload: dict[str, Any] = {
-            "model": chosen_model,
-            "input": input_items,
-            "max_output_tokens": max_output_tokens or self.settings.openai.max_output_tokens,
-        }
-        if instructions:
-            payload["instructions"] = instructions
-        if temperature is not None and _supports_temperature(chosen_model, self.settings.openai.reasoning_effort):
-            payload["temperature"] = temperature
-        if _supports_reasoning(chosen_model, self.settings.openai.reasoning_effort):
-            payload["reasoning"] = {"effort": self.settings.openai.reasoning_effort}
-
-        data = await self._post_json("responses", payload)
-        return GeneratedText(
-            text=_extract_output_text(data),
-            raw_response=data,
-            model=data.get("model", payload["model"]),
-            usage=data.get("usage", {}),
-        )
 
     async def accept_realtime_call(self, call_id: str, *, payload: dict[str, Any]) -> dict[str, Any]:
         return await self._post_json_once(
@@ -241,22 +165,6 @@ class OpenAIProvider:
         ) as websocket:
             yield websocket
 
-    async def generate_json(
-        self,
-        *,
-        instructions: str | None = None,
-        input_items: list[dict[str, Any]] | str,
-        model: str | None = None,
-        max_output_tokens: int | None = None,
-    ) -> dict[str, Any] | list[Any] | None:
-        response = await self.generate_text(
-            instructions=instructions,
-            input_items=input_items,
-            model=model,
-            max_output_tokens=max_output_tokens,
-        )
-        return extract_json_block(response.text)
-
     async def transcribe_audio(
         self,
         *,
@@ -310,14 +218,6 @@ class OpenAIProvider:
             text=str(payload.get("text") or "").strip(),
             raw_response=payload,
         )
-
-    async def embed_texts(self, texts: list[str], model: str | None = None) -> list[list[float]]:
-        payload = {
-            "model": model or self.settings.openai.embedding_model,
-            "input": texts,
-        }
-        data = await self._post_json("embeddings", payload)
-        return [item["embedding"] for item in data.get("data", [])]
 
     async def generate_image(
         self,
@@ -448,35 +348,6 @@ class OpenAIProvider:
         response.raise_for_status()
         mime_type = response.headers.get("content-type", "audio/mpeg")
         return SpeechResult(model=payload["model"], mime_type=mime_type, binary=response.content)
-
-
-def _extract_output_text(data: dict[str, Any]) -> str:
-    if data.get("output_text"):
-        return str(data["output_text"]).strip()
-    output = data.get("output") or []
-    texts: list[str] = []
-    for item in output:
-        for content in item.get("content", []):
-            text = content.get("text")
-            if text:
-                texts.append(str(text))
-    return "\n".join(texts).strip()
-
-
-def _supports_temperature(model: str, reasoning_effort: str | None) -> bool:
-    normalized = model.strip().lower()
-    if normalized.startswith("gpt-5") and reasoning_effort not in (None, "", "none"):
-        return False
-    return True
-
-
-def _supports_reasoning(model: str, reasoning_effort: str | None) -> bool:
-    normalized = model.strip().lower()
-    if reasoning_effort in (None, "", "none"):
-        return False
-    return normalized.startswith("gpt-5")
-
-
 def _preview_text(value: Any, limit: int = 220) -> str | None:
     if value is None:
         return None
@@ -484,31 +355,3 @@ def _preview_text(value: Any, limit: int = 220) -> str | None:
     if len(text) <= limit:
         return text
     return f"{text[:limit-3]}..."
-
-
-def _preview_input(value: Any) -> str | None:
-    if isinstance(value, str):
-        return _preview_text(value)
-    if not isinstance(value, list):
-        return _preview_text(value)
-    parts: list[str] = []
-    for item in value[:2]:
-        if not isinstance(item, dict):
-            continue
-        content = item.get("content")
-        if isinstance(content, str):
-            parts.append(content)
-        elif isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and isinstance(block.get("text"), str):
-                    parts.append(block["text"])
-                    break
-    return _preview_text(" | ".join(parts))
-
-
-def _preview_embedding_inputs(value: Any) -> str | None:
-    if not isinstance(value, list):
-        return _preview_text(value)
-    return " | ".join(
-        preview for preview in (_preview_text(item, limit=100) for item in value[:2]) if preview
-    )

@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai import AiRuntime
 from app.core.logging import get_logger
 from app.core.settings import RuntimeSettings
 from app.db.session import get_sessionmaker
@@ -44,6 +45,7 @@ class MessageService:
         settings: RuntimeSettings,
         twilio_provider: TwilioProvider,
         openai_provider: OpenAIProvider,
+        ai_runtime: AiRuntime,
         prompt_service: PromptService,
         safety_service: SafetyService,
         memory_service: MemoryService,
@@ -62,6 +64,7 @@ class MessageService:
         self.settings = settings
         self.twilio_provider = twilio_provider
         self.openai_provider = openai_provider
+        self.ai_runtime = ai_runtime
         self.prompt_service = prompt_service
         self.safety_service = safety_service
         self.memory_service = memory_service
@@ -150,8 +153,16 @@ class MessageService:
             recent_messages=recent_messages,
             config=config,
         )
-        if safety.safe_reply:
-            reply_text = safety.safe_reply
+        if safety.distress or safety.obsessive:
+            reply_text = await self._generate_supportive_safety_reply(
+                session,
+                user=user,
+                persona=persona,
+                conversation=conversation,
+                inbound_text=payload.body or "",
+                config=config,
+                reasons=safety.reasons,
+            )
             media_assets = None
         elif action["send_image"]:
             reply_text = action["reply_text"] or await self._generate_photo_status_reply(
@@ -175,6 +186,25 @@ class MessageService:
                 recent_messages=recent_messages,
                 config=config,
             )
+        if not (reply_text or (media_assets or [])):
+            logger.info(
+                "outbound_reply_deferred",
+                user_id=str(user.id),
+                conversation_id=str(conversation.id),
+                reason="empty_reply",
+            )
+            if inbound.body:
+                await self.memory_service.extract_from_message(
+                    session,
+                    user=user,
+                    persona=persona,
+                    message=inbound,
+                    recent_messages=recent_messages,
+                    config=config,
+                )
+            await session.flush()
+            return inbound
+
         outbound = await self.send_outbound_message(
             session,
             user=user,
@@ -184,7 +214,7 @@ class MessageService:
             is_proactive=False,
             media_assets=media_assets,
         )
-        if action["send_image"] and not safety.safe_reply:
+        if action["send_image"] and not (safety.distress or safety.obsessive):
             self._enqueue_explicit_photo_reply(
                 user_id=user.id,
                 persona_id=persona.id if persona else None,
@@ -263,8 +293,16 @@ class MessageService:
             config=config,
             force_photo=force_photo,
         )
-        if safety.safe_reply:
-            reply_text = safety.safe_reply
+        if safety.distress or safety.obsessive:
+            reply_text = await self._generate_supportive_safety_reply(
+                session,
+                user=user,
+                persona=persona,
+                conversation=conversation,
+                inbound_text=body,
+                config=config,
+                reasons=safety.reasons,
+            )
             media_assets = None
         elif action["send_image"]:
             media_assets = await self._generate_explicit_photo_with_retries(
@@ -298,6 +336,15 @@ class MessageService:
                 recent_messages=recent_messages,
                 config=config,
             )
+        if not (reply_text or (media_assets or [])):
+            logger.info(
+                "simulator_reply_deferred",
+                user_id=str(user.id),
+                conversation_id=str(conversation.id),
+                reason="empty_reply",
+            )
+            return inbound, inbound
+
         outbound = Message(
             conversation_id=conversation.id,
             user_id=user.id,
@@ -343,7 +390,7 @@ class MessageService:
         config: dict[str, Any],
         force_photo: bool = False,
     ) -> dict[str, Any]:
-        if persona is None or not self.openai_provider.enabled:
+        if persona is None or not self.ai_runtime.enabled:
             return {
                 "send_image": force_photo,
                 "reply_text": "",
@@ -378,50 +425,41 @@ class MessageService:
             role = "user" if message.direction == Direction.inbound else "companion"
             recent_lines.append(f"- {role}: {message.body or ''}")
         try:
-            response = await self.openai_provider.generate_json(
+            response = await self.ai_runtime.decide_inbound_action(
                 instructions=instructions,
-                input_items=[
-                    {
-                        "role": "user",
-                        "content": (
-                            "Decide the next messaging action for this incoming SMS.\n"
-                            "Return JSON only in this format: "
-                            "{\"send_image\": true/false, \"reply_text\": \"...\", "
-                            "\"scene_hint\": \"...\", \"include_person\": true/false, \"reason\": \"...\"}.\n\n"
-                            "Rules:\n"
-                            "- Prefer send_image=true when the user is asking to see something, asking for a selfie/photo/picture, "
-                            "or when a picture would be a very natural reply.\n"
-                            "- Keep send_image rare unless the user is clearly asking to see something.\n"
-                            "- If send_image=true, reply_text must be a very short in-character acknowledgment that you're grabbing or sending it now.\n"
-                            "- If send_image=false, set reply_text to an empty string.\n"
-                            "- For sunsets, windows, weather, scenery, food, and objects, prefer include_person=false unless the user specifically wants to see you.\n"
-                            "- For selfies, outfit requests, or requests to see you, set include_person=true.\n"
-                            "- scene_hint should be a short, concrete image brief optimized for generation.\n"
-                            "- Do not dodge a valid image request in prose. If a picture should happen, choose send_image=true.\n"
-                            f"- Ready images today: {image_count} / {int(config['safety']['daily_image_cap'])}.\n"
-                            f"- Force photo mode: {'true' if force_photo else 'false'}. If true, send_image must be true.\n\n"
-                            f"Incoming message: {inbound_text}\n\n"
-                            "Recent conversation:\n"
-                            f"{chr(10).join(recent_lines) if recent_lines else '- none'}"
-                        ),
-                    }
-                ],
-                max_output_tokens=220,
+                prompt=(
+                    "Decide the next messaging action for this incoming SMS.\n"
+                    "- Prefer send_image=true when the user is asking to see something, asking for a selfie/photo/picture, "
+                    "or when a picture would be a very natural reply.\n"
+                    "- Keep send_image rare unless the user is clearly asking to see something.\n"
+                    "- If send_image=true, reply_text must be a very short in-character acknowledgment that you're grabbing or sending it now.\n"
+                    "- If send_image=false, set reply_text to an empty string.\n"
+                    "- For sunsets, windows, weather, scenery, food, and objects, prefer include_person=false unless the user specifically wants to see you.\n"
+                    "- For selfies, outfit requests, or requests to see you, set include_person=true.\n"
+                    "- scene_hint should be a short, concrete image brief optimized for generation.\n"
+                    "- Do not dodge a valid image request in prose. If a picture should happen, choose send_image=true.\n"
+                    f"- Ready images today: {image_count} / {int(config['safety']['daily_image_cap'])}.\n"
+                    f"- Force photo mode: {'true' if force_photo else 'false'}. If true, send_image must be true.\n\n"
+                    f"Incoming message: {inbound_text}\n\n"
+                    "Recent conversation:\n"
+                    f"{chr(10).join(recent_lines) if recent_lines else '- none'}"
+                ),
             )
             await self._record_openai_usage(
                 session,
                 user=user,
                 conversation=conversation,
-                usage=response.get("usage", {}) if isinstance(response, dict) else {},
+                usage=response.usage,
                 event_type="openai.responses.image_decision",
             )
-            if isinstance(response, dict):
+            decision_payload = response.output.model_dump(mode="json")
+            if decision_payload:
                 decision = {
-                    "send_image": bool(response.get("send_image")) or force_photo,
-                    "reply_text": str(response.get("reply_text") or "").strip(),
-                    "scene_hint": str(response.get("scene_hint") or "").strip() or self._reactive_image_scene_hint(inbound_text, persona),
-                    "include_person": response.get("include_person"),
-                    "reason": str(response.get("reason") or "").strip(),
+                    "send_image": bool(decision_payload.get("send_image")) or force_photo,
+                    "reply_text": str(decision_payload.get("reply_text") or "").strip(),
+                    "scene_hint": str(decision_payload.get("scene_hint") or "").strip() or self._reactive_image_scene_hint(inbound_text, persona),
+                    "include_person": decision_payload.get("include_person"),
+                    "reason": str(decision_payload.get("reason") or "").strip(),
                 }
                 logger.info(
                     "inbound_action_decision",
@@ -691,14 +729,8 @@ class MessageService:
         mode: str,
         error_message: str | None = None,
     ) -> str:
-        if not self.openai_provider.enabled:
-            fallback_map = {
-                "ack": "ok hang on lol",
-                "retry": "wait it glitched, trying again",
-                "success": "here u go :)",
-                "failure": "ugh i thought i had it but it didn't go through",
-            }
-            return fallback_map.get(mode, "ok")
+        if not self.ai_runtime.enabled:
+            return ""
         context = {
             "user": user,
             "persona": persona,
@@ -738,17 +770,15 @@ class MessageService:
                 "with a lightly playful vibe. Keep it under 140 characters."
             ),
         }
-        response = await self.openai_provider.generate_text(
-            instructions=instructions,
-            input_items=[
-                {
-                    "role": "user",
-                    "content": prompts[mode],
-                }
-            ],
-            max_output_tokens=80,
-            temperature=self.settings.openai.temperature,
-        )
+        try:
+            response = await self.ai_runtime.photo_status_reply(
+                instructions=instructions,
+                prompt=prompts[mode],
+                max_tokens=80,
+                temperature=self.settings.openai.temperature,
+            )
+        except Exception:
+            return ""
         await self._record_openai_usage(
             session,
             user=user,
@@ -756,14 +786,8 @@ class MessageService:
             usage=response.usage,
             event_type=f"openai.responses.photo_reply.{mode}",
         )
-        fallback_map = {
-            "ack": "ok hang on lol",
-            "retry": "wait i'm trying again",
-            "success": "here :)",
-            "failure": "ugh i thought i had it but it didn't go through",
-        }
         max_len_map = {"ack": 60, "retry": 90, "success": 50, "failure": 140}
-        return truncate_text(response.text.strip() or fallback_map[mode], max_len_map[mode])
+        return truncate_text((response.output.text or "").strip(), max_len_map[mode])
 
     def _photo_attempt_specs(
         self,
@@ -907,9 +931,8 @@ class MessageService:
             "turn_classification": classification,
             **daily_context,
         }
-        if not self.openai_provider.enabled:
-            fallback = "I’m here with you. I can’t fully generate a response right now, but I’m still listening."
-            return truncate_text(fallback, int(config["messaging"]["max_message_length"]))
+        if not self.ai_runtime.enabled:
+            return ""
 
         candidates = await self.candidate_reply_service.generate_candidates(
             session,
@@ -924,7 +947,7 @@ class MessageService:
             classification=classification,
         )
         if not candidates:
-            candidates = ["I hear you. I want to answer this well. Can you give me one more detail?"]
+            return ""
         ranked = self.reply_ranker_service.rank(
             candidates=candidates,
             inbound_text=inbound_message.body or "",
@@ -964,7 +987,7 @@ class MessageService:
                     config=config,
                     source_message=inbound_message,
                 )
-                reply = final_safety.safe_reply or "I want to keep this conversation warm and safe."
+                reply = final_safety.safe_reply or ""
                 inbound_meta = dict(inbound_message.metadata_json or {})
                 pipeline = dict(inbound_meta.get("reply_pipeline") or {})
                 pipeline["safety_rewrite"] = {"attempted": True, "applied": False, "reasons": outbound_safety.reasons}
@@ -993,6 +1016,41 @@ class MessageService:
                 )
                 break
         return reply
+
+    async def _generate_supportive_safety_reply(
+        self,
+        session: AsyncSession,
+        *,
+        user: User,
+        persona: Persona | None,
+        conversation: Conversation,
+        inbound_text: str,
+        config: dict[str, Any],
+        reasons: list[str],
+    ) -> str:
+        if not self.ai_runtime.enabled:
+            return ""
+        prompt = (
+            "Write one short supportive reply for an inbound message that needs extra care.\n"
+            "Be calm, warm, and non-robotic.\n"
+            "Do not sound clinical.\n"
+            "Do not promise exclusivity, rescuing, or anything unsafe.\n"
+            "Keep it under 220 characters.\n\n"
+            f"Reasons: {', '.join(reasons) if reasons else 'high-sensitivity'}\n"
+            f"Inbound message: {inbound_text}\n"
+        )
+        try:
+            response = await self.ai_runtime.supportive_safety_reply(prompt=prompt, max_tokens=120)
+        except Exception:
+            return ""
+        await self._record_openai_usage(
+            session,
+            user=user,
+            conversation=conversation,
+            usage=response.usage,
+            event_type="openai.responses.safety_supportive_reply",
+        )
+        return truncate_text((response.output.text or "").strip(), int(config["messaging"]["max_message_length"]))
 
     async def _recent_discussed_topics(
         self,
