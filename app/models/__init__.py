@@ -1,5 +1,6 @@
 from app.models.admin import AdminUser, AuditEvent, JobRun
 from app.models.communication import CallRecord, Conversation, DeliveryAttempt, MediaAsset, Message, SafetyEvent
+from app.models.conversation_state import ConversationState
 from app.models.configuration import AppSetting, PromptTemplate, ScheduleRule
 from app.models.enums import (
     AppSettingScope,
@@ -8,14 +9,32 @@ from app.models.enums import (
     Channel,
     DeliveryStatus,
     Direction,
+    HouseholdRole,
     JobStatus,
     MediaRole,
     MemoryType,
     MessageStatus,
     SafetySeverity,
     ScheduleRuleType,
+    SubscriptionStatus,
+    VerificationCaseStatus,
 )
 from app.models.memory import MemoryItem
+from app.models.portal import (
+    Account,
+    AuthIdentityEvent,
+    BillingEvent,
+    ChildProfile,
+    ConsentRecord,
+    CustomerUser,
+    EmailVerificationToken,
+    Household,
+    PhoneOtpChallenge,
+    PortalSession,
+    RoleAssignment,
+    Subscription,
+    VerificationCase,
+)
 from app.models.persona import Persona
 from app.models.user import User
 
@@ -23,15 +42,23 @@ __all__ = [
     "AdminUser",
     "AppSetting",
     "AppSettingScope",
+    "AuthIdentityEvent",
     "AuditEvent",
     "CallDirection",
     "CallRecord",
     "CallStatus",
     "Channel",
+    "ChildProfile",
     "Conversation",
+    "ConversationState",
+    "ConsentRecord",
+    "CustomerUser",
     "DeliveryAttempt",
     "DeliveryStatus",
     "Direction",
+    "EmailVerificationToken",
+    "Household",
+    "HouseholdRole",
     "JobRun",
     "JobStatus",
     "MediaAsset",
@@ -42,9 +69,18 @@ __all__ = [
     "MessageStatus",
     "Persona",
     "PromptTemplate",
+    "PortalSession",
+    "RoleAssignment",
     "SafetyEvent",
     "SafetySeverity",
     "ScheduleRule",
     "ScheduleRuleType",
+    "Subscription",
+    "SubscriptionStatus",
     "User",
+    "VerificationCase",
+    "VerificationCaseStatus",
+    "Account",
+    "BillingEvent",
+    "PhoneOtpChallenge",
 ]

@@ -1,0 +1,43 @@
+{% extends "public/base.html" %}
+{% block content %}
+<section class="marketing-section">
+  <h1 class="page-title">Terms and Conditions</h1>
+  <p class="subtle">Effective date: April 7, 2026</p>
+</section>
+<section class="marketing-section legal-wrap">
+  <article class="card legal-doc">
+    <p>These Terms and Conditions ("Terms") govern access to and use of the Resona website, parent portal, messaging, and voice services. By creating an account or using Resona, you agree to these Terms.</p>
+    <h3>1. Service scope</h3>
+    <p>Resona provides AI companion communication tools and a guardian-facing portal for transcript visibility, safety event review, and account management. Features may change over time.</p>
+    <h3>2. Eligibility and account responsibility</h3>
+    <ul class="clean-list">
+      <li>You must be authorized to create and manage the account and any household profiles you configure.</li>
+      <li>You are responsible for account credentials, security settings, and activities under your account.</li>
+      <li>You agree to provide accurate information and keep it current.</li>
+    </ul>
+    <h3>3. Plans, credits, and billing</h3>
+    <ul class="clean-list">
+      <li>Subscriptions are billed monthly unless otherwise stated at checkout.</li>
+      <li>Plans may include monthly usage credits. Usage beyond included credits is billed based on configured metered pricing.</li>
+      <li>Payment processing is provided by Stripe and subject to Stripe’s terms and policies.</li>
+      <li>Fees are non-refundable except where required by law.</li>
+    </ul>
+    <h3>4. Messaging program disclosures</h3>
+    <p>Message frequency varies by account activity and settings. Message and data rates may apply. For messaging help, reply <strong>HELP</strong>. To unsubscribe from messaging, reply <strong>STOP</strong>.</p>
+    <h3>5. Acceptable use</h3>
+    <p>You may not use Resona for unlawful, abusive, deceptive, or harmful activity, including attempts to bypass safety controls, unauthorized account access, or misuse of communications channels.</p>
+    <h3>6. Safety and limitations</h3>
+    <p>Resona includes safety and policy controls but is not a medical, legal, or emergency service. In urgent situations, contact local emergency services immediately.</p>
+    <h3>7. Intellectual property</h3>
+    <p>Resona and related branding, software, and content are protected by applicable intellectual property laws. Except for rights expressly granted, all rights are reserved.</p>
+    <h3>8. Suspension or termination</h3>
+    <p>We may suspend or terminate access for security risk, policy violations, abuse, non-payment, or legal/compliance requirements.</p>
+    <h3>9. Disclaimers and liability limits</h3>
+    <p>Services are provided "as is" and "as available." To the maximum extent permitted by law, Resona disclaims implied warranties and limits liability for indirect or consequential damages.</p>
+    <h3>10. Changes to terms</h3>
+    <p>We may update these Terms. Continued use after updates constitutes acceptance of the revised Terms.</p>
+    <h3>11. Contact</h3>
+    <p>Questions about these Terms can be sent to <a href="mailto:{{ site.support_email }}">{{ site.support_email }}</a>.</p>
+  </article>
+</section>
+{% endblock %}

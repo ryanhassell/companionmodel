@@ -10,6 +10,7 @@ from app.utils.time import utc_now
 from app.services.voice import VoiceService
 from app.services.config import ConfigService
 from app.services.conversation import ConversationService
+from app.services.conversation_state import ConversationStateService
 from app.services.daily_life import DailyLifeService
 from app.services.image import ImageService
 from app.services.memory import MemoryService
@@ -30,6 +31,7 @@ class ProactiveService:
         image_service: ImageService,
         memory_service: MemoryService,
         voice_service: VoiceService,
+        conversation_state_service: ConversationStateService,
     ) -> None:
         self.config_service = config_service
         self.conversation_service = conversation_service
@@ -40,6 +42,7 @@ class ProactiveService:
         self.image_service = image_service
         self.memory_service = memory_service
         self.voice_service = voice_service
+        self.conversation_state_service = conversation_state_service
 
     async def scan(self, session: AsyncSession) -> int:
         users = (
@@ -90,6 +93,15 @@ class ProactiveService:
                 user=user,
                 persona=persona,
             )
+            state = await self.conversation_state_service.get_or_create(
+                session,
+                user=user,
+                persona=persona,
+                conversation=conversation,
+            )
+            fatigue_threshold = float(config.get("human_likeness", {}).get("proactive_fatigue_threshold", 0.82))
+            if float(state.fatigue_score or 0.0) > fatigue_threshold:
+                continue
             recent_messages = await self.conversation_service.recent_messages(
                 session,
                 conversation_id=conversation.id,
@@ -113,6 +125,7 @@ class ProactiveService:
                 daily_context.get("proactive_photo_scene_hint")
                 or random.choice(persona.favorite_activities or ["a calm moment at home"])
             )
+            archetype = _next_archetype(state.last_archetype)
             context = {
                 "user": user,
                 "persona": persona,
@@ -120,6 +133,8 @@ class ProactiveService:
                 "recent_messages": recent_messages,
                 "memory_hits": memory_hits,
                 "scene_hint": scene_hint,
+                "proactive_archetype": archetype,
+                "conversation_state": state,
                 "config": config,
                 **daily_context,
             }
@@ -162,6 +177,11 @@ class ProactiveService:
                 body=body,
                 is_proactive=True,
                 media_assets=media_assets,
+            )
+            await self.conversation_state_service.mark_proactive_archetype(
+                session,
+                state=state,
+                archetype=archetype,
             )
             sent += 1
         return sent
@@ -228,6 +248,12 @@ class ProactiveService:
             "conversation": conversation,
             "recent_messages": recent_messages,
             "memory_hits": memory_hits,
+            "conversation_state": await self.conversation_state_service.get_or_create(
+                session,
+                user=user,
+                persona=persona,
+                conversation=conversation,
+            ),
             "config": config,
             **daily_context,
         }
@@ -273,3 +299,11 @@ def _normalize_phone_number(value: str) -> str:
     if len(digits) == 10:
         return f"+1{digits}"
     return digits
+
+
+def _next_archetype(last_archetype: str | None) -> str:
+    order = ["check_in", "tiny_update", "memory_callback", "light_prompt"]
+    if not last_archetype or last_archetype not in order:
+        return order[0]
+    index = order.index(last_archetype)
+    return order[(index + 1) % len(order)]

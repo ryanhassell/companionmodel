@@ -31,6 +31,7 @@ from app.providers.elevenlabs import ElevenLabsProvider
 from app.providers.openai import OpenAIProvider
 from app.providers.twilio import TwilioProvider
 from app.services.daily_life import DailyLifeService
+from app.services.conversation_state import ConversationStateService
 from app.services.memory import MemoryService
 from app.services.prompt import PromptService
 from app.utils.files import ensure_parent
@@ -72,6 +73,7 @@ class VoiceService:
         prompt_service: PromptService,
         memory_service: MemoryService,
         daily_life_service: DailyLifeService,
+        conversation_state_service: ConversationStateService,
     ) -> None:
         self.settings = settings
         self.twilio_provider = twilio_provider
@@ -80,6 +82,7 @@ class VoiceService:
         self.prompt_service = prompt_service
         self.memory_service = memory_service
         self.daily_life_service = daily_life_service
+        self.conversation_state_service = conversation_state_service
         self._sessionmaker = get_sessionmaker()
         self._session_tasks: dict[str, asyncio.Task[None]] = {}
 
@@ -1132,6 +1135,7 @@ class VoiceService:
                 threshold=float(self.settings.memory.similarity_threshold),
             )
         recent_messages: list[Message] = []
+        conversation_state = None
         if user is not None and persona is not None:
             stmt = (
                 select(Conversation)
@@ -1152,6 +1156,12 @@ class VoiceService:
                     ).scalars().all()
                 )
                 recent_messages.reverse()
+                conversation_state = await self.conversation_state_service.get_or_create(
+                    session,
+                    user=user,
+                    persona=persona,
+                    conversation=conversation,
+                )
         context = {
             "user": user_context,
             "persona": persona,
@@ -1165,6 +1175,7 @@ class VoiceService:
                 persona=persona,
                 recent_messages=recent_messages,
             ),
+            "conversation_state": conversation_state,
             "memory_hits": memory_hits,
             **daily_context,
         }
@@ -1743,6 +1754,13 @@ class VoiceService:
                 transcript=transcript,
                 summary=summary,
             )
+            await self._sync_state_after_call(
+                session,
+                user=user,
+                persona=persona,
+                call_record=call_record,
+                summary=summary or transcript[:240],
+            )
         await session.flush()
         logger.info(
             "realtime_call_finalized",
@@ -1794,6 +1812,13 @@ class VoiceService:
                 call_record=call_record,
                 transcript=outcome.transcript,
                 summary=summary,
+            )
+            await self._sync_state_after_call(
+                session,
+                user=user,
+                persona=persona,
+                call_record=call_record,
+                summary=summary or outcome.transcript[:240],
             )
         await session.flush()
         logger.info(
@@ -1888,6 +1913,41 @@ class VoiceService:
             recent_messages=[fake_message],
             config={"memory": self.settings.memory.model_dump(mode="json")},
         )
+
+    async def _sync_state_after_call(
+        self,
+        session: AsyncSession,
+        *,
+        user: User,
+        persona: Persona | None,
+        call_record: CallRecord,
+        summary: str,
+    ) -> None:
+        conversation_id = await self._conversation_id_for_call(session, user=user, persona=persona)
+        conversation = await session.get(Conversation, conversation_id)
+        if conversation is None:
+            return
+        state = await self.conversation_state_service.get_or_create(
+            session,
+            user=user,
+            persona=persona,
+            conversation=conversation,
+        )
+        if summary:
+            open_loops = list(state.open_loops or [])
+            open_loops.insert(
+                0,
+                {
+                    "kind": "call_follow_up",
+                    "text": f"Follow up on call: {summary[:160]}",
+                    "status": "open",
+                    "created_at": utc_now().isoformat(),
+                    "source": f"call:{call_record.id}",
+                },
+            )
+            state.open_loops = open_loops[:10]
+            state.continuity_card = f"Recent call summary: {summary[:180]}"
+        await session.flush()
 
     async def _conversation_id_for_call(
         self,

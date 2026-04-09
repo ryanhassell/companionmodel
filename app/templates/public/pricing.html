@@ -1,0 +1,28 @@
+{% extends "public/base.html" %}
+{% block content %}
+<section class="marketing-section">
+  <h1 class="page-title">Pricing</h1>
+  <p class="subtle">Simple plans with included credits and usage-based overage after credits are used.</p>
+</section>
+<section class="marketing-section">
+  <div class="grid two">
+    <article class="card">
+      <h3>Resona Chat</h3>
+      <p class="price">$29<span>/month</span></p>
+      <p><strong>Includes:</strong> $10 in monthly usage credits</p>
+      <p class="subtle">Supportive AI texting, transcript monitoring, safety events, and parent controls.</p>
+    </article>
+    <article class="card">
+      <h3>Resona Voice</h3>
+      <p class="price">$59<span>/month</span></p>
+      <p><strong>Includes:</strong> $30 in monthly usage credits</p>
+      <p class="subtle">Everything in Chat, plus voice calls and voice-to-text continuity.</p>
+    </article>
+  </div>
+</section>
+<section class="marketing-section card">
+  <h3>Overage billing</h3>
+  <p>After included credits are consumed, usage is billed by configured meters (SMS, AI text tokens, voice usage).</p>
+  <p class="subtle">Exact meter rates are shown in checkout and billing statements.</p>
+</section>
+{% endblock %}

@@ -1,0 +1,19 @@
+{% extends "portal/base.html" %}
+{% set active_nav = 'timeline' %}
+{% block content %}
+<section class="page-header"><div><h2>Conversation Timeline</h2><p class="subtle">Full transcript view across SMS and voice-linked messages for your child profile.</p></div></section>
+<article class="card">
+{% if timeline %}
+  <table>
+    <thead><tr><th>Time</th><th>Direction</th><th>Channel</th><th>Body</th></tr></thead>
+    <tbody>
+      {% for msg in timeline %}
+      <tr><td>{{ msg.created_at }}</td><td>{{ msg.direction.value }}</td><td>{{ msg.channel.value }}</td><td>{{ msg.body or '' }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% else %}
+  <p class="subtle">No conversation transcript is available yet for this profile.</p>
+{% endif %}
+</article>
+{% endblock %}

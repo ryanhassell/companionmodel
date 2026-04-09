@@ -1,0 +1,28 @@
+{% extends "portal/base.html" %}
+{% block content %}
+<section class="page-header">
+  <div>
+    <h2>Create Account</h2>
+    <p class="subtle">Signup is now managed by Clerk with organization-based tenancy and verification.</p>
+  </div>
+</section>
+<article class="card" style="max-width: 720px;">
+  {% if error %}<p class="pill" style="background:#fff1ee;color:#8a3428;">{{ error }}</p>{% endif %}
+  {% if legacy_auth_enabled %}
+  <form method="post" class="grid">
+    <label>Full name<input name="display_name" required></label>
+    <label>Email<input type="email" name="email" required></label>
+    <label>Password<input type="password" name="password" minlength="12" required></label>
+    <label>Phone (for OTP)<input name="phone_number" placeholder="+16105551234"></label>
+    <label><input type="checkbox" name="trusted_device" value="1"> Trust this device</label>
+    <label><input type="checkbox" name="accepted_terms" value="1" required> I agree to Terms</label>
+    <label><input type="checkbox" name="accepted_privacy" value="1" required> I agree to Privacy Policy</label>
+    <button type="submit">Create Account</button>
+  </form>
+  {% else %}
+  <p>Use Clerk to create your portal account:</p>
+  <p><a class="button-link" href="{{ clerk_sign_up_url }}">Continue to Clerk Sign Up</a></p>
+  {% endif %}
+  <p class="subtle">Already have an account? <a href="/app/login">Sign in</a></p>
+</article>
+{% endblock %}

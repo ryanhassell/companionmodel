@@ -167,7 +167,7 @@ class MemoryService:
         embedding = (await self.openai_provider.embed_texts([query]))[0]
         dialect_name = session.bind.dialect.name if session.bind is not None else ""
         if dialect_name == "postgresql":
-            return await self._retrieve_postgres(
+            results = await self._retrieve_postgres(
                 session,
                 user_id=user_id,
                 persona_id=persona_id,
@@ -175,7 +175,14 @@ class MemoryService:
                 top_k=top_k,
                 threshold=threshold,
             )
-        return self._retrieve_python(items, embedding, top_k=top_k, threshold=threshold)
+        else:
+            results = self._retrieve_python(items, embedding, top_k=top_k, threshold=threshold)
+        results = self._apply_retrieval_penalties(results)
+        for item in results:
+            item.memory.retrieval_count = int(item.memory.retrieval_count or 0) + 1
+            item.memory.last_accessed_at = utc_now()
+        await session.flush()
+        return results[:top_k]
 
     async def _retrieve_postgres(
         self,
@@ -337,7 +344,12 @@ class MemoryService:
         content = str(raw_item.get("content", "")).strip()
         if not content:
             return None
-        metadata_json = {"source": "extraction"}
+        metadata_json = {
+            "source": "extraction",
+            "confidence": float(raw_item.get("confidence", 0.65)),
+            "temporal_scope": str(raw_item.get("temporal_scope", "durable")),
+            "supersedes_id": str(raw_item.get("supersedes_id", "")).strip() or None,
+        }
         entity_name = str(raw_item.get("entity_name", "")).strip()
         entity_kind = str(raw_item.get("entity_kind", "")).strip()
         should_profile = bool(raw_item.get("should_profile")) and bool(entity_name)
@@ -374,6 +386,14 @@ class MemoryService:
             metadata_json=metadata_json,
         )
         session.add(memory)
+        await session.flush()
+        await self._apply_supersession_if_needed(
+            session,
+            user=user,
+            memory=memory,
+            raw_item=raw_item,
+            metadata_json=metadata_json,
+        )
         return memory
 
     async def _merge_entity_memory(
@@ -499,6 +519,77 @@ class MemoryService:
             "tags": raw_item.get("tags", []),
             "importance_score": raw_item.get("importance_score", 0.5),
         }
+
+    async def _apply_supersession_if_needed(
+        self,
+        session: AsyncSession,
+        *,
+        user: User,
+        memory: MemoryItem,
+        raw_item: dict[str, Any],
+        metadata_json: dict[str, Any],
+    ) -> None:
+        explicit = metadata_json.get("supersedes_id")
+        target_id = explicit or raw_item.get("supersedes_id")
+        if target_id:
+            existing = await session.get(MemoryItem, target_id)
+            if existing and existing.user_id == user.id:
+                existing.disabled = True
+                current_meta = dict(existing.metadata_json or {})
+                current_meta["superseded_by_id"] = str(memory.id)
+                existing.metadata_json = current_meta
+            return
+        if memory.memory_type != MemoryType.preference:
+            return
+        stmt = (
+            select(MemoryItem)
+            .where(
+                MemoryItem.user_id == user.id,
+                MemoryItem.disabled.is_(False),
+                MemoryItem.memory_type == MemoryType.preference,
+            )
+            .order_by(desc(MemoryItem.created_at))
+            .limit(20)
+        )
+        candidates = list((await session.execute(stmt)).scalars().all())
+        lowered_new = memory.content.lower()
+        contradiction_tokens = ("not anymore", "no longer", "used to", "instead now", "stopped")
+        if not any(token in lowered_new for token in contradiction_tokens):
+            return
+        for existing in candidates:
+            if existing.id == memory.id:
+                continue
+            if any(token in existing.content.lower() for token in ("like", "love", "prefer", "favorite")):
+                existing.disabled = True
+                current_meta = dict(existing.metadata_json or {})
+                current_meta["superseded_by_id"] = str(memory.id)
+                existing.metadata_json = current_meta
+                break
+
+    def _apply_retrieval_penalties(self, results: list[RetrievedMemory]) -> list[RetrievedMemory]:
+        adjusted: list[RetrievedMemory] = []
+        now = utc_now()
+        for item in results:
+            score = float(item.score)
+            if item.memory.last_accessed_at:
+                minutes = (now - item.memory.last_accessed_at).total_seconds() / 60.0
+                if minutes < 45:
+                    score -= 0.18
+                elif minutes < 120:
+                    score -= 0.08
+            score -= min(float(item.memory.retrieval_count or 0) * 0.005, 0.12)
+            adjusted.append(
+                RetrievedMemory(
+                    memory=item.memory,
+                    score=score,
+                    explanation=f"{item.explanation}|anti_loop",
+                )
+            )
+        adjusted.sort(
+            key=lambda item: (item.memory.pinned, item.score, item.memory.importance_score),
+            reverse=True,
+        )
+        return adjusted
 
 
 def cosine_similarity(left: list[float], right: list[float]) -> float:

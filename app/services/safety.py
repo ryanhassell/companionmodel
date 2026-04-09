@@ -90,22 +90,7 @@ class SafetyService:
         config: dict[str, Any],
         source_message: Message | None = None,
     ) -> SafetyResult:
-        normalized = normalize_text(text)
-        safety = config["safety"]
-        result = SafetyResult()
-        blocked_patterns = [normalize_text(item) for item in safety.get("blocked_patterns", [])]
-        prohibited_topics = [normalize_text(item) for item in safety.get("prohibited_topics", [])]
-
-        for pattern in blocked_patterns:
-            if pattern and pattern in normalized:
-                result.blocked = True
-                result.severity = SafetySeverity.high
-                result.reasons.append(f"blocked_pattern:{pattern}")
-        for topic in prohibited_topics:
-            if topic and topic in normalized:
-                result.blocked = True
-                result.severity = SafetySeverity.high
-                result.reasons.append(f"prohibited_topic:{topic}")
+        result = self._evaluate_outbound_policy(text=text, config=config)
 
         if result.blocked:
             await self._record_event(
@@ -120,6 +105,46 @@ class SafetyService:
                 details={"text": text, "reasons": result.reasons},
             )
             result.safe_reply = "I want to keep our chats warm and safe, so I’m going to say that a different way."
+        return result
+
+    def check_outbound(self, *, text: str, config: dict[str, Any]) -> SafetyResult:
+        return self._evaluate_outbound_policy(text=text, config=config)
+
+    def _evaluate_outbound_policy(self, *, text: str, config: dict[str, Any]) -> SafetyResult:
+        normalized = normalize_text(text)
+        safety = config["safety"]
+        result = SafetyResult()
+        blocked_patterns = [normalize_text(item) for item in safety.get("blocked_patterns", [])]
+        prohibited_topics = [normalize_text(item) for item in safety.get("prohibited_topics", [])]
+        dependency_patterns = [
+            "you are all i need",
+            "dont leave me",
+            "don't leave me",
+            "only need me",
+            "i need you more than anyone",
+            "youre mine",
+            "you're mine",
+        ]
+
+        for pattern in blocked_patterns:
+            if pattern and pattern in normalized:
+                result.blocked = True
+                result.severity = SafetySeverity.high
+                result.reasons.append(f"blocked_pattern:{pattern}")
+        for topic in prohibited_topics:
+            if topic and topic in normalized:
+                result.blocked = True
+                result.severity = SafetySeverity.high
+                result.reasons.append(f"prohibited_topic:{topic}")
+        for pattern in dependency_patterns:
+            if pattern in normalized:
+                result.blocked = True
+                result.severity = SafetySeverity.high
+                result.reasons.append(f"dependency_pattern:{pattern}")
+        if "if you leave" in normalized and "i will" in normalized:
+            result.blocked = True
+            result.severity = SafetySeverity.high
+            result.reasons.append("dependency_escalation:conditional_attachment")
         return result
 
     async def _record_event(

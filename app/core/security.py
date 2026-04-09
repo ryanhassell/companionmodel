@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import hashlib
 import secrets
 import time
 from dataclasses import dataclass
@@ -11,7 +12,7 @@ from passlib.context import CryptContext
 
 from app.core.settings import RuntimeSettings, get_settings
 
-pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
+pwd_context = CryptContext(schemes=["argon2", "pbkdf2_sha256"], deprecated="auto")
 
 
 @dataclass(slots=True)
@@ -57,6 +58,16 @@ def decode_session_token(token: str, settings: RuntimeSettings | None = None) ->
 
 def generate_csrf_token() -> str:
     return secrets.token_urlsafe(32)
+
+
+def generate_session_secret() -> str:
+    return secrets.token_urlsafe(48)
+
+
+def stable_token_hash(token: str, settings: RuntimeSettings | None = None) -> str:
+    actual = settings or get_settings()
+    payload = f"{actual.app.secret_key}:{token}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def validate_csrf(expected: str, provided: str | None) -> bool:

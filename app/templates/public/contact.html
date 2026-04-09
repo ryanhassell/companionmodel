@@ -1,0 +1,14 @@
+{% extends "public/base.html" %}
+{% block content %}
+<section class="marketing-section">
+  <h1 class="page-title">Contact</h1>
+  <p class="subtle">Questions about onboarding, safety controls, or billing? Reach us anytime.</p>
+</section>
+<section class="marketing-section contact-section">
+  <div class="card">
+    <p><strong>Support email:</strong> <a href="mailto:{{ site.support_email }}">{{ site.support_email }}</a></p>
+    <p><strong>Domain:</strong> {{ site.canonical_domain }}</p>
+    <p class="subtle">For urgent safety concerns, use your local emergency resources immediately.</p>
+  </div>
+</section>
+{% endblock %}

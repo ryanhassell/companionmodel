@@ -1,0 +1,15 @@
+{% extends "portal/base.html" %}
+{% set active_nav = 'team' %}
+{% block content %}
+<section class="page-header"><div><h2>Team and Co-Guardians</h2><p class="subtle">All customer users currently scoped to this account.</p></div></section>
+<article class="card">
+  <table>
+    <thead><tr><th>Created</th><th>Email</th><th>Name</th><th>Relationship</th><th>Verification</th><th>Active</th></tr></thead>
+    <tbody>
+      {% for member in members %}
+      <tr><td>{{ member.created_at }}</td><td>{{ member.email }}</td><td>{{ member.display_name or '-' }}</td><td>{{ member.relationship_label or '-' }}</td><td>{{ member.verification_level }}</td><td>{{ 'yes' if member.is_active else 'no' }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</article>
+{% endblock %}

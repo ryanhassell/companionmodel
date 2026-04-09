@@ -1,0 +1,52 @@
+{% extends "portal/base.html" %}
+{% set active_nav = 'verify' %}
+{% block content %}
+<section class="page-header">
+  <div>
+    <h2>Verification</h2>
+    <p class="subtle">Identity verification and MFA are enforced by Clerk.</p>
+  </div>
+</section>
+<div class="grid two">
+  <article class="card">
+    <h3>Current Status</h3>
+    <p><strong>Level:</strong> {{ customer_user.verification_level }}</p>
+    {% if legacy_auth_enabled %}
+    <p><strong>Case:</strong> {{ verification_case.status.value if verification_case else 'pending' }}</p>
+    <p><strong>Email verified:</strong> {{ 'yes' if customer_user.email_verified_at else 'no' }}</p>
+    <p><strong>Phone verified:</strong> {{ 'yes' if customer_user.phone_verified_at else 'no' }}</p>
+    <p class="subtle">Check your email for the verification token and your phone for OTP code.</p>
+    {% else %}
+    <p><strong>Email:</strong> {{ customer_user.email }}</p>
+    <p><strong>MFA verified this session:</strong> {{ 'yes' if mfa_verified else 'no' }}</p>
+    <p class="subtle">Use Clerk account settings to manage email, phone, and MFA methods.</p>
+    {% endif %}
+  </article>
+  <article class="card">
+    {% if legacy_auth_enabled %}
+    <h3>Email Verification</h3>
+    <form method="post" action="/app/verify/email" class="grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Email token<input name="email_token" required></label>
+      <button type="submit">Verify Email</button>
+    </form>
+    <hr>
+    <h3>Phone OTP</h3>
+    <form method="post" action="/app/verify/phone/send" class="grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="secondary">Send New OTP</button>
+    </form>
+    <form method="post" action="/app/verify/phone/check" class="grid" style="margin-top:10px;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>OTP code<input name="otp_code" required></label>
+      <button type="submit">Verify Phone</button>
+    </form>
+    <p class="subtle">After verification, continue to <a href="/app/onboarding">onboarding</a>.</p>
+    {% else %}
+    <h3>Next Steps</h3>
+    <p class="subtle">If this page says MFA is not verified, complete sign-in again with MFA in Clerk.</p>
+    <p class="subtle">Then continue to <a href="/app/onboarding">onboarding</a>.</p>
+    {% endif %}
+  </article>
+</div>
+{% endblock %}

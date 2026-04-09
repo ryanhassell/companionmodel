@@ -1,0 +1,211 @@
+{% extends "public/base.html" %}
+{% block content %}
+<section class="hero">
+  <div class="hero-copy" data-animate>
+    <p class="eyebrow">Built for families who need visibility without chaos</p>
+    <h1>Resona keeps AI conversations supportive, supervised, and easy to understand.</h1>
+    <p class="subtle">Your child gets a consistent companion experience across text and voice. You get a parent portal with full transcript review, safety event context, and clear billing controls.</p>
+    <div class="hero-meta">
+      <div class="meta-item" data-animate>
+        <p class="meta-label">Monitoring</p>
+        <p class="meta-value">Full Transcript + Event Feed</p>
+      </div>
+      <div class="meta-item" data-animate>
+        <p class="meta-label">Safety</p>
+        <p class="meta-value">Boundary + Distress Intervention</p>
+      </div>
+      <div class="meta-item" data-animate>
+        <p class="meta-label">Billing</p>
+        <p class="meta-value">Included Credits + Metered Overage</p>
+      </div>
+    </div>
+    <div class="hero-actions">
+      <a class="button" href="/app/signup">Start Parent Setup</a>
+      <a class="button ghost" href="/app/login">Sign In</a>
+    </div>
+  </div>
+  <div class="hero-stack" data-animate>
+    <div class="hero-art resona-console">
+      <div class="console-head">
+        <p class="meta-label">Live Parent View</p>
+        <span class="example-chip">Example of parent timeline</span>
+        <span class="pill">Safe Mode Active</span>
+      </div>
+      <div class="console-lines">
+        <div class="line inbound"><span>12:03 PM</span><p data-typed-variants='["child message · \"i had a rough morning at school.\"","child message · \"today felt really overwhelming.\"","child message · \"i felt left out at lunch.\""]'>child message · “i had a rough morning at school.”</p></div>
+        <div class="line outbound"><span>12:03 PM</span><p data-typed-variants='["resona reply · \"want to talk through what happened first?\"","resona reply · \"do you want a short check-in or a full talk?\"","resona reply · \"i can stay with you while we sort this out.\""]'>resona reply · “want to talk through what happened first?”</p></div>
+        <div class="line event"><span>12:04 PM</span><p data-typed-variants='["safety event · low sentiment dip detected","safety event · reassurance path activated","safety event · stress pattern flagged for review"]'>safety event · low sentiment dip detected</p></div>
+        <div class="line outbound"><span>12:04 PM</span><p data-typed-variants='["resona reply · grounding response pattern applied","resona reply · reflective listening prompt sent","resona reply · calming follow-up suggested"]'>resona reply · grounding response pattern applied</p></div>
+      </div>
+      <div class="console-foot">
+        <div>
+          <p class="meta-label">Memory in Use</p>
+          <p class="meta-value" data-typed-variants='["\"Prefers short check-ins after school.\"","\"Feels safer with slower message pacing.\"","\"Likes to recap the day before dinner.\""]'>“Prefers short check-ins after school.”</p>
+        </div>
+        <div>
+          <p class="meta-label">Usage</p>
+          <p class="meta-value" data-typed-variants='["$6.42 used / $10 included","$7.18 used / $10 included","$5.91 used / $10 included"]'>$6.42 used / $10 included</p>
+        </div>
+      </div>
+    </div>
+    <div class="hero-note">
+      <p><strong>What parents see:</strong></p>
+      <ul class="clean-list">
+        <li>Full conversation timeline with timestamps and channel context.</li>
+        <li>Safety event severity, reason codes, and intervention outcomes.</li>
+        <li>Response path details, including when boundary rewrites are applied.</li>
+        <li>Memory highlights that influenced each reply and continuity behavior.</li>
+        <li>Usage progress against included credits, plus overage status.</li>
+        <li>Cross-channel continuity notes linking voice and text sessions.</li>
+      </ul>
+      <p class="subtle example-note">Example of sample dashboard data shown for demonstration.</p>
+    </div>
+  </div>
+</section>
+
+<section class="marketing-section">
+  <article class="card story-card" data-animate>
+    <div class="section-head">
+      <h2>Our Story</h2>
+      <p class="subtle">Founded by Ryan Hassell</p>
+    </div>
+    <p>
+      Resona was founded to address a gap in consistent social support for individuals with complex developmental needs.
+      My sister has Koolen De-Vries Syndrome, and our family experienced firsthand how difficult it can be to find
+      reliable, meaningful connection in everyday environments.
+    </p>
+    <p>
+      The platform is designed to provide a warm, stable companion experience while preserving clear parent visibility,
+      strong safety guardrails, and accountable oversight.
+    </p>
+    <p class="subtle">
+      Support the Koolen De-Vries Syndrome Foundation:
+      <a href="https://kdvsfoundation.org/donate/" target="_blank" rel="noopener noreferrer">kdvsfoundation.org/donate/</a>
+    </p>
+  </article>
+</section>
+
+<section class="marketing-section">
+  <div class="section-head">
+    <h2>Features</h2>
+    <p class="subtle">Core tools parents use to monitor conversations, review safety context, and manage continuity.</p>
+  </div>
+  <div class="feature-grid">
+    {% for feature in features %}
+    <article class="feature-card" data-animate>
+      <div class="icon-wrap">{% include "public/partials/icon_" ~ feature.icon ~ ".html" ignore missing %}</div>
+      <h3>{{ feature.title }}</h3>
+      <p class="subtle">{{ feature.summary }}</p>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="marketing-section">
+  <div class="section-head">
+    <h2>How It Works</h2>
+    <p class="subtle">A clear operating flow from conversation oversight to intervention visibility.</p>
+  </div>
+</section>
+
+<section class="marketing-section split-panel">
+  <article class="card panel" data-animate>
+    <p class="eyebrow">Conversation Oversight</p>
+    <h3>Review what was said, not just a summary score.</h3>
+    <ul class="clean-list">
+      <li>See inbound/outbound transcript history with timestamps.</li>
+      <li>Inspect memory highlights used to generate replies.</li>
+      <li>Track continuity between SMS and voice-linked sessions.</li>
+      <li>Manage co-guardian visibility for shared supervision.</li>
+    </ul>
+  </article>
+  <article class="card panel" data-animate>
+    <p class="eyebrow">Safety Controls</p>
+    <h3>Intervention behavior is visible and auditable.</h3>
+    <ul class="clean-list">
+      <li>View severity and detector reason codes for each event.</li>
+      <li>See action taken when boundaries or risk patterns trigger.</li>
+      <li>Keep clear records of safety interventions over time.</li>
+      <li>Use settings to keep conversation style age-appropriate and stable.</li>
+    </ul>
+  </article>
+</section>
+
+<section class="marketing-section">
+  <div class="section-head">
+    <h2>Pricing</h2>
+    <p class="subtle">Simple monthly plans with included credits, then measured usage after credits are consumed.</p>
+  </div>
+  <div class="grid two">
+    <article class="card" data-animate>
+      <h3>Resona Chat</h3>
+      <p class="price">$29<span>/month</span></p>
+      <p><strong>Includes:</strong> $10 monthly usage credits</p>
+      <p class="subtle">Text-focused companion experience with parent monitoring and safety feed.</p>
+      <a href="/pricing">See plan details</a>
+    </article>
+    <article class="card" data-animate>
+      <h3>Resona Voice</h3>
+      <p class="price">$59<span>/month</span></p>
+      <p><strong>Includes:</strong> $30 monthly usage credits</p>
+      <p class="subtle">Everything in Chat plus voice conversations and text/voice continuity context.</p>
+      <a href="/pricing">See plan details</a>
+    </article>
+  </div>
+</section>
+
+<section class="marketing-section">
+  <div class="section-head">
+    <h2>Safety and Visibility Examples</h2>
+    <p class="subtle">Example of how timelines, interventions, and usage context are surfaced.</p>
+  </div>
+  <div class="feature-grid">
+    <article class="graphic-card" data-animate>
+      <h3>Conversation Continuity Timeline</h3>
+      <p class="subtle example-note">Example of timeline events.</p>
+      <div class="mini-timeline">
+        <div class="mini-node"><span>8:10</span><p data-typed-variants='["Morning check-in","Breakfast mood check","Early day grounding note"]'>Morning check-in</p></div>
+        <div class="mini-node"><span>12:03</span><p data-typed-variants='["School stress thread","Lunchroom social check-in","Midday confidence dip"]'>School stress thread</p></div>
+        <div class="mini-node alert"><span>12:04</span><p data-typed-variants='["Low mood signal + gentle intervention","Reassurance prompt + support response","Stress detector alert + follow-up"]'>Low mood signal + gentle intervention</p></div>
+        <div class="mini-node"><span>6:21</span><p data-typed-variants='["Evening recap in voice","After-dinner reflection call","Voice summary + next-step plan"]'>Evening recap in voice</p></div>
+      </div>
+    </article>
+    <article class="graphic-card" data-animate>
+      <h3>Safety Escalation Flow</h3>
+      <p class="subtle example-note">Example of safety flow.</p>
+      <div class="flow-graph">
+        <div class="flow-step" data-typed-variants='["Message In","User Message","Incoming Turn"]'>Message In</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step" data-typed-variants='["Risk Classifier","Safety Detector","Policy Check"]'>Risk Classifier</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step" data-typed-variants='["Policy Rewrite","Safer Reply Pass","Boundary Rewrite"]'>Policy Rewrite</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step" data-typed-variants='["Parent Event Log","Guardian Alert Feed","Safety Timeline Entry"]'>Parent Event Log</div>
+      </div>
+    </article>
+    <article class="graphic-card" data-animate>
+      <h3>Usage + Credit Metering</h3>
+      <p class="subtle example-note">Example of usage values.</p>
+      <div class="meter-block">
+        <p class="meta-label">Plan Credit</p>
+        <div class="meter-track"><span style="width:64%"></span></div>
+        <p class="subtle" data-typed-variants='["$6.42 of $10 used this cycle","$7.35 of $10 used this cycle","$5.88 of $10 used this cycle"]'>$6.42 of $10 used this cycle</p>
+      </div>
+      <div class="meter-block">
+        <p class="meta-label">Voice Credit</p>
+        <div class="meter-track"><span style="width:28%"></span></div>
+        <p class="subtle" data-typed-variants='["$8.37 of $30 used this cycle","$10.22 of $30 used this cycle","$6.94 of $30 used this cycle"]'>$8.37 of $30 used this cycle</p>
+      </div>
+    </article>
+  </div>
+</section>
+
+<section class="marketing-section card cta-band" data-animate>
+  <h2>Start setup in minutes</h2>
+  <p class="subtle">Create your household account, add your child profile, and activate transcript + safety monitoring from day one.</p>
+  <div class="hero-actions">
+    <a class="button" href="/app/signup">Start Parent Setup</a>
+    <a class="button ghost" href="/features">Explore Features</a>
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,26 @@
+{% extends "portal/base.html" %}
+{% set active_nav = 'billing' %}
+{% block content %}
+<section class="page-header">
+  <div>
+    <h2>Billing</h2>
+    <p class="subtle">Plan status, included monthly credits, and overage billing details.</p>
+  </div>
+</section>
+<article class="card" style="max-width: 720px;">
+  <p><strong>Account:</strong> {{ account.name if account else '-' }}</p>
+  <p><strong>Subscription status:</strong> {{ subscription.status.value if subscription else 'incomplete' }}</p>
+  <p><strong>Included credits:</strong> ${{ usage_summary.included_usd }} / month</p>
+  <p><strong>Estimated used:</strong> ${{ '%.2f'|format(usage_summary.used_usd) }}</p>
+  <p><strong>Estimated remaining:</strong> ${{ '%.2f'|format(usage_summary.remaining_usd) }}</p>
+  <p class="subtle">{{ usage_summary.overage_note }}</p>
+  {% if stripe_enabled %}
+  <form method="post" action="/app/billing/checkout" class="grid">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">Start or Manage Subscription</button>
+  </form>
+  {% else %}
+  <p class="subtle">Stripe is not configured yet. Set `STRIPE_*` env values to enable checkout.</p>
+  {% endif %}
+</article>
+{% endblock %}

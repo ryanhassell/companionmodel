@@ -4,6 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ title or "Companion Pi Admin" }}</title>
+    <link rel="icon" type="image/svg+xml" href="/static/images/resona-mark.svg">
+    <link rel="apple-touch-icon" href="/static/images/resona-mark.svg">
     <link rel="stylesheet" href="/static/style.css">
     {% block head_extra %}{% endblock %}
   </head>
@@ -28,6 +30,8 @@
           <a href="/admin/test-tools" class="{{ 'active' if active_nav == 'test-tools' else '' }}">Test Tools</a>
           <a href="/admin/simulator" class="{{ 'active' if active_nav == 'simulator' else '' }}">Simulator</a>
           <a href="/admin/calls" class="{{ 'active' if active_nav == 'calls' else '' }}">Calls</a>
+          <a href="/admin/human-likeness" class="{{ 'active' if active_nav == 'human-likeness' else '' }}">Human-Likeness</a>
+          <a href="/admin/verification-cases" class="{{ 'active' if active_nav == 'verification-cases' else '' }}">Verification</a>
           <a href="/admin/health" class="{{ 'active' if active_nav == 'health' else '' }}">Health</a>
           <a href="/admin/settings" class="{{ 'active' if active_nav == 'settings' else '' }}">Settings</a>
           <a href="/admin/logs" class="{{ 'active' if active_nav == 'logs' else '' }}">Logs</a>

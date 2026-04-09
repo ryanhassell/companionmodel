@@ -1,0 +1,19 @@
+{% extends "portal/base.html" %}
+{% set active_nav = 'memory' %}
+{% block content %}
+<section class="page-header"><div><h2>Memory Highlights</h2><p class="subtle">Structured memories that influence how Resona responds over time.</p></div></section>
+<article class="card">
+{% if memory_items %}
+  <table>
+    <thead><tr><th>Updated</th><th>Type</th><th>Content</th><th>Importance</th></tr></thead>
+    <tbody>
+      {% for item in memory_items %}
+      <tr><td>{{ item.updated_at }}</td><td>{{ item.memory_type.value }}</td><td>{{ item.content }}</td><td>{{ '%.2f'|format(item.importance_score) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% else %}
+  <p class="subtle">No memory highlights are currently linked to this profile.</p>
+{% endif %}
+</article>
+{% endblock %}

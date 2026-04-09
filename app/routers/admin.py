@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
+from io import StringIO
+import csv
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from sqlalchemy import delete, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,9 +17,20 @@ from app.db.session import get_db_session
 from app.models.admin import JobRun
 from app.models.communication import CallRecord, Conversation, DeliveryAttempt, MediaAsset, Message, SafetyEvent
 from app.models.configuration import AppSetting, PromptTemplate, ScheduleRule
-from app.models.enums import AppSettingScope, Channel, DeliveryStatus, Direction, MemoryType, MessageStatus, ScheduleRuleType
+from app.models.enums import (
+    AppSettingScope,
+    Channel,
+    DeliveryStatus,
+    Direction,
+    JobStatus,
+    MemoryType,
+    MessageStatus,
+    ScheduleRuleType,
+    VerificationCaseStatus,
+)
 from app.models.memory import MemoryItem
 from app.models.persona import Persona
+from app.models.portal import CustomerUser, VerificationCase
 from app.models.user import User
 from app.utils.text import make_idempotency_key
 from app.utils.time import parse_clock
@@ -888,6 +901,279 @@ async def settings_page(
         "admin/settings.html",
         _context_dict(request, context, active_nav="settings", settings_rows=settings_rows, users=users, personas=personas, scopes=list(AppSettingScope)),
     )
+
+
+@router.get("/human-likeness")
+async def human_likeness_page(
+    request: Request,
+    user_id: str | None = None,
+    session: AsyncSession = Depends(get_db_session),
+    context: AdminRequestContext | None = Depends(get_optional_admin_context),
+):
+    if context is None:
+        return _redirect_login()
+    users = list((await session.execute(select(User).order_by(User.phone_number))).scalars().all())
+    selected_user = await session.get(User, user_id) if user_id else (users[0] if users else None)
+    selected_persona = await context.container.conversation_service.get_active_persona(session, selected_user) if selected_user else None
+    scoreboard: list[dict[str, object]] = []
+    for user in users[:80]:
+        metrics = await context.container.human_likeness_service.scoreboard_metrics(
+            session,
+            user=user,
+            lookback=120,
+        )
+        scoreboard.append(
+            {
+                "user": user,
+                "metrics": metrics,
+            }
+        )
+    scoreboard.sort(key=lambda item: item["metrics"]["score"], reverse=True)
+
+    latest_replays = list(
+        (
+            await session.execute(
+                select(JobRun)
+                .where(JobRun.job_name == "human_likeness_replay")
+                .order_by(desc(JobRun.created_at))
+                .limit(20)
+            )
+        ).scalars().all()
+    )
+    current_replay: dict[str, object] | None = None
+    if latest_replays and selected_user:
+        for run in latest_replays:
+            if str((run.details_json or {}).get("user_id")) == str(selected_user.id):
+                current_replay = run.details_json or {}
+                break
+    trend_7d: list[dict[str, object]] = []
+    trend_30d: list[dict[str, object]] = []
+    if selected_user is not None:
+        trend_7d = await context.container.human_likeness_service.daily_score_series(
+            session,
+            user=selected_user,
+            days=7,
+        )
+        trend_30d = await context.container.human_likeness_service.daily_score_series(
+            session,
+            user=selected_user,
+            days=30,
+        )
+    return templates.TemplateResponse(
+        "admin/human_likeness.html",
+        _context_dict(
+            request,
+            context,
+            active_nav="human-likeness",
+            users=users,
+            selected_user=selected_user,
+            selected_persona=selected_persona,
+            scoreboard=scoreboard,
+            latest_replays=latest_replays,
+            current_replay=current_replay,
+            trend_7d=trend_7d,
+            trend_30d=trend_30d,
+        ),
+    )
+
+
+@router.post("/human-likeness/replay")
+async def human_likeness_replay_submit(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    context: AdminRequestContext | None = Depends(get_optional_admin_context),
+):
+    if context is None:
+        return _redirect_login()
+    await verify_csrf_or_403(request, context)
+    form = await request.form()
+    user_id = str(form.get("user_id") or "").strip()
+    if not user_id:
+        return RedirectResponse(url="/admin/human-likeness", status_code=303)
+    max_turns = int(str(form.get("max_turns") or "20") or "20")
+    user = await session.get(User, user_id)
+    if user is None:
+        return RedirectResponse(url="/admin/human-likeness", status_code=303)
+    persona = await context.container.conversation_service.get_active_persona(session, user)
+    config = await context.container.config_service.get_effective_config(session, user=user, persona=persona)
+    replay = await context.container.human_likeness_service.run_ab_replay(
+        session,
+        user=user,
+        persona=persona,
+        config=config,
+        max_turns=max_turns,
+    )
+    run = JobRun(
+        job_name="human_likeness_replay",
+        status=JobStatus.success,
+        started_at=utc_now(),
+        finished_at=utc_now(),
+        details_json={
+            "user_id": str(user.id),
+            "persona_id": str(persona.id) if persona else None,
+            "max_turns": max_turns,
+            "summary": replay.get("summary", {}),
+            "turns": replay.get("turns", 0),
+            "replay": replay.get("replay", []),
+        },
+    )
+    session.add(run)
+    await context.container.audit_service.record(
+        session,
+        admin_user_id=str(context.admin_user.id),
+        action="run_human_likeness_replay",
+        entity_type="user",
+        entity_id=str(user.id),
+        summary=f"Ran human likeness replay for {user.phone_number}",
+    )
+    await session.commit()
+    return RedirectResponse(url=f"/admin/human-likeness?user_id={user.id}", status_code=303)
+
+
+@router.get("/human-likeness/export")
+async def human_likeness_export(
+    user_id: str | None = None,
+    session: AsyncSession = Depends(get_db_session),
+    context: AdminRequestContext | None = Depends(get_optional_admin_context),
+) -> Response:
+    if context is None:
+        return _redirect_login()
+    query = (
+        select(JobRun)
+        .where(JobRun.job_name == "human_likeness_replay")
+        .order_by(desc(JobRun.created_at))
+        .limit(200)
+    )
+    runs = list((await session.execute(query)).scalars().all())
+    if user_id:
+        runs = [run for run in runs if str((run.details_json or {}).get("user_id")) == str(user_id)]
+
+    buffer = StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(
+        [
+            "run_id",
+            "run_created_at",
+            "user_id",
+            "persona_id",
+            "ab_win_rate",
+            "inbound",
+            "baseline_a",
+            "candidate_b",
+            "actual",
+        ]
+    )
+    for run in runs:
+        details = run.details_json or {}
+        summary = details.get("summary") or {}
+        replay_rows = details.get("replay") or []
+        if not isinstance(replay_rows, list):
+            replay_rows = []
+        for row in replay_rows:
+            if not isinstance(row, dict):
+                continue
+            writer.writerow(
+                [
+                    str(run.id),
+                    str(run.created_at),
+                    str(details.get("user_id") or ""),
+                    str(details.get("persona_id") or ""),
+                    str(summary.get("ab_win_rate") or ""),
+                    str(row.get("inbound") or ""),
+                    str(row.get("baseline") or ""),
+                    str(row.get("candidate") or ""),
+                    str(row.get("actual") or ""),
+                ]
+            )
+    csv_body = buffer.getvalue()
+    filename = "human_likeness_replay.csv" if not user_id else f"human_likeness_replay_{user_id}.csv"
+    return Response(
+        content=csv_body,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/verification-cases")
+async def verification_cases_page(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    context: AdminRequestContext | None = Depends(get_optional_admin_context),
+):
+    if context is None:
+        return _redirect_login()
+    cases = list(
+        (
+            await session.execute(
+                select(VerificationCase)
+                .order_by(desc(VerificationCase.created_at))
+                .limit(200)
+            )
+        ).scalars().all()
+    )
+    users_by_id = {
+        str(user.id): user
+        for user in (
+            await session.execute(
+                select(CustomerUser).where(CustomerUser.id.in_([item.customer_user_id for item in cases]))
+            )
+        ).scalars().all()
+    } if cases else {}
+    queue_counts = await context.container.customer_auth_service.verification_queue_counts(session)
+    return templates.TemplateResponse(
+        "admin/verification_cases.html",
+        _context_dict(
+            request,
+            context,
+            active_nav="verification-cases",
+            cases=cases,
+            users_by_id=users_by_id,
+            queue_counts=queue_counts,
+            status_options=[item.value for item in VerificationCaseStatus],
+        ),
+    )
+
+
+@router.post("/verification-cases/{case_id}")
+async def verification_case_review_submit(
+    case_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    context: AdminRequestContext | None = Depends(get_optional_admin_context),
+):
+    if context is None:
+        return _redirect_login()
+    await verify_csrf_or_403(request, context)
+    form = await request.form()
+    case = await session.get(VerificationCase, case_id)
+    if case is None:
+        return RedirectResponse(url="/admin/verification-cases", status_code=303)
+    status_value = str(form.get("status") or VerificationCaseStatus.pending.value)
+    if status_value not in [item.value for item in VerificationCaseStatus]:
+        status_value = VerificationCaseStatus.pending.value
+    case.status = VerificationCaseStatus(status_value)
+    case.notes = str(form.get("notes") or "").strip() or None
+    case.reviewed_by_admin_id = context.admin_user.id
+    case.reviewed_at = utc_now()
+    user = await session.get(CustomerUser, case.customer_user_id)
+    if user is not None:
+        if case.status == VerificationCaseStatus.approved:
+            user.verification_level = "verified"
+        elif case.status == VerificationCaseStatus.limited:
+            user.verification_level = "limited"
+        elif case.status == VerificationCaseStatus.rejected:
+            user.verification_level = "rejected"
+    await context.container.audit_service.record(
+        session,
+        admin_user_id=str(context.admin_user.id),
+        action="review_verification_case",
+        entity_type="verification_case",
+        entity_id=str(case.id),
+        summary=f"Set verification case {case.id} to {case.status.value}",
+        details_json={"status": case.status.value},
+    )
+    await session.commit()
+    return RedirectResponse(url="/admin/verification-cases", status_code=303)
 
 
 @router.post("/settings")

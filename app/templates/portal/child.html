@@ -1,0 +1,17 @@
+{% extends "portal/base.html" %}
+{% set active_nav = 'child' %}
+{% block content %}
+<section class="page-header"><div><h2>Child Profile</h2><p class="subtle">Boundaries, routines, and profile data for the selected household.</p></div></section>
+<article class="card">
+{% if child %}
+  <p><strong>Name:</strong> {{ child.display_name or child.first_name }}</p>
+  <p><strong>Birth year:</strong> {{ child.birth_year or '-' }}</p>
+  <p><strong>Linked companion user:</strong> {{ child.companion_user_id or '-' }}</p>
+  <p><strong>Preferences:</strong></p><pre>{{ child.preferences_json }}</pre>
+  <p><strong>Boundaries:</strong></p><pre>{{ child.boundaries_json }}</pre>
+  <p><strong>Routines:</strong></p><pre>{{ child.routines_json }}</pre>
+{% else %}
+  <p class="subtle">No child profile exists yet. Complete onboarding first.</p>
+{% endif %}
+</article>
+{% endblock %}

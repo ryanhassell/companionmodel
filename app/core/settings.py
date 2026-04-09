@@ -183,12 +183,122 @@ class AdminConfig(BaseModel):
     secure_cookies: bool = False
     bootstrap_username: str | None = None
     bootstrap_password: str | None = None
+    internal_only: bool = True
+    allowlist_cidrs: list[str] = Field(
+        default_factory=lambda: [
+            "127.0.0.1/32",
+            "::1/128",
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+        ]
+    )
+    trusted_header_name: str = "x-resona-admin-access"
+    trusted_header_value: str | None = None
 
 
 class AlertingConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     webhook_url: str | None = None
+
+
+class HumanLikenessConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = True
+    candidate_count: int = 3
+    proactive_fatigue_threshold: float = 0.82
+    memory_cooldown_minutes: int = 45
+    style_adaptation_enabled: bool = True
+
+
+class CustomerPortalConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = True
+    session_cookie_name: str = "companion_portal_session"
+    session_max_age_seconds: int = 604800
+    secure_cookies: bool = False
+    email_token_minutes: int = 60
+    otp_code_minutes: int = 10
+    otp_max_attempts: int = 6
+    max_login_failures: int = 8
+    lockout_minutes: int = 20
+    policy_version: str = "2026-04-07"
+
+
+class ClerkConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    issuer: str | None = None
+    audience: str | None = None
+    jwks_url: str | None = None
+    session_cookie_name: str = "__session"
+    sign_in_url: str = "/sign-in"
+    sign_up_url: str = "/sign-up"
+    sign_out_url: str | None = None
+    require_org: bool = True
+    require_owner_mfa: bool = True
+
+
+class StripeConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    secret_key: str | None = None
+    webhook_secret: str | None = None
+    publishable_key: str | None = None
+    default_price_id: str | None = None
+    success_path: str = "/app/billing?checkout=success"
+    cancel_path: str = "/app/billing?checkout=cancel"
+
+
+class EmailConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    from_address: str | None = None
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    use_starttls: bool = True
+    use_ssl: bool = False
+
+
+class RedisConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    url: str | None = None
+    key_prefix: str = "companion:ratelimit:"
+
+
+class RateLimitConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    signup_limit: int = 5
+    signup_window_seconds: int = 900
+    login_limit: int = 12
+    login_window_seconds: int = 900
+    verify_email_limit: int = 8
+    verify_email_window_seconds: int = 900
+    otp_send_limit: int = 6
+    otp_send_window_seconds: int = 900
+    otp_check_limit: int = 12
+    otp_check_window_seconds: int = 900
+
+
+class WebPresentationConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    brand_name: str = "Resona"
+    canonical_domain: str = "resona.chat"
+    support_email: str = "support@resona.chat"
+    privacy_url: str = "/privacy-policy"
+    terms_url: str = "/terms-and-conditions"
+    safety_policy_url: str = "/safety"
 
 
 class RuntimeSettings(BaseSettings):
@@ -212,6 +322,14 @@ class RuntimeSettings(BaseSettings):
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
     admin: AdminConfig = Field(default_factory=AdminConfig)
     alerting: AlertingConfig = Field(default_factory=AlertingConfig)
+    human_likeness: HumanLikenessConfig = Field(default_factory=HumanLikenessConfig)
+    customer_portal: CustomerPortalConfig = Field(default_factory=CustomerPortalConfig)
+    clerk: ClerkConfig = Field(default_factory=ClerkConfig)
+    stripe: StripeConfig = Field(default_factory=StripeConfig)
+    email: EmailConfig = Field(default_factory=EmailConfig)
+    redis: RedisConfig = Field(default_factory=RedisConfig)
+    rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
+    web: WebPresentationConfig = Field(default_factory=WebPresentationConfig)
 
     @classmethod
     def settings_customise_sources(
@@ -255,7 +373,9 @@ class YamlConfigSettingsSource(PydanticBaseSettingsSource):
 
     def __call__(self) -> dict[str, Any]:
         config_path = os.getenv("APP_CONFIG_FILE", "config/defaults.yaml")
-        load_dotenv(".env", override=True)
+        # Preserve runtime/container environment variables (e.g., docker-compose).
+        # .env should only fill missing values, not overwrite injected env.
+        load_dotenv(".env", override=False)
         path = Path(config_path)
         if not path.exists():
             return {}
@@ -309,6 +429,49 @@ def _apply_flat_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
         ("admin", "bootstrap_password"): os.getenv("ADMIN_BOOTSTRAP_PASSWORD"),
         ("admin", "session_cookie_name"): os.getenv("ADMIN_SESSION_COOKIE_NAME"),
         ("admin", "session_max_age_seconds"): os.getenv("ADMIN_SESSION_MAX_AGE_SECONDS"),
+        ("admin", "internal_only"): os.getenv("ADMIN_INTERNAL_ONLY"),
+        ("admin", "allowlist_cidrs"): os.getenv("ADMIN_ALLOWLIST_CIDRS"),
+        ("admin", "trusted_header_name"): os.getenv("ADMIN_TRUSTED_HEADER_NAME"),
+        ("admin", "trusted_header_value"): os.getenv("ADMIN_TRUSTED_HEADER_VALUE"),
+        ("customer_portal", "session_cookie_name"): os.getenv("PORTAL_SESSION_COOKIE_NAME"),
+        ("customer_portal", "session_max_age_seconds"): os.getenv("PORTAL_SESSION_MAX_AGE_SECONDS"),
+        ("customer_portal", "secure_cookies"): os.getenv("PORTAL_SECURE_COOKIES"),
+        ("customer_portal", "email_token_minutes"): os.getenv("PORTAL_EMAIL_TOKEN_MINUTES"),
+        ("customer_portal", "otp_code_minutes"): os.getenv("PORTAL_OTP_CODE_MINUTES"),
+        ("customer_portal", "otp_max_attempts"): os.getenv("PORTAL_OTP_MAX_ATTEMPTS"),
+        ("customer_portal", "max_login_failures"): os.getenv("PORTAL_MAX_LOGIN_FAILURES"),
+        ("customer_portal", "lockout_minutes"): os.getenv("PORTAL_LOCKOUT_MINUTES"),
+        ("clerk", "enabled"): os.getenv("CLERK_ENABLED"),
+        ("clerk", "issuer"): os.getenv("CLERK_ISSUER"),
+        ("clerk", "audience"): os.getenv("CLERK_AUDIENCE"),
+        ("clerk", "jwks_url"): os.getenv("CLERK_JWKS_URL"),
+        ("clerk", "session_cookie_name"): os.getenv("CLERK_SESSION_COOKIE_NAME"),
+        ("clerk", "sign_in_url"): os.getenv("CLERK_SIGN_IN_URL"),
+        ("clerk", "sign_up_url"): os.getenv("CLERK_SIGN_UP_URL"),
+        ("clerk", "sign_out_url"): os.getenv("CLERK_SIGN_OUT_URL"),
+        ("clerk", "require_org"): os.getenv("CLERK_REQUIRE_ORG"),
+        ("clerk", "require_owner_mfa"): os.getenv("CLERK_REQUIRE_OWNER_MFA"),
+        ("stripe", "enabled"): os.getenv("STRIPE_ENABLED"),
+        ("stripe", "secret_key"): os.getenv("STRIPE_SECRET_KEY"),
+        ("stripe", "webhook_secret"): os.getenv("STRIPE_WEBHOOK_SECRET"),
+        ("stripe", "publishable_key"): os.getenv("STRIPE_PUBLISHABLE_KEY"),
+        ("stripe", "default_price_id"): os.getenv("STRIPE_DEFAULT_PRICE_ID"),
+        ("email", "enabled"): os.getenv("EMAIL_ENABLED"),
+        ("email", "from_address"): os.getenv("EMAIL_FROM_ADDRESS"),
+        ("email", "smtp_host"): os.getenv("EMAIL_SMTP_HOST"),
+        ("email", "smtp_port"): os.getenv("EMAIL_SMTP_PORT"),
+        ("email", "smtp_username"): os.getenv("EMAIL_SMTP_USERNAME"),
+        ("email", "smtp_password"): os.getenv("EMAIL_SMTP_PASSWORD"),
+        ("email", "use_starttls"): os.getenv("EMAIL_USE_STARTTLS"),
+        ("email", "use_ssl"): os.getenv("EMAIL_USE_SSL"),
+        ("redis", "url"): os.getenv("REDIS_URL"),
+        ("redis", "key_prefix"): os.getenv("REDIS_KEY_PREFIX"),
+        ("web", "brand_name"): os.getenv("WEB_BRAND_NAME"),
+        ("web", "canonical_domain"): os.getenv("WEB_CANONICAL_DOMAIN"),
+        ("web", "support_email"): os.getenv("WEB_SUPPORT_EMAIL"),
+        ("web", "privacy_url"): os.getenv("WEB_PRIVACY_URL"),
+        ("web", "terms_url"): os.getenv("WEB_TERMS_URL"),
+        ("web", "safety_policy_url"): os.getenv("WEB_SAFETY_POLICY_URL"),
         ("alerting", "webhook_url"): os.getenv("ALERT_WEBHOOK_URL"),
     }
     for key_path, value in env_map.items():

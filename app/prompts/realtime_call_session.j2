@@ -81,6 +81,13 @@ Recent Messages:
 - None.
 {% endif %}
 
+Conversation Continuity:
+{% if conversation_state and conversation_state.continuity_card %}
+- {{ conversation_state.continuity_card }}
+{% else %}
+- none
+{% endif %}
+
 Opening Line Preference:
 {{ opening_line or "No specific opening line provided." }}
 

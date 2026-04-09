@@ -1,0 +1,60 @@
+{% extends "portal/base.html" %}
+{% set active_nav = 'dashboard' %}
+{% block content %}
+<section class="page-header">
+  <div>
+    <h2>{{ parent_context.household_name }}</h2>
+    <p class="subtle">Parent overview with full conversation visibility, safety context, and billing status.</p>
+  </div>
+</section>
+<div class="stats">
+  <div class="stat"><p class="subtle">Account Role</p><strong>{{ role }}</strong></div>
+  <div class="stat"><p class="subtle">Subscription</p><strong>{{ parent_context.subscription_status }}</strong></div>
+  <div class="stat"><p class="subtle">Child</p><strong>{{ parent_context.child_name }}</strong></div>
+  <div class="stat"><p class="subtle">Safety Events</p><strong>{{ safety_events|length }}</strong></div>
+</div>
+<article class="card" style="margin-top: 16px;">
+  <h3>Usage and Credits</h3>
+  <p><strong>Included credits:</strong> ${{ usage_summary.included_usd }} / month</p>
+  <p><strong>Estimated used:</strong> ${{ '%.2f'|format(usage_summary.used_usd) }}</p>
+  <p><strong>Estimated remaining:</strong> ${{ '%.2f'|format(usage_summary.remaining_usd) }}</p>
+  <p class="subtle">{{ usage_summary.overage_note }}</p>
+</article>
+<div class="grid two" style="margin-top: 16px;">
+  <article class="card">
+    <h3>Recent Conversation Transcript</h3>
+    {% if messages %}
+      {% for msg in messages %}
+      <p><strong>{{ msg.direction.value }}</strong> · {{ msg.created_at }}<br>{{ msg.body or '' }}</p>
+      {% endfor %}
+    {% else %}
+      <p class="subtle">No timeline data yet. Link a child phone during onboarding.</p>
+    {% endif %}
+  </article>
+  <article class="card">
+    <h3>Memory Highlights Used by Replies</h3>
+    {% if memory_items %}
+      {% for item in memory_items %}
+      <p><strong>{{ item.memory_type.value }}</strong> · {{ item.content }}</p>
+      {% endfor %}
+    {% else %}
+      <p class="subtle">No memory highlights yet.</p>
+    {% endif %}
+  </article>
+</div>
+<article class="card" style="margin-top: 16px;">
+  <h3>Safety Events</h3>
+  {% if safety_events %}
+    <table>
+      <thead><tr><th>When</th><th>Severity</th><th>Type</th><th>Action</th></tr></thead>
+      <tbody>
+      {% for event in safety_events %}
+        <tr><td>{{ event.created_at }}</td><td>{{ event.severity.value }}</td><td>{{ event.event_type }}</td><td>{{ event.action_taken or '' }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="subtle">No safety events recorded.</p>
+  {% endif %}
+</article>
+{% endblock %}

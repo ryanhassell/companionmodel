@@ -143,6 +143,89 @@ admin:
   secure_cookies: false
   bootstrap_username:
   bootstrap_password:
+  internal_only: true
+  allowlist_cidrs:
+    - 127.0.0.1/32
+    - ::1/128
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+  trusted_header_name: x-resona-admin-access
+  trusted_header_value:
 
 alerting:
   webhook_url:
+
+human_likeness:
+  enabled: true
+  candidate_count: 3
+  proactive_fatigue_threshold: 0.82
+  memory_cooldown_minutes: 45
+  style_adaptation_enabled: true
+
+customer_portal:
+  enabled: true
+  session_cookie_name: companion_portal_session
+  session_max_age_seconds: 604800
+  secure_cookies: false
+  email_token_minutes: 60
+  otp_code_minutes: 10
+  otp_max_attempts: 6
+  max_login_failures: 8
+  lockout_minutes: 20
+  policy_version: "2026-04-07"
+
+clerk:
+  enabled: false
+  issuer:
+  audience:
+  jwks_url:
+  session_cookie_name: __session
+  sign_in_url: /sign-in
+  sign_up_url: /sign-up
+  sign_out_url:
+  require_org: true
+  require_owner_mfa: true
+
+stripe:
+  enabled: false
+  secret_key:
+  webhook_secret:
+  publishable_key:
+  default_price_id:
+  success_path: /app/billing?checkout=success
+  cancel_path: /app/billing?checkout=cancel
+
+email:
+  enabled: false
+  from_address:
+  smtp_host:
+  smtp_port: 587
+  smtp_username:
+  smtp_password:
+  use_starttls: true
+  use_ssl: false
+
+redis:
+  url:
+  key_prefix: "companion:ratelimit:"
+
+rate_limit:
+  signup_limit: 5
+  signup_window_seconds: 900
+  login_limit: 12
+  login_window_seconds: 900
+  verify_email_limit: 8
+  verify_email_window_seconds: 900
+  otp_send_limit: 6
+  otp_send_window_seconds: 900
+  otp_check_limit: 12
+  otp_check_window_seconds: 900
+
+web:
+  brand_name: Resona
+  canonical_domain: resona.chat
+  support_email: support@resona.chat
+  privacy_url: /privacy-policy
+  terms_url: /terms-and-conditions
+  safety_policy_url: /safety

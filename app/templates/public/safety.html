@@ -1,0 +1,38 @@
+{% extends "public/base.html" %}
+{% block content %}
+<section class="marketing-section">
+  <h1 class="page-title">Safety architecture</h1>
+  <p class="subtle">Resona is designed for supportive conversation with strict guardrails and transparent monitoring.</p>
+</section>
+<section class="marketing-section">
+  <div class="feature-grid">
+    {% for item in capabilities %}
+    <article class="feature-card">
+      <div class="icon-wrap">{% include "public/partials/icon_" ~ item.icon ~ ".html" ignore missing %}</div>
+      <h3>{{ item.title }}</h3>
+      <p class="subtle">{{ item.summary }}</p>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+<section class="marketing-section">
+  <div class="grid two">
+    <article class="card">
+      <h3>What parents can monitor</h3>
+      <ul class="clean-list">
+        <li>Full transcript history for their own child profile.</li>
+        <li>Safety event details, including severity and action taken.</li>
+        <li>High-level memory highlights and continuity context.</li>
+      </ul>
+    </article>
+    <article class="card">
+      <h3>How interventions work</h3>
+      <ul class="clean-list">
+        <li>Policy checks run before and after response generation.</li>
+        <li>Distress patterns trigger stricter response paths.</li>
+        <li>Escalation messaging favors real-world support resources.</li>
+      </ul>
+    </article>
+  </div>
+</section>
+{% endblock %}

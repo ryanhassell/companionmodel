@@ -1,0 +1,63 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<section class="page-header">
+  <div>
+    <h2>Verification Queue</h2>
+    <p class="subtle">Review parent/guardian verification states with explicit audit trails.</p>
+  </div>
+</section>
+
+<div class="grid two">
+  <article class="card">
+    <h3>Status Counts</h3>
+    <div class="stats">
+      {% for key, value in queue_counts.items() %}
+      <div class="stat">
+        <p class="subtle">{{ key }}</p>
+        <strong>{{ value }}</strong>
+      </div>
+      {% endfor %}
+    </div>
+  </article>
+</div>
+
+<article class="card">
+  <h3>Cases</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Created</th>
+        <th>Email</th>
+        <th>Status</th>
+        <th>Risk</th>
+        <th>Reason Codes</th>
+        <th>Review</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in cases %}
+      {% set portal_user = users_by_id.get(item.customer_user_id | string) %}
+      <tr>
+        <td>{{ item.created_at }}</td>
+        <td>{{ portal_user.email if portal_user else item.customer_user_id }}</td>
+        <td><span class="pill">{{ item.status.value }}</span></td>
+        <td>{{ item.risk_score }}</td>
+        <td>{{ (item.reason_codes or []) | join(", ") }}</td>
+        <td>
+          <form method="post" action="/admin/verification-cases/{{ item.id }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <select name="status">
+              {% for status in status_options %}
+              <option value="{{ status }}" {{ 'selected' if status == item.status.value else '' }}>{{ status }}</option>
+              {% endfor %}
+            </select>
+            <textarea name="notes" placeholder="review notes">{{ item.notes or '' }}</textarea>
+            <button type="submit">Save</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</article>
+{% endblock %}

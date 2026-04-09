@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ title or (site.brand_name ~ " | Parent-Safe AI Companion") }}</title>
+    <link rel="icon" type="image/svg+xml" href="/static/images/resona-mark.svg">
+    <link rel="apple-touch-icon" href="/static/images/resona-mark.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=Fraunces:opsz,wght@9..144,500;9..144,700&display=swap" rel="stylesheet">
+    <script>document.documentElement.classList.add("js");</script>
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+  <body class="marketing-body">
+    <header class="marketing-header-wrap">
+      <div class="marketing-header">
+        <a href="/" class="wordmark" aria-label="{{ site.brand_name }} home">
+          <img src="/static/images/resona-mark.svg" alt="{{ site.brand_name }} logo" class="wordmark-logo">
+          <span class="wordmark-text">{{ site.brand_name }}</span>
+        </a>
+        <input type="checkbox" id="marketing-nav-toggle" class="nav-toggle-input" aria-label="Toggle navigation">
+        <label for="marketing-nav-toggle" class="nav-toggle-btn" aria-hidden="true">Menu</label>
+        <nav class="marketing-nav">
+          <a href="/" class="{{ 'active' if request.url.path == '/' else '' }}" aria-current="{{ 'page' if request.url.path == '/' else 'false' }}">Home</a>
+          <a href="/features" class="{{ 'active' if request.url.path == '/features' else '' }}" aria-current="{{ 'page' if request.url.path == '/features' else 'false' }}">Features</a>
+          <a href="/how-it-works" class="{{ 'active' if request.url.path == '/how-it-works' else '' }}" aria-current="{{ 'page' if request.url.path == '/how-it-works' else 'false' }}">How It Works</a>
+          <a href="/safety" class="{{ 'active' if request.url.path == '/safety' else '' }}" aria-current="{{ 'page' if request.url.path == '/safety' else 'false' }}">Safety</a>
+          <a href="/pricing" class="{{ 'active' if request.url.path == '/pricing' else '' }}" aria-current="{{ 'page' if request.url.path == '/pricing' else 'false' }}">Pricing</a>
+          <a href="/faq" class="{{ 'active' if request.url.path == '/faq' else '' }}" aria-current="{{ 'page' if request.url.path == '/faq' else 'false' }}">FAQ</a>
+          <a href="/contact" class="{{ 'active' if request.url.path == '/contact' else '' }}" aria-current="{{ 'page' if request.url.path == '/contact' else 'false' }}">Contact</a>
+          <div class="marketing-nav-cta">
+            <a class="button ghost" href="/app/login">Sign In</a>
+            <a class="button" href="/app/signup">Start Parent Setup</a>
+          </div>
+        </nav>
+        <div class="marketing-actions">
+          <a class="button ghost" href="/app/login">Sign In</a>
+          <a class="button" href="/app/signup">Start Parent Setup</a>
+        </div>
+      </div>
+    </header>
+    <main class="marketing-main">
+      {% block content %}{% endblock %}
+    </main>
+    <footer class="marketing-footer">
+      <p><strong>{{ site.brand_name }}</strong> · {{ site.canonical_domain }}</p>
+      <p class="subtle">Support: <a href="mailto:{{ site.support_email }}">{{ site.support_email }}</a></p>
+      <p class="subtle"><a href="{{ site.privacy_url }}">Privacy</a> · <a href="{{ site.terms_url }}">Terms</a> · <a href="{{ site.safety_policy_url }}">Safety Policy</a></p>
+    </footer>
+    <script src="/static/site.js" defer></script>
+  </body>
+</html>

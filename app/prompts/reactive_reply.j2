@@ -1,6 +1,12 @@
 The user just sent this message:
 {{ inbound_message.body or "" }}
 
+Conversation continuity card:
+{{ conversation_state.continuity_card if conversation_state is defined and conversation_state and conversation_state.continuity_card else "none" }}
+
+Turn classification:
+{{ turn_classification | tojson if turn_classification is defined else "{}" }}
+
 Write a brief SMS reply in-character.
 
 Requirements:
@@ -23,3 +29,4 @@ Requirements:
   - ask one casual, low-pressure question
 - Keep the vibe soft and human-text-message-like, not performative.
 - Prefer plain, casual wording over overly decorated or "aesthetic" phrasing.
+- If continuity card includes an open loop, naturally resolve or progress it.

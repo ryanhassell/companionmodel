@@ -1,0 +1,44 @@
+{% extends "public/base.html" %}
+{% block content %}
+<section class="marketing-section">
+  <h1 class="page-title">Privacy Policy</h1>
+  <p class="subtle">Effective date: April 7, 2026</p>
+</section>
+<section class="marketing-section legal-wrap">
+  <article class="card legal-doc">
+    <p>This Privacy Policy explains how Resona ("we", "our", or "us") collects, uses, stores, and protects information when you use the Resona website, parent portal, and companion services.</p>
+    <h3>1. Information we collect</h3>
+    <ul class="clean-list">
+      <li>Account information: name, email address, phone number, authentication details, and organization/household membership.</li>
+      <li>Child profile settings you provide: preferred name, routines, boundaries, notes, and communication preferences.</li>
+      <li>Conversation and safety data: message history, memory highlights, detector/safety events, and moderation outcomes.</li>
+      <li>Billing data: subscription status, plan metadata, usage records, and payment events from Stripe.</li>
+      <li>Technical data: IP address, device/browser information, session events, and basic logs used for security and reliability.</li>
+    </ul>
+    <h3>2. How we use information</h3>
+    <ul class="clean-list">
+      <li>Provide and maintain the parent portal and companion functionality.</li>
+      <li>Support safety features, policy enforcement, and incident review workflows.</li>
+      <li>Authenticate users, enforce tenant/role access controls, and prevent abuse.</li>
+      <li>Process subscriptions and usage-based billing.</li>
+      <li>Improve product quality, reliability, and support response.</li>
+    </ul>
+    <h3>3. SMS and voice communications</h3>
+    <p>When messaging or voice features are enabled, we process communication metadata and content necessary to deliver service features, safety controls, and transcript visibility in the parent portal.</p>
+    <h3>4. Data sharing</h3>
+    <p>We do not sell personal information. We share data only with service providers needed to operate Resona, including infrastructure, authentication, messaging/voice, AI, and payment processors, under contractual obligations appropriate to their role.</p>
+    <h3>5. Data retention</h3>
+    <p>We retain data for as long as needed to provide services, meet legal obligations, resolve disputes, and enforce agreements. Retention periods may vary by data category and account status.</p>
+    <h3>6. Security</h3>
+    <p>We apply reasonable administrative, technical, and organizational safeguards, including access controls, transport encryption, authentication protections, and audit logging. No method of transmission or storage is guaranteed to be absolutely secure.</p>
+    <h3>7. Children and guardian responsibility</h3>
+    <p>Resona is intended for use by authorized adults managing household settings. Account owners are responsible for lawful consent, supervision, and applicable obligations in their jurisdiction.</p>
+    <h3>8. Your choices and rights</h3>
+    <p>You may request account updates, access, or deletion by contacting support. We may retain certain data where required by law or for legitimate business/security purposes.</p>
+    <h3>9. Policy updates</h3>
+    <p>We may update this Privacy Policy periodically. Material changes will be posted with an updated effective date.</p>
+    <h3>10. Contact</h3>
+    <p>For privacy questions, contact <a href="mailto:{{ site.support_email }}">{{ site.support_email }}</a>.</p>
+  </article>
+</section>
+{% endblock %}

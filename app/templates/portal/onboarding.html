@@ -1,0 +1,36 @@
+{% extends "portal/base.html" %}
+{% set active_nav = 'onboarding' %}
+{% block content %}
+<section class="page-header">
+  <div>
+    <h2>Onboarding</h2>
+    <p class="subtle">Choose whether this is for yourself or someone else, then configure household scope.</p>
+  </div>
+</section>
+<article class="card" style="max-width: 780px;">
+  {% if error %}<p class="pill" style="background:#fff1ee;color:#8a3428;">{{ error }}</p>{% endif %}
+  <form method="post" class="grid">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Setup mode
+      <select name="mode">
+        <option value="for_myself">for myself</option>
+        <option value="for_someone_else" selected>for someone else</option>
+      </select>
+    </label>
+    <label>Relationship
+      <select name="relationship">
+        <option value="owner">owner</option>
+        <option value="parent" selected>parent</option>
+        <option value="guardian">guardian</option>
+        <option value="caregiver">caregiver</option>
+        <option value="other">other</option>
+      </select>
+    </label>
+    <label>Household name<input name="household_name" value="{{ household.name if household else '' }}" required></label>
+    <label>Child/profile name<input name="child_name" value="{{ child.display_name if child else '' }}" required></label>
+    <label>Child phone (optional; enables SMS timeline immediately)<input name="child_phone_number"></label>
+    <label>Timezone<input name="timezone" value="{{ household.timezone if household else 'America/New_York' }}"></label>
+    <button type="submit">Save Onboarding</button>
+  </form>
+</article>
+{% endblock %}

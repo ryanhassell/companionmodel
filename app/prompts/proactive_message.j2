@@ -1,5 +1,8 @@
 Create one proactive SMS check-in for the user.
 
+Selected proactive archetype:
+{{ proactive_archetype if proactive_archetype is defined else "check_in" }}
+
 Current scene/theme idea:
 {{ scene_hint }}
 
@@ -49,3 +52,8 @@ Requirements:
   - a tiny thought tied to one of the user's known interests or memories
 - Vary the opener so messages do not all sound the same.
 - Prefer plain, conversational wording over sparkly or overly stylized phrasing.
+- Archetype behavior:
+  - check_in: one gentle question tied to today.
+  - tiny_update: one short life update first, then a low-pressure question.
+  - memory_callback: reference one prior memory naturally, then continue.
+  - light_prompt: suggest one easy conversational prompt without sounding like a game host.

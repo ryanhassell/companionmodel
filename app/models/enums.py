@@ -87,3 +87,25 @@ class JobStatus(StrEnum):
     running = "running"
     success = "success"
     failed = "failed"
+
+
+class HouseholdRole(StrEnum):
+    owner = "owner"
+    guardian = "guardian"
+    caregiver = "caregiver"
+    viewer = "viewer"
+
+
+class VerificationCaseStatus(StrEnum):
+    pending = "pending"
+    approved = "approved"
+    limited = "limited"
+    rejected = "rejected"
+
+
+class SubscriptionStatus(StrEnum):
+    trialing = "trialing"
+    active = "active"
+    past_due = "past_due"
+    canceled = "canceled"
+    incomplete = "incomplete"

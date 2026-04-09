@@ -1,0 +1,136 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>Human-Likeness</h1>
+    <p class="subtle">Scoreboard, continuity health, and A/B replay evaluator.</p>
+  </div>
+</div>
+
+<section class="card" style="margin-bottom: 16px;">
+  <h2>Run A/B Replay</h2>
+  <form method="post" action="/admin/human-likeness/replay" class="grid two">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>
+      User
+      <select name="user_id" required>
+        {% for user in users %}
+        <option value="{{ user.id }}" {% if selected_user and user.id == selected_user.id %}selected{% endif %}>
+          {{ user.display_name or user.phone_number }}
+        </option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Max Turns
+      <input type="number" name="max_turns" value="20" min="5" max="80">
+    </label>
+    <div>
+      <button type="submit">Run Replay</button>
+    </div>
+  </form>
+  <div style="margin-top: 12px;">
+    <a class="button secondary" href="/admin/human-likeness/export{% if selected_user %}?user_id={{ selected_user.id }}{% endif %}">Export Replay CSV</a>
+  </div>
+</section>
+
+<section class="card" style="margin-bottom: 16px;">
+  <h2>Scoreboard</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>User</th>
+        <th>Score</th>
+        <th>Repeat Rate</th>
+        <th>Lexical Variety</th>
+        <th>Unanswered Q Rate</th>
+        <th>Safety Rewrite Rate</th>
+        <th>Outbound</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in scoreboard %}
+      <tr>
+        <td>
+          <a href="/admin/human-likeness?user_id={{ row.user.id }}">{{ row.user.display_name or row.user.phone_number }}</a>
+        </td>
+        <td>{{ row.metrics.score }}</td>
+        <td>{{ row.metrics.repetition_rate }}</td>
+        <td>{{ row.metrics.lexical_variety }}</td>
+        <td>{{ row.metrics.unanswered_question_rate }}</td>
+        <td>{{ row.metrics.safety_rewrite_rate }}</td>
+        <td>{{ row.metrics.outbound_count }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+{% if selected_user %}
+<section class="card" style="margin-bottom: 16px;">
+  <h2>Trend Chart (7d)</h2>
+  <div class="trend-grid">
+    {% for point in trend_7d %}
+    <div class="trend-row">
+      <span class="trend-label">{{ point.date }}</span>
+      <div class="trend-bar-wrap">
+        <div class="trend-bar" style="width: {{ (point.score * 100) | round(1) }}%;"></div>
+      </div>
+      <span class="trend-value">{{ point.score }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="card" style="margin-bottom: 16px;">
+  <h2>Trend Chart (30d)</h2>
+  <div class="trend-grid">
+    {% for point in trend_30d %}
+    <div class="trend-row">
+      <span class="trend-label">{{ point.date }}</span>
+      <div class="trend-bar-wrap">
+        <div class="trend-bar" style="width: {{ (point.score * 100) | round(1) }}%;"></div>
+      </div>
+      <span class="trend-value">{{ point.score }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<section class="card" style="margin-bottom: 16px;">
+  <h2>Latest Replays</h2>
+  <table>
+    <thead><tr><th>Run Time</th><th>User</th><th>Summary</th></tr></thead>
+    <tbody>
+      {% for run in latest_replays %}
+      <tr>
+        <td>{{ run.created_at }}</td>
+        <td>{{ (run.details_json or {}).get('user_id') }}</td>
+        <td><pre>{{ (run.details_json or {}).get('summary') | tojson(indent=2) }}</pre></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+{% if current_replay %}
+<section class="card">
+  <h2>Selected User Replay Preview</h2>
+  <pre>{{ current_replay.get('summary') | tojson(indent=2) }}</pre>
+  <table>
+    <thead><tr><th>Inbound</th><th>Baseline (A)</th><th>Candidate (B)</th><th>Actual</th></tr></thead>
+    <tbody>
+      {% for row in current_replay.get('replay', [])[:20] %}
+      <tr>
+        <td>{{ row.inbound }}</td>
+        <td>{{ row.baseline }}</td>
+        <td>{{ row.candidate }}</td>
+        <td>{{ row.actual }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,19 @@
+{% extends "portal/base.html" %}
+{% set active_nav = 'safety' %}
+{% block content %}
+<section class="page-header"><div><h2>Safety Events</h2><p class="subtle">Review policy detections, severity, and what interventions were applied.</p></div></section>
+<article class="card">
+{% if events %}
+  <table>
+    <thead><tr><th>Time</th><th>Severity</th><th>Detector</th><th>Type</th><th>Action</th></tr></thead>
+    <tbody>
+      {% for event in events %}
+      <tr><td>{{ event.created_at }}</td><td>{{ event.severity.value }}</td><td>{{ event.detector }}</td><td>{{ event.event_type }}</td><td>{{ event.action_taken or '-' }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% else %}
+  <p class="subtle">No safety events have been recorded for this profile.</p>
+{% endif %}
+</article>
+{% endblock %}

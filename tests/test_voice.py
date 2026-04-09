@@ -21,6 +21,7 @@ from app.providers.openai import OpenAIProvider
 from app.providers.twilio import TwilioProvider
 from app.routers.api import router as api_router
 from app.services.daily_life import DailyLifeService
+from app.services.conversation_state import ConversationStateService
 from app.services.memory import MemoryService
 from app.services.prompt import PromptService
 from app.services.voice import (
@@ -70,6 +71,7 @@ def _build_voice_service(settings) -> tuple[VoiceService, OpenAIProvider]:
         prompt_service,
         memory_service,
         daily_life_service,
+        ConversationStateService(),
     )
     return service, openai_provider
 

@@ -1,0 +1,29 @@
+{% extends "portal/base.html" %}
+{% block content %}
+<section class="page-header">
+  <div>
+    <h2>Sign In</h2>
+    <p class="subtle">Customer portal access is handled by Clerk with organization-scoped sessions.</p>
+  </div>
+</section>
+<article class="card" style="max-width: 640px;">
+  {% if reason %}
+  <p class="pill" style="background:#fff1ee;color:#8a3428;">
+    {% if reason == 'no_org' %}Select or create an organization to continue.{% elif reason == 'mfa_required' %}MFA is required for owner-level access.{% elif reason == 'invalid_session' %}Your session expired. Please sign in again.{% else %}Sign in required.{% endif %}
+  </p>
+  {% endif %}
+  {% if legacy_auth_enabled %}
+  <form method="post" class="grid">
+    <label>Email<input type="email" name="email" required></label>
+    <label>Password<input type="password" name="password" required></label>
+    <label><input type="checkbox" name="trusted_device" value="1"> Trust this device</label>
+    <button type="submit">Sign In</button>
+  </form>
+  <p class="subtle">Need a new account? <a href="/app/signup">Create one</a></p>
+  {% else %}
+  <p>Use Clerk to sign in securely:</p>
+  <p><a class="button-link" href="{{ clerk_sign_in_url }}">Continue to Clerk Sign In</a></p>
+  <p class="subtle">Need a new account? <a href="{{ clerk_sign_up_url }}">Create one in Clerk</a></p>
+  {% endif %}
+</article>
+{% endblock %}

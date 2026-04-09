@@ -2,14 +2,16 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.dependencies import get_container, require_admin_context
 from app.db.session import get_db_session
+from app.models.admin import JobRun
+from app.models.conversation_state import ConversationState
 from app.models.communication import MediaAsset, Message
 from app.models.configuration import AppSetting
-from app.models.enums import AppSettingScope
+from app.models.enums import AppSettingScope, Direction, JobStatus
 from app.models.persona import Persona
 from app.models.user import User
 from app.schemas.api import AppSettingUpsertRequest, GenerateImageRequest, InitiateCallRequest, MemorySearchRequest, PersonaUpsertRequest, SendMessageRequest
@@ -226,3 +228,117 @@ async def upsert_setting(
     )
     await session.commit()
     return {"setting_id": str(setting.id)}
+
+
+@router.get("/state/{conversation_id}")
+async def get_conversation_state(
+    conversation_id: str,
+    session: AsyncSession = Depends(get_db_session),
+    _: object = Depends(require_admin_context),
+) -> dict[str, object]:
+    state = (
+        await session.execute(select(ConversationState).where(ConversationState.conversation_id == conversation_id))
+    ).scalar_one_or_none()
+    if state is None:
+        raise HTTPException(status_code=404, detail="Conversation state not found")
+    return {
+        "conversation_id": str(state.conversation_id),
+        "active_topics": state.active_topics,
+        "open_loops": state.open_loops,
+        "recent_mood_trend": state.recent_mood_trend,
+        "style_fingerprint": state.style_fingerprint,
+        "boundary_pressure_score": state.boundary_pressure_score,
+        "novelty_budget": state.novelty_budget,
+        "fatigue_score": state.fatigue_score,
+        "continuity_card": state.continuity_card,
+        "last_archetype": state.last_archetype,
+    }
+
+
+@router.get("/metrics/human-likeness/{user_id}")
+async def get_human_likeness_metrics(
+    user_id: str,
+    session: AsyncSession = Depends(get_db_session),
+    _: object = Depends(require_admin_context),
+) -> dict[str, object]:
+    recent = list(
+        (
+            await session.execute(
+                select(Message)
+                .where(Message.user_id == user_id)
+                .order_by(desc(Message.created_at))
+                .limit(80)
+            )
+        ).scalars().all()
+    )
+    outbound = [item for item in recent if item.direction == Direction.outbound and item.body]
+    if not outbound:
+        return {"user_id": user_id, "metrics": {"repetition_rate": 0.0, "avg_length": 0.0, "safety_rewrite_rate": 0.0}}
+    repeated = 0
+    for idx in range(1, len(outbound)):
+        if outbound[idx].normalized_body and outbound[idx - 1].normalized_body == outbound[idx].normalized_body:
+            repeated += 1
+    safety_rewrites = sum(
+        1
+        for item in recent
+        if isinstance(item.metadata_json, dict)
+        and isinstance(item.metadata_json.get("reply_pipeline"), dict)
+        and isinstance(item.metadata_json["reply_pipeline"].get("safety_rewrite"), dict)
+        and bool(item.metadata_json["reply_pipeline"]["safety_rewrite"].get("applied"))
+    )
+    avg_length = sum(len(item.body or "") for item in outbound) / max(len(outbound), 1)
+    return {
+        "user_id": user_id,
+        "metrics": {
+            "repetition_rate": repeated / max(len(outbound), 1),
+            "avg_length": avg_length,
+            "safety_rewrite_rate": safety_rewrites / max(len(outbound), 1),
+        },
+    }
+
+
+@router.post("/evals/replay/{user_id}")
+async def run_replay_evaluation(
+    user_id: str,
+    persona_id: str | None = None,
+    max_turns: int = 20,
+    session: AsyncSession = Depends(get_db_session),
+    container: ServiceContainer = Depends(get_container),
+    _: object = Depends(require_admin_context),
+) -> dict[str, object]:
+    user = await session.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    persona = await session.get(Persona, persona_id) if persona_id else await container.conversation_service.get_active_persona(session, user)
+    config = await container.config_service.get_effective_config(session, user=user, persona=persona)
+    replay = await container.human_likeness_service.run_ab_replay(
+        session,
+        user=user,
+        persona=persona,
+        config=config,
+        max_turns=max_turns,
+    )
+    run = JobRun(
+        job_name="human_likeness_replay",
+        status=JobStatus.success,
+        started_at=None,
+        finished_at=None,
+        details_json={
+            "user_id": str(user.id),
+            "persona_id": str(persona.id) if persona else None,
+            "max_turns": max_turns,
+            "summary": replay.get("summary", {}),
+            "turns": replay.get("turns", 0),
+            "preview": (replay.get("replay", []) or [])[:6],
+        },
+    )
+    session.add(run)
+    await session.commit()
+    return {
+        "user_id": str(user.id),
+        "persona_id": str(persona.id) if persona else None,
+        "summary": replay.get("summary", {}),
+        "turns": replay.get("turns", 0),
+        "sample": (replay.get("replay", []) or [])[:8],
+        "job_run_id": str(run.id),
+    }

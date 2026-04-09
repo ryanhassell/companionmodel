@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-28 -24 540 392" role="img" aria-label="Resona mark">
+  <defs>
+    <linearGradient id="resonaWave" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5f6675"/>
+      <stop offset="1" stop-color="#3f4653"/>
+    </linearGradient>
+  </defs>
+  <g fill="none" stroke="url(#resonaWave)" stroke-width="40" stroke-linecap="round">
+    <path d="M12 52 C120 -8 206 112 320 72 C378 52 420 18 468 20"/>
+    <path d="M12 170 C120 110 206 230 320 190 C378 170 420 136 468 138"/>
+    <path d="M12 288 C120 228 206 348 320 308 C378 288 420 254 468 256"/>
+  </g>
+</svg>

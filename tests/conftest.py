@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.core.settings import AppConfig, RuntimeSettings
 from app.db.base import Base
+import app.models  # noqa: F401
 
 
 @pytest.fixture

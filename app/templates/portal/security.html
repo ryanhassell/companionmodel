@@ -1,0 +1,38 @@
+{% extends "portal/base.html" %}
+{% set active_nav = 'security' %}
+{% block content %}
+<section class="page-header">
+  <div>
+    <h2>Account Security</h2>
+    <p class="subtle">Security controls are managed in Clerk for this account.</p>
+  </div>
+</section>
+<article class="card">
+  {% if legacy_auth_enabled %}
+  <table>
+    <thead><tr><th>Last Seen</th><th>IP</th><th>Device</th><th>Trusted</th><th>Expires</th><th></th></tr></thead>
+    <tbody>
+      {% for item in sessions %}
+      <tr>
+        <td>{{ item.last_seen_at or item.created_at }}</td>
+        <td>{{ item.ip_address or '-' }}</td>
+        <td>{{ item.user_agent or '-' }}</td>
+        <td>{{ 'yes' if item.trusted_device else 'no' }}</td>
+        <td>{{ item.expires_at }}</td>
+        <td>
+          <form method="post" action="/app/security/revoke/{{ item.id }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="secondary">Revoke</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p><strong>MFA verified for current session:</strong> {{ 'yes' if mfa_verified else 'no' }}</p>
+  <p class="subtle">For password reset, MFA settings, and session revocation, use Clerk account security.</p>
+  <p><a class="button-link" href="{{ clerk_sign_out_url }}">Sign out</a></p>
+  {% endif %}
+</article>
+{% endblock %}

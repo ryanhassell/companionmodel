@@ -20,12 +20,17 @@ from app.providers.openai import OpenAIProvider
 from app.providers.twilio import TwilioProvider
 from app.services.config import ConfigService
 from app.services.conversation import ConversationService
+from app.services.conversation_state import ConversationStateService
+from app.services.candidate_reply import CandidateReplyService
 from app.services.daily_life import DailyLifeService
 from app.services.image import ImageService
 from app.services.memory import MemoryService
 from app.services.prompt import PromptService
+from app.services.reply_ranker import ReplyRankerService
 from app.services.safety import SafetyService
+from app.services.safety_rewrite import SafetyRewriteService
 from app.services.schedule import ScheduleService
+from app.services.turn_classifier import TurnClassifierService
 from app.utils.text import make_idempotency_key, normalize_text, similarity_score, truncate_text
 from app.utils.time import utc_now
 
@@ -46,6 +51,11 @@ class MessageService:
         schedule_service: ScheduleService,
         config_service: ConfigService,
         image_service: ImageService,
+        conversation_state_service: ConversationStateService,
+        turn_classifier_service: TurnClassifierService,
+        candidate_reply_service: CandidateReplyService,
+        reply_ranker_service: ReplyRankerService,
+        safety_rewrite_service: SafetyRewriteService,
     ) -> None:
         self.settings = settings
         self.twilio_provider = twilio_provider
@@ -58,6 +68,11 @@ class MessageService:
         self.schedule_service = schedule_service
         self.config_service = config_service
         self.image_service = image_service
+        self.conversation_state_service = conversation_state_service
+        self.turn_classifier_service = turn_classifier_service
+        self.candidate_reply_service = candidate_reply_service
+        self.reply_ranker_service = reply_ranker_service
+        self.safety_rewrite_service = safety_rewrite_service
 
     async def handle_inbound_message(self, session: AsyncSession, payload: InboundMessagePayload) -> Message:
         existing = await session.scalar(select(Message).where(Message.provider_message_sid == payload.message_sid))
@@ -810,11 +825,41 @@ class MessageService:
         recent_messages: list[Message],
         config: dict[str, Any],
     ) -> str:
+        state = await self.conversation_state_service.get_or_create(
+            session,
+            user=user,
+            persona=persona,
+            conversation=conversation,
+        )
+        classification = await self.turn_classifier_service.classify(
+            session,
+            user=user,
+            persona=persona,
+            conversation=conversation,
+            inbound_message=inbound_message,
+            recent_messages=recent_messages,
+            config=config,
+            conversation_state=state,
+        )
+        await self.conversation_state_service.update_from_inbound(
+            session,
+            state=state,
+            inbound_text=inbound_message.body or "",
+            classification=classification,
+            recent_messages=recent_messages,
+        )
+        state_ctx = self.conversation_state_service.context(state)
+
+        retrieval_query = inbound_message.body or ""
+        if state_ctx.active_topic:
+            retrieval_query += f" topic:{state_ctx.active_topic}"
+        if state_ctx.unresolved_loop:
+            retrieval_query += f" unresolved:{state_ctx.unresolved_loop}"
         memory_hits = await self.memory_service.retrieve(
             session,
             user_id=user.id,
             persona_id=persona.id if persona else None,
-            query=inbound_message.body or "",
+            query=retrieval_query,
             top_k=int(config["memory"]["top_k"]),
             threshold=float(config["memory"]["similarity_threshold"]),
         )
@@ -840,33 +885,80 @@ class MessageService:
             "recent_discussed_topics": recent_discussed_topics,
             "memory_hits": memory_hits,
             "config": config,
+            "conversation_state": state,
+            "turn_classification": classification,
             **daily_context,
         }
-        instructions = await self.prompt_service.render(session, "system_prompt", context)
-        user_prompt = await self.prompt_service.render(session, "reactive_reply", context)
         if not self.openai_provider.enabled:
             fallback = "I’m here with you. I can’t fully generate a response right now, but I’m still listening."
             return truncate_text(fallback, int(config["messaging"]["max_message_length"]))
-        response = await self.openai_provider.generate_text(
-            instructions=instructions,
-            input_items=[{"role": "user", "content": user_prompt}],
-            max_output_tokens=self.settings.openai.max_output_tokens,
-            temperature=self.settings.openai.temperature,
-        )
-        reply = response.text.strip()
-        reply = truncate_text(reply, int(config["messaging"]["max_message_length"]))
 
-        outbound_safety = await self.safety_service.validate_outbound(
+        candidates = await self.candidate_reply_service.generate_candidates(
             session,
-            text=reply,
             user=user,
             persona=persona,
             conversation=conversation,
+            inbound_message=inbound_message,
+            recent_messages=recent_messages,
+            memory_hits=memory_hits,
             config=config,
-            source_message=inbound_message,
+            conversation_state=state,
+            classification=classification,
         )
-        if outbound_safety.blocked and outbound_safety.safe_reply:
-            reply = outbound_safety.safe_reply
+        if not candidates:
+            candidates = ["I hear you. I want to answer this well. Can you give me one more detail?"]
+        ranked = self.reply_ranker_service.rank(
+            candidates=candidates,
+            inbound_text=inbound_message.body or "",
+            recent_messages=recent_messages,
+            classification=classification,
+        )
+        inbound_meta = dict(inbound_message.metadata_json or {})
+        inbound_meta["reply_pipeline"] = {
+            "classification": classification,
+            "candidate_count": len(candidates),
+            "top_rank_score": ranked[0].score if ranked else None,
+            "top_rank_reasons": ranked[0].reasons if ranked else [],
+        }
+        inbound_message.metadata_json = inbound_meta
+        reply = (ranked[0].text if ranked else candidates[0]).strip()
+        reply = truncate_text(reply, int(config["messaging"]["max_message_length"]))
+        outbound_safety = self.safety_service.check_outbound(text=reply, config=config)
+        if outbound_safety.blocked:
+            rewritten = await self.safety_rewrite_service.rewrite(
+                session,
+                original_text=reply,
+                reasons=outbound_safety.reasons,
+                user=user,
+                persona=persona,
+                conversation=conversation,
+                config=config,
+                context=context,
+            )
+            second_check = self.safety_service.check_outbound(text=rewritten, config=config)
+            if second_check.blocked:
+                final_safety = await self.safety_service.validate_outbound(
+                    session,
+                    text=reply,
+                    user=user,
+                    persona=persona,
+                    conversation=conversation,
+                    config=config,
+                    source_message=inbound_message,
+                )
+                reply = final_safety.safe_reply or "I want to keep this conversation warm and safe."
+                inbound_meta = dict(inbound_message.metadata_json or {})
+                pipeline = dict(inbound_meta.get("reply_pipeline") or {})
+                pipeline["safety_rewrite"] = {"attempted": True, "applied": False, "reasons": outbound_safety.reasons}
+                inbound_meta["reply_pipeline"] = pipeline
+                inbound_message.metadata_json = inbound_meta
+            else:
+                reply = rewritten
+                inbound_meta = dict(inbound_message.metadata_json or {})
+                pipeline = dict(inbound_meta.get("reply_pipeline") or {})
+                pipeline["safety_rewrite"] = {"attempted": True, "applied": True, "reasons": outbound_safety.reasons}
+                inbound_meta["reply_pipeline"] = pipeline
+                inbound_message.metadata_json = inbound_meta
 
         previous_outbound_stmt = (
             select(Message)
@@ -1017,6 +1109,21 @@ class MessageService:
         )
         session.add(attempt)
         self.conversation_service.mark_outbound(user, conversation)
+        try:
+            state = await self.conversation_state_service.get_or_create(
+                session,
+                user=user,
+                persona=persona,
+                conversation=conversation,
+            )
+            await self.conversation_state_service.update_from_outbound(
+                session,
+                state=state,
+                outbound_text=body,
+                is_proactive=is_proactive,
+            )
+        except Exception:
+            logger.info("conversation_state_update_failed", conversation_id=str(conversation.id))
         await session.flush()
         return message
 

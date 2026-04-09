@@ -1,0 +1,216 @@
+from __future__ import annotations
+
+import hashlib
+import hmac
+import secrets
+import re
+from dataclasses import dataclass
+from typing import Any
+
+import jwt
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.logging import get_logger
+from app.core.settings import RuntimeSettings
+from app.models.portal import Account, AuthIdentityEvent, CustomerUser, RoleAssignment
+from app.models.enums import HouseholdRole
+from app.utils.time import utc_now
+
+logger = get_logger(__name__)
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+@dataclass(slots=True)
+class ClerkClaims:
+    user_id: str
+    org_id: str | None
+    org_role: str | None
+    email: str | None
+    mfa_verified: bool
+    raw: dict[str, Any]
+
+
+@dataclass(slots=True)
+class TenantContext:
+    account: Account
+    customer_user: CustomerUser
+    role: HouseholdRole
+    clerk_user_id: str
+    clerk_org_id: str
+    mfa_verified: bool
+
+
+class ClerkAuthService:
+    def __init__(self, settings: RuntimeSettings) -> None:
+        self.settings = settings
+        jwks_url = settings.clerk.jwks_url
+        if not jwks_url and settings.clerk.issuer:
+            jwks_url = settings.clerk.issuer.rstrip("/") + "/.well-known/jwks.json"
+        self._jwks_client = jwt.PyJWKClient(jwks_url) if jwks_url else None
+
+    @property
+    def enabled(self) -> bool:
+        cfg = self.settings.clerk
+        return bool(cfg.enabled and cfg.issuer and self._jwks_client)
+
+    def verify_token(self, token: str) -> ClerkClaims:
+        if not self.enabled:
+            raise ValueError("Clerk auth is not configured")
+        assert self._jwks_client is not None
+        cfg = self.settings.clerk
+        signing_key = self._jwks_client.get_signing_key_from_jwt(token)
+        kwargs: dict[str, Any] = {
+            "algorithms": ["RS256"],
+            "issuer": cfg.issuer,
+            "options": {"require": ["exp", "iat", "sub"]},
+        }
+        if cfg.audience:
+            kwargs["audience"] = cfg.audience
+        decoded = jwt.decode(token, signing_key.key, **kwargs)
+
+        user_id = str(decoded.get("sub") or "")
+        if not user_id:
+            raise ValueError("Missing user subject")
+        org_id = decoded.get("org_id")
+        org_role = decoded.get("org_role")
+        email = self._extract_email(decoded)
+        return ClerkClaims(
+            user_id=user_id,
+            org_id=str(org_id) if org_id else None,
+            org_role=str(org_role) if org_role else None,
+            email=email,
+            mfa_verified=self._mfa_verified(decoded),
+            raw=decoded,
+        )
+
+    def token_from_request(self, authorization: str | None, session_cookie: str | None) -> str | None:
+        if authorization and authorization.lower().startswith("bearer "):
+            return authorization[7:].strip()
+        if session_cookie:
+            return session_cookie
+        return None
+
+    async def resolve_tenant_context(self, session: AsyncSession, claims: ClerkClaims) -> TenantContext:
+        if self.settings.clerk.require_org and not claims.org_id:
+            raise ValueError("Organization context is required")
+        if not claims.org_id:
+            raise ValueError("No organization in token")
+
+        account = await session.scalar(select(Account).where(Account.clerk_org_id == claims.org_id))
+        if account is None:
+            slug = self._safe_slug(claims.org_id)
+            account = Account(
+                name=f"Organization {claims.org_id}",
+                slug=f"org-{slug[:32]}",
+                clerk_org_id=claims.org_id,
+            )
+            session.add(account)
+            await session.flush()
+
+        customer_user = await session.scalar(select(CustomerUser).where(CustomerUser.clerk_user_id == claims.user_id))
+        if customer_user is None and claims.email:
+            customer_user = await session.scalar(
+                select(CustomerUser).where(
+                    CustomerUser.account_id == account.id,
+                    CustomerUser.email == claims.email,
+                )
+            )
+        if customer_user is None:
+            email = claims.email or f"{claims.user_id}@clerk.local"
+            customer_user = CustomerUser(
+                account_id=account.id,
+                email=email,
+                password_hash=f"clerk:{secrets.token_hex(16)}",
+                display_name=(claims.raw.get("name") or None),
+                clerk_user_id=claims.user_id,
+                verification_level="verified",
+            )
+            session.add(customer_user)
+            await session.flush()
+        else:
+            customer_user.account_id = account.id
+            customer_user.clerk_user_id = claims.user_id
+            if claims.email and _EMAIL_RE.match(claims.email):
+                customer_user.email = claims.email
+
+        customer_user.last_clerk_auth_at = utc_now()
+        role = self._map_role(claims.org_role)
+
+        session.add(
+            AuthIdentityEvent(
+                account_id=account.id,
+                customer_user_id=customer_user.id,
+                event_type="clerk_auth_seen",
+                details_json={
+                    "org_id": claims.org_id,
+                    "org_role": claims.org_role,
+                    "mfa_verified": claims.mfa_verified,
+                },
+                created_at=utc_now(),
+            )
+        )
+
+        assignment = await session.scalar(
+            select(RoleAssignment).where(
+                RoleAssignment.account_id == account.id,
+                RoleAssignment.customer_user_id == customer_user.id,
+            )
+        )
+        if assignment is not None:
+            assignment.role = role
+
+        await session.flush()
+        return TenantContext(
+            account=account,
+            customer_user=customer_user,
+            role=role,
+            clerk_user_id=claims.user_id,
+            clerk_org_id=claims.org_id,
+            mfa_verified=claims.mfa_verified,
+        )
+
+    def csrf_token(self, *, clerk_user_id: str, clerk_org_id: str) -> str:
+        payload = f"{clerk_user_id}:{clerk_org_id}".encode("utf-8")
+        key = self.settings.app.secret_key.encode("utf-8")
+        return hmac.new(key, payload, hashlib.sha256).hexdigest()
+
+    def _extract_email(self, claims: dict[str, Any]) -> str | None:
+        email = claims.get("email")
+        if isinstance(email, str) and _EMAIL_RE.match(email):
+            return email.lower()
+        emails = claims.get("email_addresses")
+        if isinstance(emails, list):
+            for item in emails:
+                if isinstance(item, dict):
+                    value = item.get("email_address")
+                    if isinstance(value, str) and _EMAIL_RE.match(value):
+                        return value.lower()
+        return None
+
+    def _mfa_verified(self, claims: dict[str, Any]) -> bool:
+        amr = claims.get("amr")
+        if isinstance(amr, list):
+            if any(str(item).lower() in {"mfa", "totp", "otp", "webauthn"} for item in amr):
+                return True
+        fva = claims.get("fva")
+        if isinstance(fva, list) and len(fva) >= 2:
+            try:
+                return int(fva[1]) >= 0
+            except (TypeError, ValueError):
+                return False
+        return False
+
+    def _map_role(self, org_role: str | None) -> HouseholdRole:
+        value = (org_role or "").lower()
+        if value in {"org:admin", "admin", "owner"}:
+            return HouseholdRole.owner
+        if value in {"org:member", "member", "guardian"}:
+            return HouseholdRole.guardian
+        if value in {"caregiver"}:
+            return HouseholdRole.caregiver
+        return HouseholdRole.viewer
+
+    def _safe_slug(self, value: str) -> str:
+        cleaned = re.sub(r"[^a-zA-Z0-9]+", "-", value).strip("-").lower()
+        return cleaned or "org"

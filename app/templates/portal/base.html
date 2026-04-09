@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ title or (brand_name ~ " Parent Portal") }}</title>
+    <link rel="icon" type="image/svg+xml" href="/static/images/resona-mark.svg">
+    <link rel="apple-touch-icon" href="/static/images/resona-mark.svg">
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+  <body class="portal-body">
+    <div class="portal-layout">
+      <aside class="portal-sidebar">
+        <a href="/" class="portal-brand-link" aria-label="{{ brand_name }} home">
+          <img src="/static/images/resona-mark.svg" alt="{{ brand_name }} logo" class="portal-brand-logo">
+        </a>
+        <h1 class="portal-brand">{{ brand_name }} Parent Portal</h1>
+        <p class="subtle">Secure household monitoring with clear safety visibility.</p>
+        <nav class="nav">
+          {% if customer_user %}
+            {% for item in portal_nav_items %}
+          <a href="{{ item.href }}" class="{{ 'active' if active_nav == item.key else '' }}">{{ item.label }}</a>
+            {% endfor %}
+          {% endif %}
+        </nav>
+        {% if customer_user %}
+        <p class="subtle">Signed in as {{ customer_user.email }}</p>
+        <form method="post" action="/app/logout">
+          <button type="submit" class="secondary">Log Out</button>
+        </form>
+        {% endif %}
+        <p class="subtle portal-footer-links"><a href="{{ safety_policy_url }}">Safety</a> · <a href="{{ privacy_url }}">Privacy</a> · <a href="{{ terms_url }}">Terms</a></p>
+        <p class="subtle">{{ support_email }}</p>
+      </aside>
+      <main class="content">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+  </body>
+</html>
