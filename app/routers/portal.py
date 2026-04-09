@@ -79,6 +79,20 @@ def _clerk_callback_url(next_path: str = "/app/landing") -> str:
     return f"/app/session/callback?next={next_path}"
 
 
+def _portal_auth_page_response(request: Request, template: str, **context):
+    container = request.app.state.container
+    return _portal_response(
+        request,
+        template,
+        legacy_auth_enabled=not container.clerk_auth_service.enabled,
+        clerk_enabled=container.clerk_auth_service.enabled,
+        clerk_publishable_key=container.settings.clerk.publishable_key,
+        clerk_frontend_api_url=container.settings.clerk.frontend_api_url,
+        clerk_callback_url=_clerk_callback_url(),
+        **context,
+    )
+
+
 def _initialization_next_step(current_step: str, completed_steps: list[str], step_order: list[str]) -> str:
     completed = set(completed_steps)
     if current_step == "complete":
@@ -143,15 +157,9 @@ async def portal_signup_page(
 ):
     if context is not None:
         return RedirectResponse(url="/app/landing", status_code=303)
-    container = request.app.state.container
-    return _portal_response(
+    return _portal_auth_page_response(
         request,
         "portal/signup.html",
-        legacy_auth_enabled=not container.clerk_auth_service.enabled,
-        clerk_enabled=container.clerk_auth_service.enabled,
-        clerk_publishable_key=container.settings.clerk.publishable_key,
-        clerk_frontend_api_url=container.settings.clerk.frontend_api_url,
-        clerk_callback_url=_clerk_callback_url(),
     )
 
 
@@ -238,16 +246,10 @@ async def portal_login_page(
 ):
     if context is not None:
         return RedirectResponse(url="/app/landing", status_code=303)
-    container = request.app.state.container
-    return _portal_response(
+    return _portal_auth_page_response(
         request,
         "portal/login.html",
         reason=request.query_params.get("reason"),
-        legacy_auth_enabled=not container.clerk_auth_service.enabled,
-        clerk_enabled=container.clerk_auth_service.enabled,
-        clerk_publishable_key=container.settings.clerk.publishable_key,
-        clerk_frontend_api_url=container.settings.clerk.frontend_api_url,
-        clerk_callback_url=_clerk_callback_url(),
     )
 
 

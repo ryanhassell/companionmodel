@@ -25,115 +25,15 @@
   <p class="subtle">Need a new account? <a href="/app/signup">Create one</a></p>
   {% else %}
     {% if clerk_publishable_key %}
-    <div id="clerk-sign-in-root" class="clerk-embed"></div>
+    <div
+      id="clerk-sign-in-root"
+      class="clerk-embed"
+      data-clerk-auth-page="sign-in"
+      data-clerk-status-id="clerk-sign-in-status"
+      data-clerk-callback-url="{{ clerk_callback_url }}"
+      data-clerk-alternate-url="/app/signup"></div>
     <p class="pill auth-launch-status" id="clerk-sign-in-status">Loading secure sign-in…</p>
     <p class="subtle auth-back-link"><a href="/">Back to home</a></p>
-    <script type="module">
-      import "https://esm.sh/@clerk/ui@1.5.0/register";
-
-      window.addEventListener("load", async function () {
-        const signedOutRequested = new URLSearchParams(window.location.search).get("signed_out") === "1";
-        const authShell = document.querySelector(".clerk-auth-shell");
-        const mountNode = document.getElementById("clerk-sign-in-root");
-        const statusNode = document.getElementById("clerk-sign-in-status");
-        const wait = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
-        const loadSharedUiBundle = () =>
-          new Promise((resolve, reject) => {
-            if (window.__internal_ClerkUICtor) {
-              resolve(window.__internal_ClerkUICtor);
-              return;
-            }
-            const existing = document.querySelector('script[data-clerk-ui-shared="true"]');
-            if (existing) {
-              existing.addEventListener("load", () => resolve(window.__internal_ClerkUICtor), { once: true });
-              existing.addEventListener("error", () => reject(new Error("Clerk UI bundle failed to load")), { once: true });
-              return;
-            }
-            const script = document.createElement("script");
-            script.async = true;
-            script.dataset.clerkUiShared = "true";
-            script.src = "https://cdn.jsdelivr.net/npm/@clerk/ui@1.5.0/dist/ui.shared.browser.js";
-            script.onload = () => resolve(window.__internal_ClerkUICtor);
-            script.onerror = () => reject(new Error("Clerk UI bundle failed to load"));
-            document.head.appendChild(script);
-          });
-        const waitForClerk = () =>
-          new Promise((resolve, reject) => {
-            let attempts = 0;
-            const timer = window.setInterval(() => {
-              attempts += 1;
-              if (window.Clerk) {
-                window.clearInterval(timer);
-                resolve(window.Clerk);
-                return;
-              }
-              if (attempts > 120) {
-                window.clearInterval(timer);
-                reject(new Error("Clerk script did not load"));
-              }
-            }, 50);
-          });
-        try {
-          if (statusNode) statusNode.textContent = "Preparing secure sign-in…";
-          await loadSharedUiBundle();
-          const clerk = await waitForClerk();
-          await clerk.load({
-            clerkUICtor: window.__internal_ClerkUICtor,
-          });
-          if (signedOutRequested && clerk.session) {
-            if (statusNode) statusNode.textContent = "Ending your previous session…";
-            try {
-              await Promise.race([
-                clerk.signOut({ redirectUrl: "/app/login?logged_out=1" }),
-                wait(1500),
-              ]);
-            } catch {
-              // Continue through to the sign-in state below.
-            }
-          }
-          if (!signedOutRequested && clerk.user && clerk.session) {
-            if (statusNode) statusNode.textContent = "Finishing secure sign-in…";
-            window.location.replace("{{ clerk_callback_url }}");
-            return;
-          }
-          const appearance = {
-            variables: {
-              colorPrimary: "#1e5f53",
-              colorText: "#222827",
-              colorTextSecondary: "#67706d",
-              colorBackground: "#fcfaf5",
-              colorInputBackground: "#ffffff",
-              colorInputText: "#222827",
-              borderRadius: "0px",
-              fontFamily: "\"DM Sans\", \"Avenir Next\", \"Segoe UI\", sans-serif",
-            },
-            options: {
-              termsPageUrl: "/terms-and-conditions",
-              privacyPageUrl: "/privacy-policy",
-            },
-          };
-          if (!mountNode) {
-            throw new Error("Missing Clerk sign-in mount node");
-          }
-          clerk.mountSignIn(mountNode, {
-            routing: "hash",
-            signUpUrl: "/app/signup",
-            forceRedirectUrl: "{{ clerk_callback_url }}",
-            fallbackRedirectUrl: "{{ clerk_callback_url }}",
-            appearance,
-          });
-          if (statusNode) statusNode.textContent = "If you use 2-step verification, keep going here.";
-        } catch (err) {
-          console.error("Clerk sign-in mount failed", err);
-          if (authShell) {
-            authShell.innerHTML = [
-              "<p class=\"pill\" style=\"background:#fff1ee;color:#8a3428;\">We couldn't load the sign-in form.</p>",
-              '<p class="subtle">Please refresh once and try again.</p>',
-            ].join("");
-          }
-        }
-      });
-    </script>
     {% else %}
     <p class="pill" style="background:#fff1ee;color:#8a3428;">Clerk is enabled but no publishable key is configured.</p>
     <p class="subtle">Set <code>CLERK_PUBLISHABLE_KEY</code> to enable embedded sign in.</p>
@@ -159,4 +59,7 @@
 </aside>
 </div>
 </section>
+{% endblock %}
+{% block body_scripts %}
+<script type="module" src="/static/portal-auth.js"></script>
 {% endblock %}
