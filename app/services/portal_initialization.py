@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from typing import Any
 from zoneinfo import available_timezones
@@ -9,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.settings import RuntimeSettings
 from app.models.enums import HouseholdRole, SubscriptionStatus
+from app.models.persona import Persona
 from app.models.portal import (
     Account,
     AccountInitialization,
@@ -25,6 +27,14 @@ from app.schemas.site import (
     PortalInitializationSummary,
 )
 from app.services.billing import BillingService
+from app.services.portal_resona import (
+    apply_portal_resona_to_persona,
+    build_resona_summary,
+    default_preset_key,
+    default_voice_profile_key,
+    portal_resona_presets,
+    portal_voice_profiles,
+)
 from app.utils.time import utc_now
 
 AVAILABLE_TIMEZONE_IDS = available_timezones()
@@ -43,7 +53,7 @@ class InitializationValidationError(ValueError):
 
 
 class PortalInitializationService:
-    STEP_ORDER = ["welcome", "household", "child", "preferences", "plan", "billing", "complete"]
+    STEP_ORDER = ["welcome", "household", "child", "resona", "preferences", "plan", "billing", "complete"]
     PACING_OPTIONS = ("gentle", "balanced", "direct", "reflective", "playful", "steady")
     STYLE_OPTIONS = ("warm", "calm", "encouraging", "reassuring", "upbeat", "straightforward")
     PLAN_OPTIONS = {
@@ -95,6 +105,11 @@ class PortalInitializationService:
                 key="child",
                 label="Child Profile",
                 description="Create one child/profile with the core details needed to start using Resona.",
+            ),
+            PortalInitializationStep(
+                key="resona",
+                label="Choose Resona",
+                description="Pick the companion style, name, voice, and a few high-value guidance notes for this child.",
             ),
             PortalInitializationStep(
                 key="preferences",
@@ -159,6 +174,7 @@ class PortalInitializationService:
         household = await session.scalar(select(Household).where(Household.account_id == account.id))
         child = await session.scalar(select(ChildProfile).where(ChildProfile.account_id == account.id))
         companion_user = await session.get(User, child.companion_user_id) if child and child.companion_user_id else None
+        resona_persona = await self._resolve_child_persona(session, child=child, companion_user=companion_user)
         subscription = await self.billing_service.get_account_subscription(session, account_id=account.id)
 
         snapshot = self._build_snapshot(
@@ -167,6 +183,7 @@ class PortalInitializationService:
             household=household,
             child=child,
             companion_user=companion_user,
+            persona=resona_persona,
             subscription=subscription,
         )
         completed_steps = self._derive_completed_steps(
@@ -175,10 +192,11 @@ class PortalInitializationService:
             snapshot=snapshot,
             household=household,
             child=child,
+            persona=resona_persona,
             subscription=subscription,
         )
         completion_ready = self._is_subscription_allowed(subscription) and all(
-            step in completed_steps for step in ["welcome", "household", "child", "preferences", "plan", "billing"]
+            step in completed_steps for step in ["welcome", "household", "child", "resona", "preferences", "plan", "billing"]
         )
         first_incomplete = self._first_incomplete_step(completed_steps)
         candidate_step = state.current_step if state.current_step in self.STEP_ORDER else None
@@ -211,6 +229,7 @@ class PortalInitializationService:
             snapshot=snapshot,
             summary=self._build_summary(snapshot=snapshot, subscription=subscription),
             steps=self.steps(),
+            resona_summary=build_resona_summary(self.settings, persona=resona_persona, snapshot=snapshot),
         )
         return PortalInitializationResult(state=state, context=context)
 
@@ -246,6 +265,11 @@ class PortalInitializationService:
             if errors:
                 raise InitializationValidationError(errors)
             await self._persist_child_step(session, customer_user=customer_user, snapshot=snapshot)
+        elif step == "resona":
+            errors = self._validate_resona(snapshot) if validate_required else {}
+            if errors:
+                raise InitializationValidationError(errors)
+            await self._persist_resona_step(session, customer_user=customer_user, snapshot=snapshot)
         elif step == "preferences":
             errors = self._validate_preferences(snapshot) if validate_required else {}
             if errors:
@@ -283,6 +307,12 @@ class PortalInitializationService:
             for key, value in self.PLAN_OPTIONS.items()
         ]
 
+    def resona_preset_options(self) -> list[dict[str, Any]]:
+        return [item.model_dump(mode="json") for item in portal_resona_presets(self.settings)]
+
+    def voice_profile_options(self) -> list[dict[str, Any]]:
+        return [item.model_dump(mode="json") for item in portal_voice_profiles(self.settings)]
+
     def requires_initialization(self, context: PortalInitializationContext) -> bool:
         return not context.completion_ready
 
@@ -294,6 +324,7 @@ class PortalInitializationService:
         household: Household | None,
         child: ChildProfile | None,
         companion_user: User | None,
+        persona: Persona | None,
         subscription: Subscription | None,
     ) -> dict[str, Any]:
         snapshot = {
@@ -305,6 +336,15 @@ class PortalInitializationService:
             "child_phone_number": "",
             "birth_year": "",
             "notes": "",
+            "resona_mode": "preset",
+            "resona_preset_key": default_preset_key(self.settings),
+            "resona_display_name": "",
+            "resona_voice_profile_key": default_voice_profile_key(self.settings),
+            "resona_vibe": "",
+            "resona_support_style": "",
+            "resona_avoid": "",
+            "resona_anchors": "",
+            "resona_proactive_style": "",
             "preferred_pacing": [],
             "preferred_pacing_custom": "",
             "response_style": [],
@@ -372,6 +412,38 @@ class PortalInitializationService:
             snapshot["quiet_hours_start"] = quiet_hours.get("start", snapshot["quiet_hours_start"])
             snapshot["quiet_hours_end"] = quiet_hours.get("end", snapshot["quiet_hours_end"])
             snapshot["daily_cadence"] = routines.get("daily_cadence", snapshot["daily_cadence"])
+            resona_data = prefs.get("resona_profile", {}) if isinstance(prefs.get("resona_profile"), dict) else {}
+            snapshot["resona_mode"] = str(resona_data.get("mode") or snapshot["resona_mode"])
+            snapshot["resona_preset_key"] = str(resona_data.get("preset_key") or snapshot["resona_preset_key"])
+            snapshot["resona_display_name"] = str(resona_data.get("display_name") or snapshot["resona_display_name"])
+            snapshot["resona_voice_profile_key"] = str(
+                resona_data.get("voice_profile_key") or snapshot["resona_voice_profile_key"]
+            )
+            snapshot["resona_vibe"] = str(resona_data.get("vibe") or snapshot["resona_vibe"]).strip()
+            snapshot["resona_support_style"] = str(
+                resona_data.get("support_style") or snapshot["resona_support_style"]
+            ).strip()
+            snapshot["resona_avoid"] = str(resona_data.get("avoid") or snapshot["resona_avoid"]).strip()
+            snapshot["resona_anchors"] = str(resona_data.get("anchors") or snapshot["resona_anchors"]).strip()
+            snapshot["resona_proactive_style"] = str(
+                resona_data.get("proactive_style") or snapshot["resona_proactive_style"]
+            ).strip()
+        if persona is not None:
+            snapshot["resona_mode"] = "custom" if persona.source_type == "portal_custom" else "preset"
+            snapshot["resona_preset_key"] = str(persona.preset_key or snapshot["resona_preset_key"] or "")
+            snapshot["resona_display_name"] = persona.display_name or snapshot["resona_display_name"]
+            snapshot["resona_voice_profile_key"] = str(
+                (persona.prompt_overrides or {}).get("voice_profile_key") or snapshot["resona_voice_profile_key"] or ""
+            )
+            snapshot["resona_vibe"] = str(persona.tone or snapshot["resona_vibe"]).strip()
+            snapshot["resona_support_style"] = str(persona.speech_style or snapshot["resona_support_style"]).strip()
+            snapshot["resona_avoid"] = str(persona.boundaries or snapshot["resona_avoid"]).strip()
+            topics = list(persona.topics_of_interest or [])
+            activities = list(persona.favorite_activities or [])
+            snapshot["resona_anchors"] = ", ".join([item for item in topics + activities if item]).strip() or snapshot["resona_anchors"]
+            snapshot["resona_proactive_style"] = str(
+                persona.proactive_outreach_style or snapshot["resona_proactive_style"]
+            ).strip()
         if subscription is not None:
             derived_plan_key = self.billing_service.plan_key_for_subscription(subscription)
             if derived_plan_key:
@@ -387,6 +459,17 @@ class PortalInitializationService:
         snapshot["preferred_pacing_custom"] = str(snapshot.get("preferred_pacing_custom") or "").strip()
         snapshot["response_style_custom"] = str(snapshot.get("response_style_custom") or "").strip()
         snapshot["communication_notes"] = str(snapshot.get("communication_notes") or "").strip()
+        snapshot["resona_mode"] = "custom" if str(snapshot.get("resona_mode") or "").strip() == "custom" else "preset"
+        snapshot["resona_preset_key"] = str(snapshot.get("resona_preset_key") or default_preset_key(self.settings)).strip()
+        snapshot["resona_display_name"] = str(snapshot.get("resona_display_name") or "").strip()
+        snapshot["resona_voice_profile_key"] = str(
+            snapshot.get("resona_voice_profile_key") or default_voice_profile_key(self.settings)
+        ).strip()
+        snapshot["resona_vibe"] = str(snapshot.get("resona_vibe") or "").strip()
+        snapshot["resona_support_style"] = str(snapshot.get("resona_support_style") or "").strip()
+        snapshot["resona_avoid"] = str(snapshot.get("resona_avoid") or "").strip()
+        snapshot["resona_anchors"] = str(snapshot.get("resona_anchors") or "").strip()
+        snapshot["resona_proactive_style"] = str(snapshot.get("resona_proactive_style") or "").strip()
         return snapshot
 
     def _public_snapshot_data(self, data: dict[str, Any] | None) -> dict[str, Any]:
@@ -405,6 +488,7 @@ class PortalInitializationService:
         snapshot: dict[str, Any],
         household: Household | None,
         child: ChildProfile | None,
+        persona: Persona | None,
         subscription: Subscription | None,
     ) -> list[str]:
         completed = set(state.completed_steps_json or [])
@@ -414,13 +498,29 @@ class PortalInitializationService:
             completed.add("household")
         if child is not None and (child.display_name or child.first_name):
             completed.add("child")
+        child_preferences = child.preferences_json or {} if child is not None else {}
+        stored_resona = child_preferences.get("resona_profile")
+        has_resona = bool(
+            persona is not None
+            or str(child_preferences.get("pending_persona_id") or "").strip()
+            or (
+                isinstance(stored_resona, dict)
+                and (
+                    str(stored_resona.get("display_name") or "").strip()
+                    or str(stored_resona.get("preset_key") or "").strip()
+                    or str(stored_resona.get("voice_profile_key") or "").strip()
+                )
+            )
+        )
+        if child is not None and has_resona and not self._validate_resona(snapshot):
+            completed.add("resona")
         if child is not None and not self._validate_preferences(snapshot):
             completed.add("preferences")
         if str(snapshot.get("selected_plan_key") or "").strip() in self.PLAN_OPTIONS:
             completed.add("plan")
         if self._is_subscription_allowed(subscription):
             completed.add("billing")
-        if all(step in completed for step in ["welcome", "household", "child", "preferences", "plan", "billing"]):
+        if all(step in completed for step in ["welcome", "household", "child", "resona", "preferences", "plan", "billing"]):
             completed.add("complete")
         ordered = [step for step in self.STEP_ORDER if step in completed]
         return ordered
@@ -439,6 +539,8 @@ class PortalInitializationService:
             relationship_label=str(snapshot.get("relationship") or "").strip() or None,
             child_name=str(snapshot.get("profile_name") or "").strip() or None,
             child_phone_number=str(snapshot.get("child_phone_number") or "").strip() or None,
+            resona_name=str(snapshot.get("resona_display_name") or "").strip() or None,
+            resona_voice_label=build_resona_summary(self.settings, persona=None, snapshot=snapshot).voice_label,
             preferred_pacing=self._communication_summary(
                 selections=self._normalize_multi_value(snapshot.get("preferred_pacing"), allowed=self.PACING_OPTIONS),
                 custom_text=str(snapshot.get("preferred_pacing_custom") or "").strip(),
@@ -486,6 +588,18 @@ class PortalInitializationService:
                 "child_phone_number": str(data.get("child_phone_number") or "").strip(),
                 "birth_year": str(data.get("birth_year") or "").strip(),
                 "notes": str(data.get("notes") or "").strip(),
+            }
+        elif step == "resona":
+            normalized = {
+                "resona_mode": "custom" if str(data.get("resona_mode") or "").strip() == "custom" else "preset",
+                "resona_preset_key": str(data.get("resona_preset_key") or "").strip(),
+                "resona_display_name": str(data.get("resona_display_name") or "").strip(),
+                "resona_voice_profile_key": str(data.get("resona_voice_profile_key") or "").strip(),
+                "resona_vibe": str(data.get("resona_vibe") or "").strip(),
+                "resona_support_style": str(data.get("resona_support_style") or "").strip(),
+                "resona_avoid": str(data.get("resona_avoid") or "").strip(),
+                "resona_anchors": str(data.get("resona_anchors") or "").strip(),
+                "resona_proactive_style": str(data.get("resona_proactive_style") or "").strip(),
             }
         elif step == "preferences":
             normalized = {
@@ -568,11 +682,15 @@ class PortalInitializationService:
             .where(ChildProfile.account_id == customer_user.account_id)
             .order_by(ChildProfile.created_at.desc())
         )
-        companion_user = None
+        companion_user = await session.get(User, child_profile.companion_user_id) if child_profile and child_profile.companion_user_id else None
         normalized_phone = str(snapshot.get("child_phone_number") or "").strip()
         if normalized_phone:
-            companion_user = await session.scalar(select(User).where(User.phone_number == normalized_phone))
-            if companion_user is None:
+            linked_user = await session.scalar(select(User).where(User.phone_number == normalized_phone))
+            if linked_user is not None:
+                companion_user = linked_user
+            elif companion_user is not None:
+                companion_user.phone_number = normalized_phone
+            else:
                 companion_user = User(
                     display_name=str(snapshot["profile_name"]),
                     phone_number=normalized_phone,
@@ -580,6 +698,11 @@ class PortalInitializationService:
                 )
                 session.add(companion_user)
                 await session.flush()
+        if companion_user is None and child_profile and child_profile.companion_user_id:
+            companion_user = await session.get(User, child_profile.companion_user_id)
+        if companion_user is not None:
+            companion_user.display_name = str(snapshot["profile_name"])
+            companion_user.timezone = str(snapshot.get("timezone") or "America/New_York")
 
         birth_year = int(snapshot["birth_year"]) if str(snapshot.get("birth_year") or "").strip() else None
         if child_profile is None:
@@ -601,6 +724,19 @@ class PortalInitializationService:
             child_profile.notes = str(snapshot.get("notes") or "").strip() or None
             if companion_user is not None:
                 child_profile.companion_user_id = companion_user.id
+
+        pending_persona_id = str((child_profile.preferences_json or {}).get("pending_persona_id") or "").strip()
+        if companion_user is not None and pending_persona_id:
+            try:
+                pending_persona = await session.get(Persona, uuid.UUID(pending_persona_id))
+            except ValueError:
+                pending_persona = None
+            if pending_persona is not None:
+                companion_user.preferred_persona_id = pending_persona.id
+                pending_persona.owner_user_id = companion_user.id
+                preferences = dict(child_profile.preferences_json or {})
+                preferences.pop("pending_persona_id", None)
+                child_profile.preferences_json = preferences
 
     async def _persist_preferences_step(
         self,
@@ -655,6 +791,65 @@ class PortalInitializationService:
         child.boundaries_json = boundaries
         child.routines_json = routines
 
+    async def _persist_resona_step(
+        self,
+        session: AsyncSession,
+        *,
+        customer_user: CustomerUser,
+        snapshot: dict[str, Any],
+    ) -> None:
+        child = await session.scalar(
+            select(ChildProfile)
+            .where(ChildProfile.account_id == customer_user.account_id)
+            .order_by(ChildProfile.created_at.desc())
+        )
+        if child is None:
+            raise InitializationValidationError({"resona_display_name": "Complete the child profile step first."})
+
+        companion_user = await session.get(User, child.companion_user_id) if child.companion_user_id else None
+        persona = await self._resolve_child_persona(session, child=child, companion_user=companion_user)
+        if persona is None or persona.source_type == "admin" or (persona.account_id and persona.account_id != customer_user.account_id):
+            persona = Persona(key=f"portal-{uuid.uuid4().hex[:16]}", display_name="Resona")
+            session.add(persona)
+            await session.flush()
+
+        apply_portal_resona_to_persona(
+            self.settings,
+            persona=persona,
+            account_id=customer_user.account_id,
+            owner_user_id=companion_user.id if companion_user else None,
+            child_name=str(child.display_name or child.first_name or snapshot.get("profile_name") or "").strip(),
+            mode=str(snapshot.get("resona_mode") or "preset"),
+            preset_key=str(snapshot.get("resona_preset_key") or "").strip() or None,
+            display_name=str(snapshot.get("resona_display_name") or "").strip() or None,
+            voice_profile_key=str(snapshot.get("resona_voice_profile_key") or "").strip() or None,
+            vibe=str(snapshot.get("resona_vibe") or "").strip() or None,
+            support_style=str(snapshot.get("resona_support_style") or "").strip() or None,
+            avoid_text=str(snapshot.get("resona_avoid") or "").strip() or None,
+            anchors_text=str(snapshot.get("resona_anchors") or "").strip() or None,
+            proactive_style=str(snapshot.get("resona_proactive_style") or "").strip() or None,
+        )
+
+        preferences = dict(child.preferences_json or {})
+        preferences["resona_profile"] = {
+            "mode": str(snapshot.get("resona_mode") or "preset"),
+            "preset_key": str(snapshot.get("resona_preset_key") or "").strip() or None,
+            "display_name": persona.display_name,
+            "voice_profile_key": str(snapshot.get("resona_voice_profile_key") or "").strip() or None,
+            "vibe": str(snapshot.get("resona_vibe") or "").strip(),
+            "support_style": str(snapshot.get("resona_support_style") or "").strip(),
+            "avoid": str(snapshot.get("resona_avoid") or "").strip(),
+            "anchors": str(snapshot.get("resona_anchors") or "").strip(),
+            "proactive_style": str(snapshot.get("resona_proactive_style") or "").strip(),
+        }
+        if companion_user is not None:
+            companion_user.preferred_persona_id = persona.id
+            persona.owner_user_id = companion_user.id
+            preferences.pop("pending_persona_id", None)
+        else:
+            preferences["pending_persona_id"] = str(persona.id)
+        child.preferences_json = preferences
+
     def _validate_household(self, snapshot: dict[str, Any]) -> dict[str, str]:
         errors: dict[str, str] = {}
         if str(snapshot.get("mode") or "") not in {"for_myself", "for_someone_else"}:
@@ -683,6 +878,28 @@ class PortalInitializationService:
             else:
                 if value < 1900 or value > 2100:
                     errors["birth_year"] = "Enter a realistic birth year."
+        return errors
+
+    def _validate_resona(self, snapshot: dict[str, Any]) -> dict[str, str]:
+        errors: dict[str, str] = {}
+        if str(snapshot.get("resona_mode") or "preset").strip() not in {"preset", "custom"}:
+            errors["resona_mode"] = "Choose a preset or custom Resona."
+        preset_keys = {item.key for item in portal_resona_presets(self.settings)}
+        if str(snapshot.get("resona_mode") or "preset").strip() == "preset":
+            preset_key = str(snapshot.get("resona_preset_key") or "").strip()
+            if not preset_key or preset_key not in preset_keys:
+                errors["resona_preset_key"] = "Choose one of the preset Resonas."
+        voice_keys = {item.key for item in portal_voice_profiles(self.settings)}
+        voice_key = str(snapshot.get("resona_voice_profile_key") or "").strip()
+        if not voice_key or voice_key not in voice_keys:
+            errors["resona_voice_profile_key"] = "Choose a voice profile."
+        display_name = str(snapshot.get("resona_display_name") or "").strip()
+        if len(display_name) > 120:
+            errors["resona_display_name"] = "Keep the Resona name under 120 characters."
+        for key in ("resona_vibe", "resona_support_style", "resona_avoid", "resona_anchors", "resona_proactive_style"):
+            value = str(snapshot.get(key) or "").strip()
+            if len(value) > 280:
+                errors[key] = "Keep this under 280 characters."
         return errors
 
     def _validate_preferences(self, snapshot: dict[str, Any]) -> dict[str, str]:
@@ -764,3 +981,24 @@ class PortalInitializationService:
         if remainder:
             return f"{lead}, {remainder}, and {items[-1]} {label_suffix}"
         return f"{lead} and {items[-1]} {label_suffix}"
+
+    async def _resolve_child_persona(
+        self,
+        session: AsyncSession,
+        *,
+        child: ChildProfile | None,
+        companion_user: User | None,
+    ) -> Persona | None:
+        if companion_user and companion_user.preferred_persona_id:
+            persona = await session.get(Persona, companion_user.preferred_persona_id)
+            if persona is not None:
+                return persona
+        if child is None:
+            return None
+        pending_persona_id = str((child.preferences_json or {}).get("pending_persona_id") or "").strip()
+        if not pending_persona_id:
+            return None
+        try:
+            return await session.get(Persona, uuid.UUID(pending_persona_id))
+        except ValueError:
+            return None

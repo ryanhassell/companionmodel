@@ -39,6 +39,7 @@ def is_portal_interactive_request(request: Request) -> bool:
         "/app/initialize/billing/checkout",
         "/app/initialize/draft-event",
         "/app/parent-chat/send",
+        "/app/parent-chat/stream",
     }
     if request.url.path in interactive_paths:
         return True

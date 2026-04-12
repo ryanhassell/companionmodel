@@ -44,6 +44,8 @@ openai:
 scheduling:
   proactive_scan_seconds: 120
   memory_consolidation_minutes: 30
+  memory_health_hour: 3
+  memory_health_minute: 15
   retry_failed_sends_minutes: 5
   stale_followup_minutes: 15
   cleanup_hours: 24
@@ -207,6 +209,9 @@ stripe:
   default_price_id:
   chat_price_id:
   voice_price_id:
+  additional_child_price_id:
+  included_child_profiles: 1
+  additional_child_monthly_usd: 12.0
   success_path: /app/billing?checkout=success
   cancel_path: /app/billing?checkout=cancel
 

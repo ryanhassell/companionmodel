@@ -1,0 +1,157 @@
+{% extends "portal/base.html" %}
+{% set active_nav = 'questions' %}
+{% block content %}
+<section class="page-header guidance-page-header">
+  <div>
+    <p class="eyebrow">Questions for Parents</p>
+    <h2>Answer what would help most right now</h2>
+    <p class="subtle">{{ page_summary }}</p>
+  </div>
+</section>
+
+<section class="guidance-shell" data-selected-question-key="{{ selected_question_key }}">
+  {% if child and child.companion_user_id %}
+  <article class="card guidance-intro-card">
+    <div class="guidance-intro-head">
+      <div>
+        <p class="eyebrow">Focused On {{ selected_child_name }}</p>
+        <h3>High-value questions, not busywork</h3>
+        <p>Pick any question, answer in your own words, and keep the conversation going right here. Your answers feed the same ongoing {{ assistant_label }} conversation for {{ selected_child_name }} instead of dropping you into a one-and-done flow.</p>
+      </div>
+      <div class="hero-actions">
+        <a class="button ghost" href="/app/parent-chat{% if active_thread_id %}?thread={{ active_thread_id }}{% endif %}">Open Full Parent Chat</a>
+      </div>
+    </div>
+  </article>
+
+  <div class="guidance-questions-layout">
+    <div class="guidance-grid guidance-grid-questions guidance-grid-questions-stack">
+      {% for card in question_cards %}
+      <article class="card guidance-card guidance-question-card" data-tone="{{ card.tone }}">
+        <div class="guidance-card-head">
+          <div>
+            <p class="eyebrow">Question {{ loop.index }}</p>
+            <h3>{{ card.question }}</h3>
+            <p>{{ card.why_it_matters }}</p>
+          </div>
+        </div>
+        <div class="guidance-question-note">
+          <span>Answer in your own words</span>
+          <p>{{ card.suggested_prompt }}</p>
+        </div>
+        <div class="hero-actions">
+          <button
+            type="button"
+            class="button ghost"
+            data-question-fill
+            data-question-key="{{ card.key }}"
+            data-question="{{ card.question }}"
+            data-prompt="{{ card.suggested_prompt }}">
+            Answer here
+          </button>
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+
+    <article class="card parent-chat-main guidance-question-chat">
+      <div class="parent-chat-toolbar guidance-question-chat-toolbar">
+        <div>
+          <p class="eyebrow">Conversation</p>
+          <h3>Talk it through with {{ assistant_label }}</h3>
+          <p class="subtle">Choose a question or just keep going naturally. This stays in the same ongoing parent conversation for {{ selected_child_name }}, with {{ assistant_label }} carrying the thread forward.</p>
+        </div>
+      </div>
+
+      <div id="questions-active-question" class="guidance-question-active" hidden>
+        <div class="guidance-question-active-copy">
+          <span>Answering now</span>
+          <strong id="questions-active-question-label"></strong>
+          <p id="questions-active-question-helper"></p>
+        </div>
+        <button type="button" class="button ghost" id="questions-clear-active">Clear</button>
+      </div>
+
+      <div id="parent-chat-thread" class="parent-chat-thread guidance-question-thread" aria-live="polite">
+        {% if chat_messages %}
+          {% for message in chat_messages %}
+          <article class="parent-chat-bubble {{ 'assistant' if message.sender == 'assistant' else 'parent' }}" data-parent-chat-message>
+            <div class="parent-chat-bubble-meta">
+              <strong>{{ assistant_label if message.sender == 'assistant' else 'You' }}</strong>
+              {% if message.created_at %}<span data-parent-chat-timestamp="{{ message.created_at }}"></span>{% endif %}
+            </div>
+            <div class="parent-chat-bubble-body">{{ message.body }}</div>
+            {% if message.sender == 'assistant' and message.activity_events %}
+            <div class="parent-chat-memory-log">
+              {% for item in message.activity_events %}
+              {% if item.details %}
+              <details class="parent-chat-memory-event">
+                <summary class="parent-chat-memory-row">
+                  {% if item.href %}<a href="{{ item.href }}">{{ item.label }}</a>{% else %}<span>{{ item.label }}</span>{% endif %}
+                </summary>
+                <div class="parent-chat-memory-detail-list">
+                  {% for detail in item.details %}
+                  {% if detail.id %}
+                  <a class="parent-chat-memory-detail" href="/app/memories/map?node={{ detail.id }}">{{ detail.title }}</a>
+                  {% else %}
+                  <span class="parent-chat-memory-detail">{{ detail.title }}</span>
+                  {% endif %}
+                  {% endfor %}
+                </div>
+              </details>
+              {% else %}
+              <div class="parent-chat-memory-row">
+                {% if item.href %}<a href="{{ item.href }}">{{ item.label }}</a>{% else %}<span>{{ item.label }}</span>{% endif %}
+              </div>
+              {% endif %}
+              {% endfor %}
+            </div>
+            {% endif %}
+          </article>
+          {% endfor %}
+        {% else %}
+        <div class="guidance-question-empty" data-parent-chat-empty>
+          <h4>No answers sent yet</h4>
+          <p class="subtle">Pick a question, answer naturally, and {{ assistant_label }} will respond here without sending you to a different page.</p>
+        </div>
+        {% endif %}
+      </div>
+
+      <form id="parent-chat-form" class="parent-chat-form guidance-question-form" method="post" action="/app/parent-chat/send">
+        <input type="hidden" name="csrf_token" value="{{ chat_payload.csrf_token }}">
+        <input type="hidden" id="parent-chat-thread-id" name="thread_id" value="{{ active_thread_id }}">
+        <input type="hidden" id="parent-chat-context" name="question_context" value="">
+        <div class="parent-chat-composer-row">
+          <textarea
+            id="parent-chat-input"
+            name="message"
+            rows="3"
+            maxlength="2400"
+            aria-label="Message"
+            placeholder="Answer in your own words or ask a follow-up..."></textarea>
+          <button id="parent-chat-submit" class="button" type="submit">Send</button>
+        </div>
+        <div class="parent-chat-actions">
+          <p id="parent-chat-status" class="subtle" aria-live="polite"></p>
+        </div>
+      </form>
+    </article>
+  </div>
+  {% else %}
+  <article class="card guidance-empty-card">
+    <h3>Questions unlock once a child profile is connected</h3>
+    <p class="subtle">Once a child profile is linked to an active companion, this page will highlight the most useful questions to answer next and let you respond right here.</p>
+    <div class="hero-actions">
+      <a class="button ghost" href="/app/child">Open Child Profile</a>
+      <a class="button ghost" href="/app/initialize">Review Setup</a>
+    </div>
+  </article>
+  {% endif %}
+</section>
+
+<script id="portal-parent-chat-data" type="application/json">{{ chat_payload|tojson }}</script>
+{% endblock %}
+{% block body_scripts %}
+<script type="module" src="/static/portal-parent-chat.js"></script>
+<script type="module" src="/static/portal-questions.js"></script>
+{% endblock %}

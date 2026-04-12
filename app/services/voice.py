@@ -1373,7 +1373,7 @@ class VoiceService:
             persona=persona,
             config=config,
         )
-        memories = await self.memory_service.retrieve(
+        recall_bundle = await self.memory_service.recall_bundle(
             session,
             user_id=user.id,
             persona_id=persona.id if persona else None,
@@ -1387,12 +1387,15 @@ class VoiceService:
         return {
             "memories": [
                 {
-                    "title": item.memory.title,
-                    "summary": item.memory.summary,
-                    "content": item.memory.content,
-                    "score": round(item.score, 3),
+                    "id": hit.id,
+                    "title": hit.title,
+                    "summary": hit.summary,
+                    "content": hit.content,
+                    "score": round(hit.score, 3),
+                    "semantic": hit.semantic.model_dump(mode="json") if hit.semantic else {},
+                    "entities": [entity.model_dump(mode="json") for entity in hit.neighborhood.entities],
                 }
-                for item in memories
+                for hit in recall_bundle.hits
             ],
             "recent_messages": [
                 {
@@ -1648,6 +1651,13 @@ class VoiceService:
                 [memory],
                 config={"memory": self.settings.memory.model_dump(mode="json")},
             )
+            await self.memory_service.ensure_structure_for_memories(
+                session,
+                user_id=user.id,
+                persona_id=persona.id if persona else None,
+                memories=[memory],
+                child_name=user.display_name or None,
+            )
             logger.info(
                 "speech_dictionary_saved",
                 user_id=str(user.id),
@@ -1669,42 +1679,40 @@ class VoiceService:
     ) -> dict[str, Any]:
         if user is None:
             return {"ok": False, "error": "No user linked to call"}
-        memory_type_raw = str(args.get("memory_type") or "fact")
-        try:
-            memory_type = MemoryType(memory_type_raw)
-        except ValueError:
-            memory_type = MemoryType.fact
-        metadata = {"source": "call_tool", "call_record_id": str(call_record.id)}
-        entity_name = str(args.get("entity_name") or "").strip()
-        entity_kind = str(args.get("entity_kind") or "").strip()
-        if entity_name:
-            metadata.update(
-                {
-                    "entity_name": entity_name,
-                    "entity_name_normalized": entity_name.casefold(),
-                    "entity_kind": entity_kind or "topic",
-                    "memory_scope": "entity",
-                }
-            )
-        item = MemoryItem(
-            user_id=user.id,
-            persona_id=persona.id if persona else None,
-            memory_type=memory_type,
-            title=str(args.get("title") or "Call memory")[:120],
-            content=str(args.get("content") or "").strip(),
-            summary=str(args.get("summary") or "").strip() or None,
-            tags=[str(tag).strip() for tag in (args.get("tags") or []) if str(tag).strip()],
-            importance_score=0.6,
-            metadata_json=metadata,
-        )
-        session.add(item)
-        await session.flush()
-        await self.memory_service.embed_items(
+        content_bits = [
+            str(args.get("title") or "").strip(),
+            str(args.get("summary") or "").strip(),
+            str(args.get("content") or "").strip(),
+        ]
+        latest_content = "\n".join(bit for bit in content_bits if bit)
+        decision = await self.memory_service.plan_and_commit_text(
             session,
-            [item],
+            user=user,
+            persona=persona,
+            latest_content=latest_content,
             config={"memory": self.settings.memory.model_dump(mode="json")},
+            source_kind="call_tool",
+            source_channel="voice",
+            origin_key=f"call-tool:{call_record.id}:{normalize_text(str(args.get('content') or args.get('title') or ''))[:96]}",
+            recent_snippets=[f"voice: {truncate_text(latest_content, 260)}"],
+            extra_metadata={
+                "call_record_id": str(call_record.id),
+                "tool_name": "save_call_memory",
+                "tool_args": {
+                    key: value
+                    for key, value in args.items()
+                    if key in {"title", "summary", "content", "memory_type", "tags", "entity_name", "entity_kind"}
+                },
+            },
         )
-        return {"ok": True, "memory_id": str(item.id)}
+        return {
+            "ok": decision.status == "applied",
+            "memory_id": decision.memory_ids[0] if decision.memory_ids else None,
+            "memory_ids": list(decision.memory_ids),
+            "details": [item.model_dump(mode="json") for item in decision.details],
+            "summary": decision.summary,
+            **({"error": decision.error} if decision.error else {}),
+        }
 
     async def _finalize_realtime_call(
         self,

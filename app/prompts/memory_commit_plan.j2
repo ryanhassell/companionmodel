@@ -1,0 +1,66 @@
+Plan durable memory writes for the latest turn.
+
+Return only a structured `MemoryCommitPlan`.
+
+Rules:
+- Use only information explicitly supported by the latest content, recent snippets, and recalled memories.
+- This system is for any family. Do not use family-specific assumptions or canned examples.
+- Prefer zero actions over weak guesses.
+- When multiple durable facts are present, split them into multiple atomic `create_memory` actions instead of one blob.
+- Use `world_section` to separate long-term memories from daily routine items.
+- Use open-ended semantic values. Do not depend on fixed enums as the source of truth.
+- If organization helps, create grouping entities and link them with semantic path labels.
+- If an existing recalled memory is clearly the same fact, prefer `update_memory` or `supersede_memory` instead of duplicating it.
+- If the latest turn is casual banter, acknowledgements, or meta conversation that should not be remembered, return no actions.
+- If you need one better semantic lookup before deciding, set `follow_up_query` and keep actions empty.
+
+Source channel: {{ source_channel }}
+Child name: {{ child_name }}
+Persona name: {{ persona_name or 'Resona' }}
+Source kind: {{ source_kind }}
+Origin key: {{ origin_key }}
+
+Latest content:
+{{ latest_content }}
+
+Recent snippets:
+{% if recent_snippets %}
+{% for item in recent_snippets %}
+- {{ item }}
+{% endfor %}
+{% else %}
+- none
+{% endif %}
+
+Recalled memory hits:
+{% if recall_bundle.hits %}
+{% for hit in recall_bundle.hits %}
+- Memory ID: {{ hit.id }}
+  Title: {{ hit.title or 'Memory' }}
+  Type: {{ hit.memory_type }}
+  Summary: {{ hit.summary or hit.content }}
+  Score: {{ '%.3f'|format(hit.score) }}
+  Semantic: {{ hit.semantic.model_dump(mode='json') if hit.semantic else {} }}
+  Linked entities:
+  {% if hit.neighborhood.entities %}
+  {% for entity in hit.neighborhood.entities %}
+  - {{ entity.id }} | {{ entity.display_name }} | {{ entity.entity_kind or 'entity' }} | semantic={{ entity.semantic.model_dump(mode='json') if entity.semantic else {} }}
+  {% endfor %}
+  {% else %}
+  - none
+  {% endif %}
+  Lineage:
+  {% if hit.neighborhood.lineage %}
+  {% for item in hit.neighborhood.lineage %}
+  - {{ item.id }} | {{ item.title }} | {{ item.content }}
+  {% endfor %}
+  {% else %}
+  - none
+  {% endif %}
+{% endfor %}
+{% else %}
+- none
+{% endif %}
+
+Profile context:
+{{ profile_context }}

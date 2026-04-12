@@ -1,60 +1,433 @@
 {% extends "portal/base.html" %}
 {% set active_nav = 'child' %}
 {% block content %}
-<section class="page-header">
+<section class="page-header child-page-header">
   <div>
-    <h2>Child Profile</h2>
-    <p class="subtle">A clear view of profile details, communication preferences, boundaries, and routines for this household.</p>
+    <p class="eyebrow">Household Profiles</p>
+    <h2>Child profiles and support settings</h2>
+    <p class="subtle">A clearer, family-friendly home for profile context, support preferences, boundaries, and routines across the household.</p>
   </div>
 </section>
 
-{% if child and child_overview %}
-<section class="child-profile-layout">
-  <article class="card child-profile-overview-card">
-    <div class="child-profile-overview-head">
-      <div>
-        <p class="eyebrow">Profile Overview</p>
-        <h3>{{ child_overview.name }}</h3>
-      </div>
-      <span class="pill">{{ child_overview.companion_status }}</span>
-    </div>
+{% if child_notice %}
+<article class="portal-inline-alert" data-tone="{{ child_notice.tone }}">
+  <strong>{{ child_notice.title }}</strong>
+  <p>{{ child_notice.message }}</p>
+</article>
+{% endif %}
 
-    <dl class="child-profile-overview-grid">
+<section class="child-profile-shell">
+  <article class="card child-household-card">
+    <div class="child-household-head">
       <div>
-        <dt>Birth year</dt>
-        <dd>{{ child_overview.birth_year }}</dd>
+        <p class="eyebrow">Household Overview</p>
+        <h3>{{ child_household_context.count_label }}</h3>
+        <p>{{ child_household_context.summary }}</p>
       </div>
-      <div>
-        <dt>Companion connection</dt>
-        <dd>{{ child_overview.companion_status }}</dd>
-      </div>
-    </dl>
-
-    <div class="child-profile-notes">
-      <h4>Notes</h4>
-      <p class="subtle">{{ child_overview.notes }}</p>
+      <a class="button ghost" href="/app/billing">Review Billing</a>
     </div>
+    <p class="subtle child-household-note">{{ child_household_context.extra_note }}</p>
+
+    {% if child_roster %}
+    <div class="child-roster-grid">
+      {% for item in child_roster %}
+      <a href="{{ item.href }}" class="child-roster-card{% if item.active == 'true' %} is-active{% endif %}">
+        <strong>{{ item.name }}</strong>
+        <span>{{ item.status }}</span>
+        <small>{{ item.detail }}</small>
+      </a>
+      {% endfor %}
+    </div>
+    {% endif %}
   </article>
 
-  <div class="child-profile-section-grid">
-    {% for section in child_profile_sections %}
-    <article class="card child-profile-section-card">
-      <h3>{{ section["title"] }}</h3>
-      <dl class="child-profile-detail-list">
-        {% for item in section["items"] %}
+  {% if child and child_overview %}
+  <div class="child-profile-layout">
+    <article class="card child-profile-overview-card">
+      <div class="child-profile-overview-head">
         <div>
-          <dt>{{ item["label"] }}</dt>
-          <dd>{{ item["value"] }}</dd>
+          <p class="eyebrow">Selected Profile</p>
+          <h3>{{ child_overview.name }}</h3>
+          <p>{{ child_overview.summary }}</p>
         </div>
+        <span class="pill">{{ child_overview.status_label }}</span>
+      </div>
+
+      <div class="child-profile-spotlight-grid">
+        {% for metric in child_overview.metrics %}
+        <article class="child-profile-spotlight-card">
+          <span>{{ metric.label }}</span>
+          <strong>{{ metric.value }}</strong>
+          <small>{{ metric.detail }}</small>
+        </article>
         {% endfor %}
-      </dl>
+      </div>
+
+      <div class="child-profile-notes">
+        <h4>Notes</h4>
+        <p class="subtle">{{ child_overview.notes }}</p>
+      </div>
     </article>
-    {% endfor %}
+
+    {% if child_edit_form %}
+    <article class="card child-edit-card">
+      <div class="child-add-head">
+        <div>
+          <p class="eyebrow">Profile Settings</p>
+          <h3>Edit {{ child_overview.name }}</h3>
+          <p>Keep the profile details current, archive it when it should leave the active household, or permanently remove an unlinked profile that was added by mistake.</p>
+        </div>
+      </div>
+      <form method="post" action="{{ child_edit_form.update_url }}" class="child-add-form">
+        <input type="hidden" name="csrf_token" value="{{ child_edit_form.csrf_token }}">
+        <input type="hidden" name="next" value="{{ child_edit_form.next }}">
+        <label>
+          <span>First name</span>
+          <input type="text" name="first_name" value="{{ child_edit_form.first_name }}" required>
+        </label>
+        <label>
+          <span>Display name</span>
+          <input type="text" name="display_name" value="{{ child_edit_form.display_name }}">
+        </label>
+        <label>
+          <span>Birth year</span>
+          <input type="number" name="birth_year" min="1900" max="2100" value="{{ child_edit_form.birth_year }}">
+        </label>
+        <label class="child-add-form-full">
+          <span>Notes</span>
+          <textarea name="notes">{{ child_edit_form.notes }}</textarea>
+        </label>
+        <div class="child-edit-actions">
+          <button type="submit">Save Profile</button>
+        </div>
+      </form>
+      <div class="child-edit-actions child-edit-actions-secondary">
+        <form method="post" action="{{ child_edit_form.archive_url }}" class="inline-form">
+          <input type="hidden" name="csrf_token" value="{{ child_edit_form.csrf_token }}">
+          <button type="submit" class="button ghost">Archive Profile</button>
+        </form>
+        {% if child_edit_form.can_remove %}
+        <form method="post" action="{{ child_edit_form.remove_url }}" class="inline-form">
+          <input type="hidden" name="csrf_token" value="{{ child_edit_form.csrf_token }}">
+          <button type="submit" class="button danger">Remove Permanently</button>
+        </form>
+        {% else %}
+        <p class="subtle child-edit-note">Permanent removal is only available for profiles that are not linked to live companion history. Archive this profile instead to take it out of the active household.</p>
+        {% endif %}
+      </div>
+    </article>
+    {% endif %}
+
+    {% if child_resona_form %}
+    <article class="card child-resona-card">
+      <div class="child-add-head">
+        <div>
+          <p class="eyebrow">Resona</p>
+          <h3>{{ child_resona_summary.display_name or 'Choose this child’s Resona' }}</h3>
+          <p>
+            {% if child_resona_summary.display_name %}
+            This is the child-specific companion profile used across parent chat, SMS, and voice for {{ child_overview.name }}.
+            {% else %}
+            This child does not have an active Resona yet. Choose one here so the companion identity, voice, and style are set before more conversations build up.
+            {% endif %}
+          </p>
+        </div>
+        <span class="pill">{{ 'Ready' if child_resona_summary.display_name else 'Needs setup' }}</span>
+      </div>
+
+      <div class="child-resona-summary-grid">
+        <article class="child-resona-stat">
+          <span>Name</span>
+          <strong>{{ child_resona_summary.display_name or 'Not chosen yet' }}</strong>
+          <small>One active Resona per child profile.</small>
+        </article>
+        <article class="child-resona-stat">
+          <span>Origin</span>
+          <strong>
+            {% if child_resona_summary.display_name %}
+              {{ child_resona_summary.preset_label or 'Custom' }}
+            {% else %}
+              Not chosen yet
+            {% endif %}
+          </strong>
+          <small>{{ child_resona_summary.source_type|replace('_', ' ')|title if child_resona_summary.source_type else 'Preset-backed or fully custom.' }}</small>
+        </article>
+        <article class="child-resona-stat">
+          <span>Voice</span>
+          <strong>{{ child_resona_summary.voice_label or 'Not chosen yet' }}</strong>
+          <small>{{ 'Preview available.' if child_resona_summary.preview_available else 'Preview depends on the current voice environment.' }}</small>
+        </article>
+      </div>
+
+      {% if child_resona_summary.summary %}
+      <p class="subtle">{{ child_resona_summary.summary }}</p>
+      {% endif %}
+
+      <form method="post" action="{{ child_resona_form.action_url }}" class="child-add-form child-resona-form" data-child-resona-form>
+        <input type="hidden" name="csrf_token" value="{{ child_resona_form.csrf_token }}">
+
+        <div class="child-add-form-full">
+          <label class="initialization-field-label">How should this child’s Resona start?</label>
+          <div class="child-resona-mode-grid">
+            <label class="initialization-plan-card initialization-resona-mode-card">
+              <input type="radio" name="resona_mode" value="preset" {{ 'checked' if child_resona_form.resona_mode != 'custom' else '' }}>
+              <span class="initialization-plan-card-copy">
+                <strong>Preset Resona</strong>
+                <small>Start from a curated companion and tune it for this child.</small>
+              </span>
+            </label>
+            <label class="initialization-plan-card initialization-resona-mode-card">
+              <input type="radio" name="resona_mode" value="custom" {{ 'checked' if child_resona_form.resona_mode == 'custom' else '' }}>
+              <span class="initialization-plan-card-copy">
+                <strong>Custom Resona</strong>
+                <small>Shape the companion more directly while still keeping one active Resona for this child.</small>
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <div class="child-add-form-full" data-child-resona-preset-panel>
+          <label class="initialization-field-label">Preset choices</label>
+          <div class="initialization-resona-preset-grid child-resona-choice-grid">
+            {% for preset in child_resona_form.preset_options %}
+            <label class="initialization-plan-card initialization-resona-preset-card">
+              <input type="radio" name="resona_preset_key" value="{{ preset.key }}" {{ 'checked' if child_resona_form.resona_preset_key == preset.key else '' }}>
+              <span class="initialization-plan-card-copy">
+                <strong>{{ preset.label }}</strong>
+                <small>{{ preset.summary }}</small>
+                <small>{{ preset.description }}</small>
+              </span>
+            </label>
+            {% endfor %}
+          </div>
+        </div>
+
+        <label>
+          <span>Resona name</span>
+          <input type="text" name="resona_display_name" value="{{ child_resona_form.resona_display_name }}" maxlength="120" placeholder="Juniper">
+        </label>
+
+        <div class="child-add-form-full">
+          <label class="initialization-field-label">Voice choice</label>
+          <div class="initialization-resona-voice-grid child-resona-choice-grid">
+            {% for voice in child_resona_form.voice_options %}
+            <label class="initialization-plan-card initialization-resona-voice-card">
+              <input type="radio" name="resona_voice_profile_key" value="{{ voice.key }}" {{ 'checked' if child_resona_form.resona_voice_profile_key == voice.key else '' }}>
+              <span class="initialization-plan-card-copy">
+                <strong>{{ voice.label }}</strong>
+                <small>{{ voice.summary }}</small>
+                <small>{{ 'Preview available in this environment.' if voice.preview_available else 'Preview may be unavailable here.' }}</small>
+              </span>
+            </label>
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="child-add-form-full field-preview field-preview-emphasis child-resona-preview">
+          <div class="field-preview-head">
+            <div>
+              <strong>Voice preview</strong>
+              <p class="subtle" id="child-resona-preview-caption">Generate a short sample using the current Resona name and voice selection.</p>
+            </div>
+            <button type="button" class="button ghost subtle-button" id="child-resona-preview-button">Preview Voice</button>
+          </div>
+          <p class="field-preview-message" id="child-resona-preview-message">No preview generated yet.</p>
+          <audio id="child-resona-preview-audio" controls hidden></audio>
+        </div>
+
+        <label>
+          <span>Overall feel</span>
+          <textarea name="resona_vibe" maxlength="280" placeholder="gentle, warm, and softly encouraging">{{ child_resona_form.resona_vibe }}</textarea>
+        </label>
+        <label>
+          <span>What helps this child feel understood?</span>
+          <textarea name="resona_support_style" maxlength="280" placeholder="slow down first, reassure quickly, and keep things emotionally easy to join">{{ child_resona_form.resona_support_style }}</textarea>
+        </label>
+        <label>
+          <span>What backfires or should be avoided?</span>
+          <textarea name="resona_avoid" maxlength="280" placeholder="don't stack too many questions or sound too clinical">{{ child_resona_form.resona_avoid }}</textarea>
+        </label>
+        <label>
+          <span>Anchors and favorite topics</span>
+          <textarea name="resona_anchors" maxlength="280" placeholder="music, birthdays, pets, favorite people, celebrations">{{ child_resona_form.resona_anchors }}</textarea>
+        </label>
+        <label>
+          <span>How proactive support should feel</span>
+          <textarea name="resona_proactive_style" maxlength="280" placeholder="low-pressure, familiar, and never guilt-y">{{ child_resona_form.resona_proactive_style }}</textarea>
+        </label>
+
+        <div class="child-add-form-full child-resona-advanced">
+          <div class="child-resona-advanced-head">
+            <p class="eyebrow">Full Editor</p>
+            <h4>Richer persona tuning for this child</h4>
+            <p class="subtle">These fields shape how this specific Resona sounds and behaves after setup. They stay scoped to {{ child_overview.name }} only.</p>
+          </div>
+          <div class="child-add-form">
+            <label class="child-add-form-full">
+              <span>Description</span>
+              <textarea name="resona_description" placeholder="A clear parent-facing summary of this Resona.">{{ child_resona_form.resona_description }}</textarea>
+            </label>
+            <label class="child-add-form-full">
+              <span>Style</span>
+              <textarea name="resona_style" placeholder="Warm, playful, grounded, direct, imaginative...">{{ child_resona_form.resona_style }}</textarea>
+            </label>
+            <label>
+              <span>Tone</span>
+              <textarea name="resona_tone" placeholder="calm, encouraging, confidence-building">{{ child_resona_form.resona_tone }}</textarea>
+            </label>
+            <label>
+              <span>Boundaries</span>
+              <textarea name="resona_boundaries" placeholder="Never guilt-y, never too intense, never too clinical">{{ child_resona_form.resona_boundaries }}</textarea>
+            </label>
+            <label>
+              <span>Topics of interest</span>
+              <input type="text" name="resona_topics" value="{{ child_resona_form.resona_topics }}" placeholder="music, birthdays, favorite shows">
+            </label>
+            <label>
+              <span>Favorite activities</span>
+              <input type="text" name="resona_activities" value="{{ child_resona_form.resona_activities }}" placeholder="singing, playful check-ins, routines">
+            </label>
+            <label>
+              <span>Speech style</span>
+              <textarea name="resona_speech_style" placeholder="simple, warm, expressive, easy to follow">{{ child_resona_form.resona_speech_style }}</textarea>
+            </label>
+            <label>
+              <span>Disclosure style</span>
+              <textarea name="resona_disclosure_style" placeholder="transparent, natural, never robotic">{{ child_resona_form.resona_disclosure_style }}</textarea>
+            </label>
+            <label>
+              <span>Texting length</span>
+              <select name="resona_texting_length">
+                <option value="" {{ 'selected' if not child_resona_form.resona_texting_length else '' }}>Use current default</option>
+                <option value="short" {{ 'selected' if child_resona_form.resona_texting_length == 'short' else '' }}>Short</option>
+                <option value="short_to_medium" {{ 'selected' if child_resona_form.resona_texting_length == 'short_to_medium' else '' }}>Short to medium</option>
+                <option value="medium" {{ 'selected' if child_resona_form.resona_texting_length == 'medium' else '' }}>Medium</option>
+                <option value="long" {{ 'selected' if child_resona_form.resona_texting_length == 'long' else '' }}>Longer</option>
+              </select>
+            </label>
+            <label>
+              <span>Emoji tendency</span>
+              <select name="resona_emoji_tendency">
+                <option value="" {{ 'selected' if not child_resona_form.resona_emoji_tendency else '' }}>Use current default</option>
+                <option value="low" {{ 'selected' if child_resona_form.resona_emoji_tendency == 'low' else '' }}>Low</option>
+                <option value="medium" {{ 'selected' if child_resona_form.resona_emoji_tendency == 'medium' else '' }}>Medium</option>
+                <option value="high" {{ 'selected' if child_resona_form.resona_emoji_tendency == 'high' else '' }}>High</option>
+              </select>
+            </label>
+            <label class="child-add-form-full">
+              <span>Parent notes</span>
+              <textarea name="resona_parent_notes" placeholder="Operator-style notes for how this household wants the companion to show up.">{{ child_resona_form.resona_parent_notes }}</textarea>
+            </label>
+          </div>
+        </div>
+
+        <div class="child-edit-actions">
+          <button type="submit">Save Resona</button>
+        </div>
+      </form>
+    </article>
+    {% endif %}
+
+    <div class="child-profile-section-grid">
+      {% for section in child_profile_sections %}
+      <article class="card child-profile-section-card">
+        <div class="child-profile-section-head">
+          <div>
+            <p class="eyebrow">{{ section["title"] }}</p>
+            <h3>{{ section["title"] }}</h3>
+            <p>{{ section["summary"] }}</p>
+          </div>
+        </div>
+        <dl class="child-profile-detail-list">
+          {% for item in section["items"] %}
+          <div>
+            <dt>{{ item["label"] }}</dt>
+            <dd>{{ item["value"] }}</dd>
+          </div>
+          {% endfor %}
+        </dl>
+      </article>
+      {% endfor %}
+    </div>
   </div>
+  {% else %}
+  <article class="card child-profile-empty">
+    <h3>No child profile exists yet</h3>
+    <p class="subtle">Add the first child profile below and this area will turn into a clean household workspace.</p>
+  </article>
+  {% endif %}
+
+  <article class="card child-add-card">
+    <div class="child-add-head">
+      <div>
+        <p class="eyebrow">Add Another Child</p>
+        <h3>Expand the household thoughtfully</h3>
+        <p>{{ add_child_form.billing_note }}</p>
+      </div>
+    </div>
+    <form method="post" action="{{ add_child_form.action_url }}" class="child-add-form">
+      <input type="hidden" name="csrf_token" value="{{ add_child_form.csrf_token }}">
+      <input type="hidden" name="next" value="/app/child">
+      <label>
+        <span>First name</span>
+        <input type="text" name="first_name" placeholder="Sophie" required {% if add_child_form.disabled %}disabled{% endif %}>
+      </label>
+      <label>
+        <span>Display name</span>
+        <input type="text" name="display_name" placeholder="Sophie" {% if add_child_form.disabled %}disabled{% endif %}>
+      </label>
+      <label>
+        <span>Birth year</span>
+        <input type="number" name="birth_year" min="1900" max="2100" placeholder="2010" {% if add_child_form.disabled %}disabled{% endif %}>
+      </label>
+      <label class="child-add-form-full">
+        <span>Notes</span>
+        <textarea name="notes" placeholder="Anything helpful to keep in mind from day one." {% if add_child_form.disabled %}disabled{% endif %}></textarea>
+      </label>
+      <div class="child-add-actions">
+        <button type="submit" {% if add_child_form.disabled %}disabled{% endif %}>Add Child Profile</button>
+      </div>
+    </form>
+  </article>
+
+  {% if archived_child_roster %}
+  <article class="card child-archived-card">
+    <div class="child-add-head">
+      <div>
+        <p class="eyebrow">Archived Profiles</p>
+        <h3>Previously active household profiles</h3>
+        <p>Archived profiles stay out of the active roster and billing count, but can be restored when needed.</p>
+      </div>
+    </div>
+    <div class="child-roster-grid">
+      {% for item in archived_child_roster %}
+      <article class="child-roster-card child-roster-card-archived">
+        <strong>{{ item.name }}</strong>
+        <span>{{ item.status }}</span>
+        <small>{{ item.detail }}</small>
+        <p class="subtle">{{ item.notes }}</p>
+        <div class="child-archived-actions">
+          <form method="post" action="{{ item.restore_url }}" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{ add_child_form.csrf_token }}">
+            <button type="submit" class="button ghost">Restore</button>
+          </form>
+          <form method="post" action="{{ item.remove_url }}" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{ add_child_form.csrf_token }}">
+            <button type="submit" class="button danger">Remove Permanently</button>
+          </form>
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+  </article>
+  {% endif %}
 </section>
-{% else %}
-<article class="card">
-  <p class="subtle">No child profile exists yet. Complete setup first and this page will organize everything here for you.</p>
-</article>
+{% if child_resona_form %}
+<script id="portal-child-resona-data" type="application/json">{{ child_resona_form|tojson }}</script>
+{% endif %}
+{% endblock %}
+{% block body_scripts %}
+{% if child_resona_form %}
+<script type="module" src="/static/portal-child.js"></script>
 {% endif %}
 {% endblock %}

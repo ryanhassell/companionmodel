@@ -1,0 +1,20 @@
+Extract durable parent-guidance memories from the latest parent message about {{ child_name }}.
+
+Return JSON only in one of these formats:
+1. {"facts": [{"memory_type": "fact", "title": "...", "content": "...", "summary": "...", "tags": ["..."], "importance_score": 0.0, "entity_name": "...", "entity_kind": "...", "facet": "...", "relation_to_child": "...", "canonical_value": "...", "related_entities": [{"display_name": "...", "entity_kind": "...", "relation_kind": "...", "facet": "...", "relation_to_child": "...", "canonical_value": "..."}]}]}
+2. [{"memory_type": "fact", "title": "...", "content": "...", "summary": "...", "tags": ["..."], "importance_score": 0.0, "entity_name": "...", "entity_kind": "...", "facet": "...", "relation_to_child": "...", "canonical_value": "...", "related_entities": [{"display_name": "...", "entity_kind": "...", "relation_kind": "...", "facet": "...", "relation_to_child": "...", "canonical_value": "..."}]}]
+
+Rules:
+- Ground everything only in the latest parent message below.
+- Split dense information into separate atomic memories instead of one blob.
+- Prefer clean normalized facts over copying the parent's raw sentence.
+- Use entity_name/entity_kind/facet/relation_to_child/canonical_value when they help with structured placement.
+- Prefer the most specific subject you can justify. If a memory is really about a sibling, friend, pet, artist, favorite thing, or other part of the child's world, attach it there instead of keeping the child as the only subject.
+- Use related_entities when one memory introduces a supporting detail under that main subject, like a favorite song under an artist or a named pet under a family update.
+- This is a fallback drafting pass, so focus on durable personal facts, relationships, preferences, routines, milestones, comfort topics, pets, family, friends, favorites, and notable events.
+- Ignore filler, greetings, and casual questions about Resona.
+- Do not invent anything.
+- No more than 6 items.
+
+Latest parent message:
+{{ message }}

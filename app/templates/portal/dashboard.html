@@ -1,73 +1,218 @@
 {% extends "portal/base.html" %}
 {% set active_nav = 'dashboard' %}
 {% block content %}
-<section class="page-header">
-  <div>
-    <h2>{{ parent_context.household_name }}</h2>
-    <p class="subtle">Parent overview with full conversation visibility, safety context, and billing status.</p>
+<section class="dashboard-shell">
+  <article class="card dashboard-usage-hero" data-tone="{{ parent_context.usage_hero.progress_tone }}">
+    <div class="dashboard-usage-head">
+      <div>
+        <p class="eyebrow">Usage Overview</p>
+        <h2>{{ parent_context.usage_hero.title }}</h2>
+        <p class="subtle">{{ parent_context.usage_hero.summary }}</p>
+      </div>
+      <div class="dashboard-usage-actions">
+        <a class="button" href="{{ parent_context.usage_hero.primary_cta_href }}">{{ parent_context.usage_hero.primary_cta_label }}</a>
+      </div>
+    </div>
+
+    <div class="dashboard-usage-metrics">
+      {% for metric in parent_context.usage_hero.metrics %}
+      <div class="dashboard-usage-metric" data-tone="{{ metric.tone }}">
+        <span>{{ metric.label }}</span>
+        <strong>{{ metric.value }}</strong>
+        {% if metric.detail %}<small>{{ metric.detail }}</small>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+
+    <progress
+      class="dashboard-usage-progress"
+      max="100"
+      value="{{ parent_context.usage_hero.progress_percent }}"
+      aria-label="Credit usage">{{ parent_context.usage_hero.progress_percent }}</progress>
+
+    {% if parent_context.usage_hero.note %}
+    <p class="dashboard-usage-note subtle">{{ parent_context.usage_hero.note }}</p>
+    {% endif %}
+  </article>
+
+  <section class="dashboard-status-strip" aria-label="Account summary">
+    {% for item in parent_context.status_items %}
+    <article class="dashboard-status-card" data-tone="{{ item.tone }}">
+      <p>{{ item.label }}</p>
+      <strong>{{ item.value }}</strong>
+      {% if item.detail %}<span>{{ item.detail }}</span>{% endif %}
+    </article>
+    {% endfor %}
+  </section>
+
+  {% if parent_context.callout %}
+  <article class="card dashboard-callout" data-tone="{{ parent_context.callout.tone }}">
+    <div>
+      <p class="eyebrow">Account Readiness</p>
+      <h3>{{ parent_context.callout.title }}</h3>
+      <p class="subtle">{{ parent_context.callout.body }}</p>
+    </div>
+    <div class="hero-actions">
+      {% for action in parent_context.callout.actions %}
+      <a class="button{{ ' ghost' if action.kind == 'ghost' else '' }}" href="{{ action.href }}">{{ action.label }}</a>
+      {% endfor %}
+    </div>
+  </article>
+  {% endif %}
+
+  <div class="dashboard-grid">
+    <article class="card dashboard-panel dashboard-panel-insights">
+      <div class="dashboard-panel-head">
+        <div>
+          <p class="eyebrow">Insights</p>
+          <h3>Where to focus next</h3>
+          <p class="subtle">A steadier overview of what looks clear already, what support plan is worth shaping next, and what question would sharpen the picture fastest.</p>
+        </div>
+        <div class="hero-actions">
+          <a class="button ghost" href="/app/plans">Plans</a>
+          <a class="button ghost" href="/app/questions">Questions</a>
+        </div>
+      </div>
+
+      <div class="dashboard-insight-grid">
+        {% for item in parent_context.insights %}
+        <a class="dashboard-insight-card" href="{{ item.href }}" data-tone="{{ item.tone }}">
+          <span class="dashboard-insight-label">{{ item.label }}</span>
+          <strong>{{ item.title }}</strong>
+          <p>{{ item.summary }}</p>
+          <span class="dashboard-insight-action">{{ item.action_label }}</span>
+        </a>
+        {% endfor %}
+      </div>
+    </article>
+
+    <article class="card dashboard-panel dashboard-panel-household">
+      <div class="dashboard-panel-head">
+        <div>
+          <p class="eyebrow">Household Snapshot</p>
+          <h3>{{ parent_context.household_name }}</h3>
+          <p class="subtle">{{ parent_context.household_summary }}</p>
+        </div>
+      </div>
+
+      <div class="dashboard-summary-list">
+        <div class="dashboard-summary-row">
+          <span>Child profile</span>
+          <strong>{{ parent_context.child_status_label }}</strong>
+          <small>{{ parent_context.child_status_detail }}</small>
+        </div>
+        <div class="dashboard-summary-row">
+          <span>Subscription</span>
+          <strong>{{ parent_context.subscription_label }}</strong>
+          <small>Billing and access are currently aligned to this account state.</small>
+        </div>
+        <div class="dashboard-summary-row">
+          <span>Portal access</span>
+          <strong>{{ parent_context.role_label }}</strong>
+          <small>Your current level of access inside this household workspace.</small>
+        </div>
+      </div>
+
+      <div class="hero-actions">
+        <a class="button ghost" href="/app/child">Child Profile</a>
+      </div>
+    </article>
+
+    <article class="card dashboard-panel">
+      <div class="dashboard-panel-head">
+        <div>
+          <p class="eyebrow">Recent Conversations</p>
+          <h3>Latest message activity</h3>
+        </div>
+        <a class="button ghost" href="/app/timeline">Open Timeline</a>
+      </div>
+
+      {% if parent_context.conversation_previews %}
+      <div class="dashboard-list">
+        {% for item in parent_context.conversation_previews %}
+        <a class="dashboard-list-item" href="{{ item.href }}">
+          <div class="dashboard-list-item-head">
+            <div class="dashboard-pill-row">
+              <span class="dashboard-pill">{{ item.direction_label }}</span>
+              <span class="dashboard-pill secondary">{{ item.channel_label }}</span>
+            </div>
+            <small>{{ item.timestamp_label }}</small>
+          </div>
+          <p>{{ item.body }}</p>
+        </a>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="dashboard-empty-state">
+        <h4>No recent conversations yet</h4>
+        <p class="subtle">Once live messages start flowing, the latest conversation activity will appear here in a cleaner parent-friendly view.</p>
+      </div>
+      {% endif %}
+    </article>
+
+    <article class="card dashboard-panel">
+      <div class="dashboard-panel-head">
+        <div>
+          <p class="eyebrow">Memory Highlights</p>
+          <h3>What Resona is actively holding onto</h3>
+        </div>
+        <a class="button ghost" href="/app/memories/map">Open Memories</a>
+      </div>
+
+      {% if parent_context.memory_previews %}
+      <div class="dashboard-list">
+        {% for item in parent_context.memory_previews %}
+        <a class="dashboard-list-item" href="{{ item.href }}">
+          <div class="dashboard-list-item-head">
+            <strong>{{ item.title }}</strong>
+            <small>{{ item.updated_label }}</small>
+          </div>
+          <div class="dashboard-pill-row">
+            <span class="dashboard-pill secondary">{{ item.memory_type_label }}</span>
+          </div>
+          <p>{{ item.summary }}</p>
+        </a>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="dashboard-empty-state">
+        <h4>No memory highlights yet</h4>
+        <p class="subtle">As Resona learns more over time, the most relevant memory highlights will surface here for quick review.</p>
+      </div>
+      {% endif %}
+    </article>
+
+    <article class="card dashboard-panel">
+      <div class="dashboard-panel-head">
+        <div>
+          <p class="eyebrow">Safety Snapshot</p>
+          <h3>Recent safety context</h3>
+        </div>
+        <a class="button ghost" href="/app/safety">Open Safety Feed</a>
+      </div>
+
+      {% if parent_context.safety_previews %}
+      <div class="dashboard-list">
+        {% for item in parent_context.safety_previews %}
+        <a class="dashboard-list-item" href="{{ item.href }}">
+          <div class="dashboard-list-item-head">
+            <strong>{{ item.title }}</strong>
+            <small>{{ item.timestamp_label }}</small>
+          </div>
+          <div class="dashboard-pill-row">
+            <span class="dashboard-pill" data-tone="{{ item.tone }}">{{ item.severity_label }}</span>
+          </div>
+          <p>{{ item.detail }}</p>
+        </a>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="dashboard-empty-state">
+        <h4>No recent safety events</h4>
+        <p class="subtle">Recent safety activity will appear here if anything needs review, follow-up, or a closer look.</p>
+      </div>
+      {% endif %}
+    </article>
   </div>
 </section>
-<div class="stats">
-  <div class="stat"><p class="subtle">Account Role</p><strong>{{ role }}</strong></div>
-  <div class="stat"><p class="subtle">Subscription</p><strong>{{ parent_context.subscription_status }}</strong></div>
-  <div class="stat"><p class="subtle">Child</p><strong>{{ parent_context.child_name }}</strong></div>
-  <div class="stat"><p class="subtle">Safety Events</p><strong>{{ safety_events|length }}</strong></div>
-</div>
-{% if parent_context.subscription_status in ['incomplete', 'canceled'] %}
-<article class="card" style="margin-top: 16px; background:#fff8ee;">
-  <h3>Portal access is ready</h3>
-  <p class="subtle">
-    You can complete setup, review household details, and explore the parent portal now.
-    Activate billing when you're ready to enable live Resona messaging and voice usage.
-  </p>
-  <div class="hero-actions">
-    <a class="button" href="/app/onboarding">Complete Setup</a>
-    <a class="button ghost" href="/app/billing">Activate Plan</a>
-  </div>
-</article>
-{% endif %}
-<article class="card" style="margin-top: 16px;">
-  <h3>Usage and Credits</h3>
-  <p><strong>Included credits:</strong> ${{ usage_summary.included_usd }} / month</p>
-  <p><strong>Estimated used:</strong> ${{ '%.2f'|format(usage_summary.used_usd) }}</p>
-  <p><strong>Estimated remaining:</strong> ${{ '%.2f'|format(usage_summary.remaining_usd) }}</p>
-  <p class="subtle">{{ usage_summary.overage_note }}</p>
-</article>
-<div class="grid two" style="margin-top: 16px;">
-  <article class="card">
-    <h3>Recent Conversation Transcript</h3>
-    {% if messages %}
-      {% for msg in messages %}
-      <p><strong>{{ msg.direction.value }}</strong> · {{ msg.created_at }}<br>{{ msg.body or '' }}</p>
-      {% endfor %}
-    {% else %}
-      <p class="subtle">No timeline data yet. Link a child phone during onboarding.</p>
-    {% endif %}
-  </article>
-  <article class="card">
-    <h3>Memory Highlights Used by Replies</h3>
-    {% if memory_items %}
-      {% for item in memory_items %}
-      <p><strong>{{ item.memory_type.value }}</strong> · {{ item.content }}</p>
-      {% endfor %}
-    {% else %}
-      <p class="subtle">No memory highlights yet.</p>
-    {% endif %}
-  </article>
-</div>
-<article class="card" style="margin-top: 16px;">
-  <h3>Safety Events</h3>
-  {% if safety_events %}
-    <table>
-      <thead><tr><th>When</th><th>Severity</th><th>Type</th><th>Action</th></tr></thead>
-      <tbody>
-      {% for event in safety_events %}
-        <tr><td>{{ event.created_at }}</td><td>{{ event.severity.value }}</td><td>{{ event.event_type }}</td><td>{{ event.action_taken or '' }}</td></tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  {% else %}
-    <p class="subtle">No safety events recorded.</p>
-  {% endif %}
-</article>
 {% endblock %}

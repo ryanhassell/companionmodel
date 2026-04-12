@@ -127,6 +127,7 @@ class _FakeStripe:
 async def test_create_checkout_session_uses_card_only(sqlite_session, settings):
     settings.stripe.enabled = True
     settings.stripe.chat_price_id = "price_chat_123"
+    settings.stripe.additional_child_price_id = "price_child_addon_123"
     service = BillingService(settings)
     service._stripe = _FakeStripe()
 
@@ -140,6 +141,7 @@ async def test_create_checkout_session_uses_card_only(sqlite_session, settings):
         customer_email="parent@example.com",
         clerk_org_id="org_123",
         plan_key="chat",
+        child_profile_count=1,
         success_url="https://resona.chat/app/initialize/return?checkout=success",
         cancel_url="https://resona.chat/app/initialize/return?checkout=cancel",
     )
@@ -150,6 +152,7 @@ async def test_create_checkout_session_uses_card_only(sqlite_session, settings):
     assert _FakeStripeCheckoutSession.created_kwargs["client_reference_id"] == str(account.id)
     assert _FakeStripeCheckoutSession.created_kwargs["subscription_data"]["metadata"]["account_id"] == str(account.id)
     assert _FakeStripeCheckoutSession.created_kwargs["subscription_data"]["metadata"]["selected_plan_key"] == "chat"
+    assert _FakeStripeCheckoutSession.created_kwargs["line_items"] == [{"price": "price_chat_123", "quantity": 1}]
 
 
 async def test_create_checkout_session_omits_placeholder_email(sqlite_session, settings):
@@ -168,11 +171,42 @@ async def test_create_checkout_session_omits_placeholder_email(sqlite_session, s
         customer_email="user_123@clerk.local",
         clerk_org_id="org_123",
         plan_key="chat",
+        child_profile_count=1,
         success_url="https://resona.chat/app/initialize/return?checkout=success",
         cancel_url="https://resona.chat/app/initialize/return?checkout=cancel",
     )
 
     assert "customer_email" not in _FakeStripeCheckoutSession.created_kwargs
+
+
+async def test_create_checkout_session_adds_extra_child_line_item(sqlite_session, settings):
+    settings.stripe.enabled = True
+    settings.stripe.chat_price_id = "price_chat_123"
+    settings.stripe.additional_child_price_id = "price_child_addon_123"
+    settings.stripe.included_child_profiles = 1
+    service = BillingService(settings)
+    service._stripe = _FakeStripe()
+
+    account = Account(name="Family Seats", slug="family-seats")
+    sqlite_session.add(account)
+    await sqlite_session.flush()
+
+    await service.create_checkout_session(
+        sqlite_session,
+        account=account,
+        customer_email="parent@example.com",
+        clerk_org_id="org_123",
+        plan_key="chat",
+        child_profile_count=3,
+        success_url="https://resona.chat/app/billing?checkout=success",
+        cancel_url="https://resona.chat/app/billing?checkout=cancel",
+    )
+
+    assert _FakeStripeCheckoutSession.created_kwargs["line_items"] == [
+        {"price": "price_chat_123", "quantity": 1},
+        {"price": "price_child_addon_123", "quantity": 2},
+    ]
+    assert _FakeStripeCheckoutSession.created_kwargs["metadata"]["additional_child_quantity"] == "2"
 
 
 class _FakeClerk:

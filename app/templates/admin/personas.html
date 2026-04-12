@@ -50,7 +50,7 @@
       <input type="hidden" name="action" value="upload_reference">
       <label>Persona
         <select name="persona_id" required>
-          {% for persona in personas %}
+          {% for persona in admin_personas %}
           <option value="{{ persona.id }}">{{ persona.display_name }} ({{ persona.key }})</option>
           {% endfor %}
         </select>
@@ -63,15 +63,17 @@
     </form>
   </section>
   <section class="card">
-    <h2>Current Personas</h2>
+    <h2>Admin and Global Personas</h2>
+    <p class="subtle">These are the shared personas used for operations, presets, and admin-controlled testing. Portal-created child personas are listed separately below so they do not clutter shared preset management.</p>
     <table>
-      <thead><tr><th>Name</th><th>Key</th><th>Active</th><th>ElevenLabs Voice</th><th>Call Model</th><th>Creative Model</th><th>Realtime Voice</th><th>Calling Numbers</th><th>Reference</th><th>Topics</th></tr></thead>
+      <thead><tr><th>Name</th><th>Key</th><th>Active</th><th>Source</th><th>ElevenLabs Voice</th><th>Call Model</th><th>Creative Model</th><th>Realtime Voice</th><th>Calling Numbers</th><th>Reference</th><th>Topics</th></tr></thead>
       <tbody>
-        {% for persona in personas %}
+        {% for persona in admin_personas %}
         <tr>
           <td>{{ persona.display_name }}</td>
           <td>{{ persona.key }}</td>
           <td>{{ "yes" if persona.is_active else "no" }}</td>
+          <td>{{ persona.source_type or "admin" }}</td>
           <td>{{ ((persona.prompt_overrides or {}).get("elevenlabs_voice_id")) or "—" }}</td>
           <td>{{ ((persona.prompt_overrides or {}).get("elevenlabs_call_model")) or "app default" }}</td>
           <td>{{ ((persona.prompt_overrides or {}).get("elevenlabs_creative_model")) or "app default" }}</td>
@@ -91,5 +93,27 @@
       </tbody>
     </table>
   </section>
+  {% if portal_personas %}
+  <section class="card">
+    <h2>Portal-Owned Child Personas</h2>
+    <p class="subtle">These are child-scoped personas created from the parent portal. They stay attached to a household child and are shown here for visibility only.</p>
+    <table>
+      <thead><tr><th>Name</th><th>Key</th><th>Source</th><th>Account</th><th>Owner User</th><th>Preset</th><th>Updated</th></tr></thead>
+      <tbody>
+        {% for persona in portal_personas %}
+        <tr>
+          <td>{{ persona.display_name }}</td>
+          <td>{{ persona.key }}</td>
+          <td>{{ persona.source_type }}</td>
+          <td>{{ persona.account_id or "—" }}</td>
+          <td>{{ persona.owner_user_id or "—" }}</td>
+          <td>{{ persona.preset_key or "Custom" }}</td>
+          <td>{{ persona.updated_at }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
 </div>
 {% endblock %}

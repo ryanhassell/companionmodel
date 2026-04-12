@@ -8,7 +8,7 @@ from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
-from app.models.enums import HouseholdRole, SubscriptionStatus, VerificationCaseStatus
+from app.models.enums import HouseholdRole, PortalChatMessageKind, PortalChatRunStatus, SubscriptionStatus, VerificationCaseStatus
 
 if TYPE_CHECKING:
     from app.models.admin import AdminUser
@@ -132,6 +132,11 @@ class PortalChatThread(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     account: Mapped[Account] = relationship("Account")
     customer_user: Mapped[CustomerUser] = relationship("CustomerUser")
     child_profile: Mapped[ChildProfile] = relationship("ChildProfile", back_populates="parent_chat_threads")
+    runs: Mapped[list[PortalChatRun]] = relationship(
+        "PortalChatRun",
+        back_populates="thread",
+        cascade="all, delete-orphan",
+    )
     messages: Mapped[list[PortalChatMessage]] = relationship(
         "PortalChatMessage",
         back_populates="thread",
@@ -139,14 +144,50 @@ class PortalChatThread(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
 
 
+class PortalChatRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "portal_chat_runs"
+    __table_args__ = (
+        Index("ix_portal_chat_runs_thread_created", "thread_id", "created_at"),
+        Index("ix_portal_chat_runs_account_status", "account_id", "status"),
+    )
+
+    account_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("accounts.id"), nullable=False)
+    customer_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("customer_users.id"), nullable=False)
+    child_profile_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("child_profiles.id"), nullable=False)
+    thread_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portal_chat_threads.id", ondelete="CASCADE"), nullable=False)
+    status: Mapped[PortalChatRunStatus] = mapped_column(
+        Enum(PortalChatRunStatus, name="portalchatrunstatus"),
+        nullable=False,
+        default=PortalChatRunStatus.running,
+    )
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    model_name: Mapped[str | None] = mapped_column(String(120))
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    account: Mapped[Account] = relationship("Account")
+    customer_user: Mapped[CustomerUser] = relationship("CustomerUser")
+    child_profile: Mapped[ChildProfile] = relationship("ChildProfile")
+    thread: Mapped[PortalChatThread] = relationship("PortalChatThread", back_populates="runs")
+    messages: Mapped[list[PortalChatMessage]] = relationship("PortalChatMessage", back_populates="run")
+
+
 class PortalChatMessage(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "portal_chat_messages"
     __table_args__ = (
         Index("ix_portal_chat_messages_thread_created", "thread_id", "created_at"),
+        Index("ix_portal_chat_messages_run_created", "run_id", "created_at"),
     )
 
     thread_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portal_chat_threads.id", ondelete="CASCADE"), nullable=False)
+    run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("portal_chat_runs.id", ondelete="SET NULL"))
     sender: Mapped[str] = mapped_column(String(20), nullable=False)
+    message_kind: Mapped[PortalChatMessageKind] = mapped_column(
+        Enum(PortalChatMessageKind, name="portalchatmessagekind"),
+        nullable=False,
+        default=PortalChatMessageKind.message,
+    )
     body: Mapped[str] = mapped_column(Text(), nullable=False)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     model_name: Mapped[str | None] = mapped_column(String(120))
@@ -154,6 +195,7 @@ class PortalChatMessage(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     tokens_out: Mapped[int | None] = mapped_column(Integer)
 
     thread: Mapped[PortalChatThread] = relationship("PortalChatThread", back_populates="messages")
+    run: Mapped[PortalChatRun | None] = relationship("PortalChatRun", back_populates="messages")
 
 
 class RoleAssignment(UUIDPrimaryKeyMixin, TimestampMixin, Base):

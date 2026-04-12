@@ -1,67 +1,35 @@
 {% extends "portal/base.html" %}
 {% block head_extras %}
-<script src="https://cdn.jsdelivr.net/npm/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+<script src="{{ static_asset('vendor/cytoscape.min.js') }}"></script>
 {% endblock %}
 {% block content %}
-<section class="page-header memory-page-header">
-  <div>
-    <p class="eyebrow">Memories</p>
-    <h2>{% if memory_view == 'map' %}Memory Web{% elif memory_view == 'routine' %}Daily Routine{% else %}Memory Library{% endif %}</h2>
-    <p class="subtle">
-      {% if memory_view == 'map' %}
-      Explore the bigger picture of what Resona knows about {{ child.display_name if child and child.display_name else "your child" }} beyond the day-to-day routine.
-      {% elif memory_view == 'routine' %}
-      Follow how routines, recurring plans, and daily rhythms have been grouped over time.
-      {% else %}
-      Browse everything Resona remembers in a clear library and update anything that needs a parent’s touch.
-      {% endif %}
-    </p>
-  </div>
-</section>
-
-<nav class="portal-subnav" aria-label="Memories section">
+<nav class="portal-subnav memory-subnav" aria-label="Memories section">
   <a href="/app/memories/map{% if show_archived %}?archived=1{% endif %}" class="{{ 'active' if memory_view == 'map' else '' }}">Memory Web</a>
   <a href="/app/memories/daily-routine{% if show_archived %}?archived=1{% endif %}" class="{{ 'active' if memory_view == 'routine' else '' }}">Daily Routine</a>
   <a href="/app/memories/library" class="{{ 'active' if memory_view == 'library' else '' }}">Memory Library</a>
 </nav>
 
 {% if child and child.companion_user_id %}
-<div class="memory-shell">
+<div class="memory-shell memory-shell-rich">
   <section class="memory-main-column">
     {% if memory_view in ['map', 'routine'] %}
     <article class="card memory-map-card">
-      <div class="memory-toolbar">
+      <div class="memory-map-head">
         <div>
           <h3>{% if memory_view == 'map' %}Semantic Web{% else %}Routine Timeline{% endif %}</h3>
           <p class="subtle">
             {% if memory_view == 'map' %}
-            Resona groups recurring themes into a smarter web so important people, topics, and connected memories stay easier to follow.
+            Explore how lasting memories connect across people, interests, events, and important themes.
             {% else %}
-            Solid lines organize recurring routine memories into days and weeks. Dashed lines show softer related moments inside those routines.
+            Follow how recurring routines, days, and weeks are grouped over time.
             {% endif %}
           </p>
         </div>
-        <label class="memory-toggle">
-          <input id="memory-show-archived" type="checkbox" {% if show_archived %}checked{% endif %}>
-          <span>Show archived memories</span>
-        </label>
       </div>
-      <div class="memory-legend" aria-hidden="true">
-        {% if memory_view == 'map' %}
-        <span><i class="memory-legend-dot memory-legend-dot-person"></i>Person hub</span>
-        <span><i class="memory-legend-dot memory-legend-dot-topic"></i>Topic cluster</span>
-        <span><i class="memory-legend-dot memory-legend-dot-memory"></i>Memory</span>
-        <span><i class="memory-legend-line memory-legend-line-anchor"></i>Organizing link</span>
-        {% else %}
-        <span><i class="memory-legend-dot memory-legend-dot-week"></i>Week</span>
-        <span><i class="memory-legend-dot memory-legend-dot-day"></i>Day</span>
-        {% endif %}
-        <span><i class="memory-legend-line memory-legend-line-structural"></i>Structural link</span>
-        <span><i class="memory-legend-line memory-legend-line-similarity"></i>Similarity link</span>
-      </div>
+      <datalist id="memory-search-suggestions"></datalist>
       <div id="memory-graph" class="memory-graph" data-view="{{ memory_view }}"></div>
       <div id="memory-graph-empty" class="portal-inline-alert" hidden>
-        <strong>No connected memories to draw yet.</strong>
+        <strong>Graph unavailable right now.</strong>
         <p>
           {% if memory_view == 'map' %}
           The memory web will appear here once Resona has enough non-routine memories to organize into a clearer picture.
@@ -71,9 +39,85 @@
         </p>
       </div>
     </article>
+
+    <article class="card memory-recent-card">
+      <div class="memory-toolbar">
+        <div>
+          <h3>{% if memory_view == 'routine' %}Recent Routine Memories{% else %}Recent Memories{% endif %}</h3>
+          <p class="subtle">
+            {% if memory_view == 'routine' %}
+            The newest routine memories, five at a time.
+            {% else %}
+            The newest long-term memories Resona has been working with, five at a time.
+            {% endif %}
+          </p>
+        </div>
+        {% if recent_memory_total > 5 %}
+        <div class="portal-inline-actions memory-recent-pagination">
+          <button class="button ghost" type="button" id="memory-recent-prev-button" {% if not recent_memory_prev_url %}disabled{% endif %}>Previous</button>
+          <span class="subtle" id="memory-recent-page-label">Page {{ recent_memory_page }} of {{ recent_memory_page_total }}</span>
+          <button class="button ghost" type="button" id="memory-recent-next-button" {% if not recent_memory_next_url %}disabled{% endif %}>Next</button>
+        </div>
+        {% endif %}
+      </div>
+      {% if recent_memory_items %}
+      <div id="memory-recent-list" class="memory-library-list">
+        {% for item in recent_memory_items %}
+        <button type="button" class="memory-library-item" data-memory-id="{{ item.id }}">
+          <div class="memory-library-item-head">
+            <div>
+              <strong>{{ item.title }}</strong>
+              <p class="subtle">{{ item.memory_type_label }} · {{ item.updated_label }}</p>
+            </div>
+            <div class="memory-library-badges">
+              {% if item.pinned %}<span class="pill">Pinned</span>{% endif %}
+              {% if item.archived %}<span class="pill memory-pill-archived">Archived</span>{% endif %}
+            </div>
+          </div>
+          <p>{{ item.summary }}</p>
+        </button>
+        {% endfor %}
+      </div>
+      <div id="memory-recent-empty" class="portal-inline-alert" hidden>
+        <strong>No recent memories yet.</strong>
+        <p>{% if memory_view == 'routine' %}Routine memories will show up here once Resona has grouped a few days together.{% else %}Long-term memories will show up here once Resona has enough to keep on hand.{% endif %}</p>
+      </div>
+      {% else %}
+      <div id="memory-recent-list" class="memory-library-list" hidden></div>
+      <div id="memory-recent-empty" class="portal-inline-alert">
+        <strong>No recent memories yet.</strong>
+        <p>{% if memory_view == 'routine' %}Routine memories will show up here once Resona has grouped a few days together.{% else %}Long-term memories will show up here once Resona has enough to keep on hand.{% endif %}</p>
+      </div>
+      {% endif %}
+    </article>
     {% else %}
+    {% if memory_branch_context %}
+    <article class="card memory-branch-card">
+      <div class="memory-branch-head">
+        <div>
+          <p class="eyebrow">Branch View</p>
+          <h3>{{ memory_branch_context.label }}</h3>
+          {% if memory_branch_context.breadcrumb %}
+          <div class="memory-breadcrumbs memory-breadcrumbs-static">
+            {% for crumb in memory_branch_context.breadcrumb %}
+            <span class="memory-breadcrumb">{{ crumb.label }}</span>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </div>
+        <div class="portal-inline-actions">
+          <a class="button ghost" href="/app/memories/map?branch={{ memory_branch_context.node_id }}">Back to map</a>
+          <a class="button ghost" href="/app/memories/library">Show all memories</a>
+        </div>
+      </div>
+    </article>
+    {% endif %}
+
     <article class="card memory-library-card">
       <form class="memory-library-toolbar" method="get" action="/app/memories/library">
+        {% if memory_branch_context %}
+        <input type="hidden" name="branch" value="{{ memory_branch_context.node_id }}">
+        {% endif %}
         <label>
           <span>Search memories</span>
           <input type="search" name="q" value="{{ search_query }}" placeholder="Search by title, summary, or memory text">
@@ -123,26 +167,98 @@
       </div>
       {% endif %}
     </article>
+
     {% endif %}
+
+    <article class="card memory-danger-card">
+      <div class="memory-danger-head">
+        <p class="eyebrow">Danger Zone</p>
+        <h3>Permanently Clear Memory Store</h3>
+        <p class="subtle">This permanently removes every saved memory, relationship, and structured branch for {{ child.display_name or child.first_name }}.</p>
+      </div>
+      {% if memory_clear_alert %}
+      <div class="memory-inspector-status" data-tone="{{ memory_clear_alert.tone }}">
+        <strong>{{ memory_clear_alert.title }}</strong>
+        <div>{{ memory_clear_alert.message }}</div>
+      </div>
+      {% endif %}
+      <form class="memory-danger-form" method="post" action="{{ memory_clear_form.action_url }}">
+        <input type="hidden" name="csrf_token" value="{{ memory_payload.csrf_token }}">
+        <input type="hidden" name="next" value="{{ memory_clear_form.current_url }}">
+        <input type="hidden" name="captcha_token" value="{{ memory_clear_form.captcha_token }}">
+        <label>
+          <span>Type this exact phrase to confirm</span>
+          <code>{{ memory_clear_form.confirmation_phrase }}</code>
+          <input type="text" name="confirmation_text" autocomplete="off" required>
+        </label>
+        <label>
+          <span class="memory-danger-captcha">{{ memory_clear_form.captcha_question }}</span>
+          <input type="text" name="captcha_answer" inputmode="numeric" autocomplete="off" required>
+        </label>
+        <div class="portal-inline-actions">
+          <button class="button danger" type="submit">Clear Memory Store</button>
+        </div>
+      </form>
+    </article>
   </section>
 
   <aside class="memory-inspector-column">
     <article class="card memory-inspector-card" id="memory-inspector-card">
+      <div class="memory-inspector-status" id="memory-inspector-status" hidden></div>
+
       <div id="memory-inspector-empty" class="memory-inspector-empty">
         <p class="eyebrow">Inspector</p>
-        <h3>Select a memory</h3>
-        <p class="subtle">Click a node in the map or open a memory from the library to review it, adjust it, or remove it safely.</p>
+        <h3>Selected Node</h3>
+        <p class="subtle">Click the web or open a memory from the library to see how it fits, jump across the branch, or edit it safely.</p>
       </div>
 
-      <div id="memory-inspector-group" class="memory-inspector-empty" hidden>
-        <p class="eyebrow">Timeline Group</p>
-        <h3 id="memory-group-title"></h3>
-        <p class="subtle" id="memory-group-meta"></p>
-        <p class="subtle" id="memory-group-summary"></p>
+      <div id="memory-inspector-node" class="memory-node-body" hidden>
+        <div id="memory-node-breadcrumbs" class="memory-breadcrumbs"></div>
+        <section class="memory-node-hero">
+          <div class="memory-node-hero-main">
+            <div id="memory-node-icon-wrap" class="memory-node-icon-wrap"></div>
+            <div class="memory-node-hero-copy">
+              <p class="eyebrow">Selected Node</p>
+              <h3 id="memory-node-title"></h3>
+              <p class="subtle" id="memory-node-meta"></p>
+            </div>
+          </div>
+          <p class="memory-node-summary" id="memory-node-summary"></p>
+        </section>
+
+        <section class="memory-node-stats">
+          <div class="memory-node-stat">
+            <strong id="memory-node-memory-count">0</strong>
+            <span>Related memories</span>
+          </div>
+          <div class="memory-node-stat">
+            <strong id="memory-node-branch-count">0</strong>
+            <span>Connected branches</span>
+          </div>
+        </section>
+
+        <section class="memory-node-quick-links">
+          <div class="memory-linked-head">
+            <h4>Quick jumps</h4>
+            <p class="subtle">Move through this part of the memory web without losing your place.</p>
+          </div>
+          <div id="memory-node-quick-links" class="memory-node-quick-link-list"></div>
+          <div class="portal-inline-actions">
+            <a id="memory-open-branch-link" class="button ghost" href="/app/memories/library" hidden>Open This Branch in Library</a>
+          </div>
+        </section>
+
+        <section class="memory-linked-section">
+          <div class="memory-linked-head">
+            <h4>Top Related Memories</h4>
+            <p class="subtle">The memory notes most closely attached to this branch.</p>
+          </div>
+          <div id="memory-node-related-list" class="memory-linked-list"></div>
+        </section>
       </div>
 
       <div id="memory-inspector-body" hidden>
-        <div class="memory-inspector-status" id="memory-inspector-status" hidden></div>
+        <div id="memory-memory-breadcrumbs" class="memory-breadcrumbs"></div>
         <div class="memory-inspector-head">
           <div>
             <p class="eyebrow">Selected Memory</p>
@@ -150,6 +266,13 @@
             <p class="subtle" id="memory-inspector-meta"></p>
           </div>
         </div>
+
+        <section class="memory-entity-summary">
+          <h4>How this fits</h4>
+          <p id="memory-fit-summary"></p>
+          <div id="memory-fit-chips" class="memory-entity-chips"></div>
+        </section>
+
         <form id="memory-inspector-form" class="memory-inspector-form">
           <label>
             <span>Title</span>
@@ -179,7 +302,7 @@
 
         <section class="memory-linked-section">
           <div class="memory-linked-head">
-            <h4>Linked memories</h4>
+            <h4>Connected memories</h4>
             <p class="subtle">These are the memories most directly connected to the one you selected.</p>
           </div>
           <div id="memory-linked-list" class="memory-linked-list"></div>
@@ -214,5 +337,5 @@
 <script id="portal-memories-data" type="application/json">{{ memory_payload|tojson }}</script>
 {% endblock %}
 {% block body_scripts %}
-<script type="module" src="/static/portal-memories.js"></script>
+<script type="module" src="{{ static_asset('portal-memories.js') }}"></script>
 {% endblock %}

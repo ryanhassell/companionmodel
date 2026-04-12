@@ -18,6 +18,9 @@ class VoiceSaveCallMemoryArgs(BaseModel):
     tags: list[str] = Field(default_factory=list, description="Short tags for retrieval.")
     entity_name: str | None = Field(default=None, description="Optional entity name if this memory is about a recurring person, pet, or thing.")
     entity_kind: str | None = Field(default=None, description="Optional entity kind such as person, pet, artist, or place.")
+    facet: str | None = Field(default=None, description="Optional structured facet such as favorites, routines, family, or interests.")
+    relation_to_child: str | None = Field(default=None, description="Optional relationship to the child such as brother, friend, or pet.")
+    canonical_value: str | None = Field(default=None, description="Optional normalized value for this fact.")
 
 
 class VoiceEndCallArgs(BaseModel):

@@ -29,6 +29,8 @@ def test_billing_entitlement_rules(settings):
     assert service.can_access_path(SubscriptionStatus.canceled, "/app/billing") is True
     assert service.can_access_path(SubscriptionStatus.canceled, "/app/security") is True
     assert service.can_access_path(SubscriptionStatus.incomplete, "/app/parent-chat") is True
+    assert service.can_access_path(SubscriptionStatus.incomplete, "/app/plans") is True
+    assert service.can_access_path(SubscriptionStatus.incomplete, "/app/questions") is True
     assert service.can_access_path(SubscriptionStatus.incomplete, "/app/internal/paid-action") is False
 
 

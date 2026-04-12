@@ -1,0 +1,47 @@
+Infer the best structured placement for this memory in {{ child_name }}'s world.
+
+Return JSON only with:
+{
+  "primary_name": "",
+  "primary_kind": "child|family_member|friend|pet|artist|activity|routine_anchor|event|health_context|topic",
+  "facet": "identity|family|friends|pets|interests|favorites|routines|milestones|health_context|preferences|events",
+  "relation_to_child": "",
+  "relation_kind": "child_world|family_member|friend|pet|favorite|interest|routine|related",
+  "canonical_value": "",
+  "related_entities": [
+    {
+      "display_name": "",
+      "entity_kind": "family_member|friend|pet|artist|activity|routine_anchor|event|health_context|topic",
+      "relation_kind": "family_member|friend|pet|favorite|interest|routine|related",
+      "relation_to_child": "",
+      "facet": "identity|family|friends|pets|interests|favorites|routines|milestones|health_context|preferences|events",
+      "canonical_value": ""
+    }
+  ]
+}
+
+Rules:
+- Be open-ended. Do not rely on hardcoded family-specific examples.
+- Use the child root only when the memory is mainly about {{ child_name }} overall.
+- If the memory is really about another person, pet, artist, activity, event, routine anchor, or topic in {{ child_name }}'s world, place it there.
+- Use related_entities when the memory naturally introduces supporting entities underneath the main subject.
+- If one of the existing structured entities below is clearly the subject of this memory, reuse it as the primary entity instead of falling back to {{ child_name }}.
+- Prefer the most specific subject you can justify. If the memory is about an attribute of an artist, sibling, friend, pet, or other known subject, attach it there and use related_entities for the supporting detail when useful.
+- Keep the placement grounded only in this memory and explicit metadata.
+- Do not invent extra relatives, pets, diagnoses, or favorites.
+
+Memory type: {{ memory_type }}
+Title: {{ memory.title or "" }}
+Summary: {{ memory.summary or "" }}
+Content: {{ memory.content or "" }}
+Existing metadata:
+{{ metadata }}
+
+Existing structured entities you can reuse:
+{% if existing_entities %}
+{% for entity in existing_entities %}
+- {{ entity.display_name }} | kind={{ entity.entity_kind }} | facet={{ entity.facet }}{% if entity.relation_to_child %} | relation={{ entity.relation_to_child }}{% endif %}{% if entity.canonical_value %} | note={{ entity.canonical_value }}{% endif %}
+{% endfor %}
+{% else %}
+- None yet
+{% endif %}

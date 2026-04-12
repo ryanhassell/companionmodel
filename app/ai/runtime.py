@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
 from pydantic_ai import Embedder
 from pydantic_ai.embeddings.openai import OpenAIEmbeddingModel
+from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.models.openai import OpenAIResponsesModel
 from pydantic_ai.providers.openai import OpenAIProvider as PydanticOpenAIProvider
 from pydantic_ai.usage import UsageLimits
@@ -15,6 +17,8 @@ from app.ai.agents import (
     build_memory_consolidation_agent,
     build_memory_entity_merge_agent,
     build_memory_extraction_agent,
+    build_memory_planner_agent,
+    build_memory_placement_agent,
     build_parent_chat_agent,
     build_photo_status_reply_agent,
     build_portal_preview_agent,
@@ -34,7 +38,9 @@ from app.ai.schemas import (
     CandidateReplies,
     EntityMergeDecision,
     InboundActionDecision,
+    MemoryCommitPlan,
     MemoryExtractionResult,
+    MemoryPlacementDraft,
     ParentChatResponse,
     PhotoStatusReply,
     PortalPreferencePreview,
@@ -87,8 +93,10 @@ class AiRuntime:
         self.photo_status_reply_agent = build_photo_status_reply_agent(self.chat_model)
         self.supportive_safety_reply_agent = build_supportive_safety_reply_agent(self.chat_model)
         self.memory_extraction_agent = build_memory_extraction_agent(self.chat_model)
+        self.memory_placement_agent = build_memory_placement_agent(self.chat_model)
         self.memory_entity_merge_agent = build_memory_entity_merge_agent(self.chat_model)
         self.memory_consolidation_agent = build_memory_consolidation_agent(self.chat_model)
+        self.memory_planner_agent = build_memory_planner_agent(self.chat_model)
         self.portal_preview_agent = build_portal_preview_agent(self.portal_model)
         self.parent_chat_agent = build_parent_chat_agent(self.portal_model)
         self.proactive_message_agent = build_proactive_message_agent(self.chat_model)
@@ -103,8 +111,14 @@ class AiRuntime:
     def enabled(self) -> bool:
         return bool(self.settings.openai.api_key)
 
-    def default_usage_limits(self, *, tool_calls_limit: int | None = None) -> UsageLimits:
-        return UsageLimits(request_limit=max(int(self.settings.openai.max_retries), 1), tool_calls_limit=tool_calls_limit)
+    def default_usage_limits(
+        self,
+        *,
+        request_limit: int | None = None,
+        tool_calls_limit: int | None = None,
+    ) -> UsageLimits:
+        effective_request_limit = request_limit if request_limit is not None else max(int(self.settings.openai.max_retries), 1)
+        return UsageLimits(request_limit=max(int(effective_request_limit), 1), tool_calls_limit=tool_calls_limit)
 
     def model_settings(self, *, model_name: str, max_output_tokens: int | None = None, temperature: float | None = None) -> dict[str, Any]:
         settings: dict[str, Any] = {}
@@ -149,17 +163,72 @@ class AiRuntime:
     async def extract_memories(self, *, prompt: str, max_tokens: int) -> AIGeneration[MemoryExtractionResult]:
         return await self._run(self.memory_extraction_agent, prompt, instructions="Return structured memory extraction only.", max_tokens=max_tokens)
 
+    async def infer_memory_placement(self, *, prompt: str, max_tokens: int = 260) -> AIGeneration[MemoryPlacementDraft]:
+        return await self._run(
+            self.memory_placement_agent,
+            prompt,
+            instructions="Return only the structured placement.",
+            max_tokens=max_tokens,
+        )
+
     async def merge_entity_memory(self, *, prompt: str, max_tokens: int) -> AIGeneration[EntityMergeDecision]:
         return await self._run(self.memory_entity_merge_agent, prompt, instructions="Return the structured merge decision only.", max_tokens=max_tokens)
 
     async def consolidate_memory(self, *, prompt: str, max_tokens: int) -> AIGeneration[VoiceSummary]:
         return await self._run(self.memory_consolidation_agent, prompt, instructions="Return only the concise summary.", max_tokens=max_tokens)
 
+    async def plan_memory_commit(self, *, prompt: str, max_tokens: int = 1200, request_limit: int = 6) -> AIGeneration[MemoryCommitPlan]:
+        return await self._run(
+            self.memory_planner_agent,
+            prompt,
+            instructions="Return only the structured memory commit plan.",
+            max_tokens=max_tokens,
+            request_limit=request_limit,
+        )
+
     async def portal_preview(self, *, prompt: str, temperature: float | None = None, max_tokens: int = 90) -> AIGeneration[PortalPreferencePreview]:
         return await self._run(self.portal_preview_agent, prompt, max_tokens=max_tokens, temperature=temperature, model_name=self.portal_model.model_name)
 
     async def parent_chat(self, *, prompt: str, deps: ParentChatDeps, temperature: float | None = None, max_tokens: int = 420) -> AIGeneration[ParentChatResponse]:
-        return await self._run(self.parent_chat_agent, prompt, deps=deps, max_tokens=max_tokens, temperature=temperature, tool_calls_limit=4, model_name=self.portal_model.model_name)
+        return await self._run(
+            self.parent_chat_agent,
+            prompt,
+            deps=deps,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            request_limit=15,
+            tool_calls_limit=12,
+            model_name=self.portal_model.model_name,
+        )
+
+    @asynccontextmanager
+    async def parent_chat_stream(
+        self,
+        *,
+        prompt: str,
+        deps: ParentChatDeps,
+        temperature: float | None = None,
+        max_tokens: int = 420,
+        event_stream_handler=None,
+    ):
+        if not self.enabled:
+            raise AIUnavailableError("OpenAI is not configured")
+        try:
+            async with self.parent_chat_agent.run_stream(
+                prompt,
+                deps=deps,
+                model=self.portal_model,
+                model_settings=self.model_settings(
+                    model_name=self.portal_model.model_name,
+                    max_output_tokens=max_tokens,
+                    temperature=temperature,
+                ),
+                usage_limits=self.default_usage_limits(request_limit=15, tool_calls_limit=12),
+                event_stream_handler=event_stream_handler,
+            ) as result:
+                yield result
+        except UsageLimitExceeded as exc:
+            raise AIUnavailableError(f"AI request exceeded its safe working limit: {exc}") from exc
 
     async def proactive_message(self, *, instructions: str, prompt: str, temperature: float | None = None, max_tokens: int = 160) -> AIGeneration[ProactiveMessageDraft]:
         return await self._run(self.proactive_message_agent, prompt, instructions=instructions, max_tokens=max_tokens, temperature=temperature)
@@ -182,22 +251,37 @@ class AiRuntime:
     async def speech_dictionary_confirmation(self, *, prompt: str, max_tokens: int = 20) -> AIGeneration[SpeechDictionaryConfirmation]:
         return await self._run(self.speech_dictionary_confirmation_agent, prompt, max_tokens=max_tokens, model_name=self.voice_model.model_name)
 
-    async def _run(self, agent, prompt: str, *, instructions: str | None = None, deps=None, max_tokens: int | None = None, temperature: float | None = None, tool_calls_limit: int | None = None, model_name: str | None = None):
+    async def _run(
+        self,
+        agent,
+        prompt: str,
+        *,
+        instructions: str | None = None,
+        deps=None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        request_limit: int | None = None,
+        tool_calls_limit: int | None = None,
+        model_name: str | None = None,
+    ):
         if not self.enabled:
             raise AIUnavailableError("OpenAI is not configured")
         model = agent.model if model_name is None else self._model_for_name(model_name)
-        result = await agent.run(
-            prompt,
-            deps=deps,
-            model=model,
-            instructions=instructions,
-            model_settings=self.model_settings(
-                model_name=getattr(model, "model_name", model_name or self.settings.openai.chat_model),
-                max_output_tokens=max_tokens,
-                temperature=temperature,
-            ),
-            usage_limits=self.default_usage_limits(tool_calls_limit=tool_calls_limit),
-        )
+        try:
+            result = await agent.run(
+                prompt,
+                deps=deps,
+                model=model,
+                instructions=instructions,
+                model_settings=self.model_settings(
+                    model_name=getattr(model, "model_name", model_name or self.settings.openai.chat_model),
+                    max_output_tokens=max_tokens,
+                    temperature=temperature,
+                ),
+                usage_limits=self.default_usage_limits(request_limit=request_limit, tool_calls_limit=tool_calls_limit),
+            )
+        except UsageLimitExceeded as exc:
+            raise AIUnavailableError(f"AI request exceeded its safe working limit: {exc}") from exc
         return AIGeneration(
             output=result.output,
             model=getattr(result.response, "model_name", None),

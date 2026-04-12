@@ -10,7 +10,7 @@
         <h3>Parent conversations</h3>
       </div>
       <form method="post" action="/app/parent-chat/new">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="csrf_token" value="{{ chat_payload.csrf_token }}">
         <button class="button" type="submit">New chat</button>
       </form>
     </div>
@@ -21,11 +21,11 @@
         {% if thread.preview %}<span>{{ thread.preview }}</span>{% endif %}
         {% if thread.updated_at %}<small data-parent-chat-timestamp="{{ thread.updated_at }}"></small>{% endif %}
       </a>
-      {% endfor %}
+    {% endfor %}
     </nav>
     {% if active_thread_id %}
     <form method="post" action="/app/parent-chat/{{ active_thread_id }}/clear" class="parent-chat-history-footer">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="csrf_token" value="{{ chat_payload.csrf_token }}">
       <button class="button ghost" type="submit">Clear chat history</button>
     </form>
     {% endif %}
@@ -35,8 +35,8 @@
     <div class="parent-chat-toolbar">
       <div>
         <p class="eyebrow">Parent Chat</p>
-        <h2>Talk to Resona about how to show up</h2>
-        <p class="subtle">Use this space to guide Resona, share lasting details, and help it understand what helps {{ child.display_name or child.first_name }} feel known.</p>
+        <h2>Talk to {{ chat_payload.assistant_label }} about how to show up</h2>
+        <p class="subtle">Use this space to guide {{ chat_payload.assistant_label }}, share lasting details, and help it understand what helps {{ child.display_name or child.first_name }} feel known.</p>
       </div>
     </div>
 
@@ -44,17 +44,33 @@
       {% for message in chat_messages %}
       <article class="parent-chat-bubble {{ 'assistant' if message.sender == 'assistant' else 'parent' }}" data-parent-chat-message>
         <div class="parent-chat-bubble-meta">
-          <strong>{{ 'Resona' if message.sender == 'assistant' else 'You' }}</strong>
+          <strong>{{ chat_payload.assistant_label if message.sender == 'assistant' else 'You' }}</strong>
           {% if message.created_at %}<span data-parent-chat-timestamp="{{ message.created_at }}"></span>{% endif %}
         </div>
         <div class="parent-chat-bubble-body">{{ message.body }}</div>
-        {% if message.memory_saved_details %}
-        <div class="parent-chat-tool-log">
-          {% for detail in message.memory_saved_details %}
-          <div class="parent-chat-tool-row">
-            <span class="parent-chat-tool-badge">Tool</span>
-            <span>Added Memory: {{ detail.title }}</span>
+        {% if message.sender == 'assistant' and message.activity_events %}
+        <div class="parent-chat-memory-log">
+          {% for item in message.activity_events %}
+          {% if item.details %}
+          <details class="parent-chat-memory-event">
+            <summary class="parent-chat-memory-row">
+              {% if item.href %}<a href="{{ item.href }}">{{ item.label }}</a>{% else %}<span>{{ item.label }}</span>{% endif %}
+            </summary>
+            <div class="parent-chat-memory-detail-list">
+              {% for detail in item.details %}
+              {% if detail.id %}
+              <a class="parent-chat-memory-detail" href="/app/memories/map?node={{ detail.id }}">{{ detail.title }}</a>
+              {% else %}
+              <span class="parent-chat-memory-detail">{{ detail.title }}</span>
+              {% endif %}
+              {% endfor %}
+            </div>
+          </details>
+          {% else %}
+          <div class="parent-chat-memory-row">
+            {% if item.href %}<a href="{{ item.href }}">{{ item.label }}</a>{% else %}<span>{{ item.label }}</span>{% endif %}
           </div>
+          {% endif %}
           {% endfor %}
         </div>
         {% endif %}
@@ -63,7 +79,7 @@
     </div>
 
     <form id="parent-chat-form" class="parent-chat-form" method="post" action="/app/parent-chat/send">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="csrf_token" value="{{ chat_payload.csrf_token }}">
       <input type="hidden" id="parent-chat-thread-id" name="thread_id" value="{{ active_thread_id }}">
       <div class="parent-chat-composer-row">
         <textarea
@@ -72,7 +88,7 @@
           rows="3"
           maxlength="2400"
           aria-label="Message"
-          placeholder="Tell Resona what to remember or avoid..."></textarea>
+          placeholder="Tell {{ chat_payload.assistant_label }} what to remember or avoid..."></textarea>
         <button id="parent-chat-submit" class="button" type="submit">Send</button>
       </div>
       <div class="parent-chat-actions">

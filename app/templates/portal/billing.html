@@ -1,32 +1,149 @@
 {% extends "portal/base.html" %}
 {% set active_nav = 'billing' %}
 {% block content %}
-<section class="page-header">
+<section class="page-header billing-page-header">
   <div>
-    <h2>Billing</h2>
-    <p class="subtle">Plan status, included monthly credits, and overage billing details.</p>
+    <p class="eyebrow">Billing Overview</p>
+    <h2>Plan, credits, and household coverage</h2>
+    <p class="subtle">A polished view of subscription health, monthly usage, and how active child profiles are handled on this account. The first active child includes one active Resona. Each additional active child adds the existing child-profile charge, not a separate persona fee.</p>
   </div>
 </section>
-<article class="card" style="max-width: 720px;">
-  <p><strong>Account:</strong> {{ account.name if account else '-' }}</p>
-  <p><strong>Subscription status:</strong> {{ subscription.status.value if subscription else 'incomplete' }}</p>
-  <p><strong>Included credits:</strong> ${{ usage_summary.included_usd }} / month</p>
-  <p><strong>Estimated used:</strong> ${{ '%.2f'|format(usage_summary.used_usd) }}</p>
-  <p><strong>Estimated remaining:</strong> ${{ '%.2f'|format(usage_summary.remaining_usd) }}</p>
-  <p class="subtle">{{ usage_summary.overage_note }}</p>
-  {% if request.query_params.get('already_active') %}
-  <p class="subtle">This account already has an active subscription, so no new checkout was started.</p>
+
+<section class="billing-shell">
+  <article class="card dashboard-usage-hero billing-usage-hero" data-tone="{{ billing_context.usage_hero.progress_tone }}">
+    <div class="dashboard-usage-head">
+      <div>
+        <p class="eyebrow">Usage Overview</p>
+        <h2>{{ billing_context.usage_hero.title }}</h2>
+        <p>{{ billing_context.usage_hero.summary }}</p>
+      </div>
+      <div class="dashboard-usage-actions">
+        {% if billing_context.manage_portal_available %}
+        <form method="post" action="/app/billing/manage" class="billing-checkout-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit">Manage in Stripe</button>
+        </form>
+        {% elif stripe_enabled and not billing_already_active %}
+        <form method="post" action="/app/billing/checkout" class="billing-checkout-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="plan_key" value="{{ selected_plan_key or 'chat' }}">
+          <button type="submit">{{ billing_context.usage_hero.primary_cta_label }}</button>
+        </form>
+        {% else %}
+        <a class="button ghost" href="/app/child">Manage Profiles</a>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="dashboard-usage-metrics">
+      {% for metric in billing_context.usage_hero.metrics %}
+      <article class="dashboard-usage-metric" data-tone="{{ metric.tone }}">
+        <span>{{ metric.label }}</span>
+        <strong>{{ metric.value }}</strong>
+        {% if metric.detail %}<small>{{ metric.detail }}</small>{% endif %}
+      </article>
+      {% endfor %}
+    </div>
+
+    <progress class="dashboard-usage-progress" value="{{ billing_context.usage_hero.progress_percent }}" max="100" aria-label="Monthly usage progress"></progress>
+    {% if billing_context.usage_hero.note %}
+    <p class="dashboard-usage-note subtle">{{ billing_context.usage_hero.note }}</p>
+    {% endif %}
+  </article>
+
+  <section class="dashboard-status-strip billing-status-strip" aria-label="Billing summary">
+    {% for item in billing_context.status_items %}
+    <article class="dashboard-status-card" data-tone="{{ item.tone }}">
+      <p>{{ item.label }}</p>
+      <strong>{{ item.value }}</strong>
+      {% if item.detail %}<span>{{ item.detail }}</span>{% endif %}
+    </article>
+    {% endfor %}
+  </section>
+
+  {% if billing_notice %}
+  <article class="card dashboard-callout" data-tone="{{ billing_notice.tone }}">
+    <div>
+      <h3>{{ billing_notice.title }}</h3>
+      <p>{{ billing_notice.message }}</p>
+    </div>
+  </article>
   {% endif %}
-  {% if stripe_enabled and billing_already_active %}
-  <p class="subtle">Billing is already active for this account. You do not need to start another subscription checkout.</p>
-  {% elif stripe_enabled %}
-  <form method="post" action="/app/billing/checkout" class="grid">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input type="hidden" name="plan_key" value="{{ selected_plan_key or 'chat' }}">
-    <button type="submit">Start or Manage Subscription</button>
-  </form>
-  {% else %}
-  <p class="subtle">Stripe is not configured yet. Set `STRIPE_*` env values to enable checkout.</p>
-  {% endif %}
-</article>
+
+  <div class="billing-grid">
+    <article class="card billing-panel">
+      <div class="billing-panel-head">
+        <div>
+          <p class="eyebrow">{{ billing_context.plan_panel.eyebrow }}</p>
+          <h3>{{ billing_context.plan_panel.title }}</h3>
+          <p>{{ billing_context.plan_panel.summary }}</p>
+        </div>
+        <span class="dashboard-pill secondary">{{ billing_context.subscription_label }}</span>
+      </div>
+      <dl class="billing-detail-list">
+        {% for item in billing_context.plan_panel["items"] %}
+        <div>
+          <dt>{{ item.label }}</dt>
+          <dd>{{ item.value }}</dd>
+        </div>
+        {% endfor %}
+      </dl>
+    </article>
+
+    <article class="card billing-panel">
+      <div class="billing-panel-head">
+        <div>
+          <p class="eyebrow">{{ billing_context.seat_panel.eyebrow }}</p>
+          <h3>{{ billing_context.seat_panel.title }}</h3>
+          <p>{{ billing_context.seat_panel.summary }}</p>
+        </div>
+      </div>
+      <dl class="billing-detail-list">
+        {% for item in billing_context.seat_panel["items"] %}
+        <div>
+          <dt>{{ item.label }}</dt>
+          <dd>{{ item.value }}</dd>
+        </div>
+        {% endfor %}
+      </dl>
+      <a class="button ghost" href="{{ billing_context.seat_panel.action_href }}">{{ billing_context.seat_panel.action_label }}</a>
+    </article>
+
+    <article class="card billing-panel billing-panel-actions">
+      <div class="billing-panel-head">
+        <div>
+          <p class="eyebrow">{{ billing_context.action_panel.eyebrow }}</p>
+          <h3>{{ billing_context.action_panel.title }}</h3>
+          <p>{{ billing_context.action_panel.summary }}</p>
+        </div>
+      </div>
+      {% if billing_context.manage_portal_available %}
+      <div class="billing-action-stack">
+        <form method="post" action="/app/billing/manage" class="billing-action-stack">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit">Open Secure Billing Portal</button>
+        </form>
+        <p class="subtle">Use Stripe's secure customer portal to update payment details, review the subscription, or manage plan settings while child-profile changes continue to control add-on seats here. Each active child includes one active Resona automatically.</p>
+      </div>
+      {% elif stripe_enabled and billing_already_active %}
+      <div class="billing-empty-state">
+        <strong>Billing is already active for this account.</strong>
+        <p>You do not need to start another checkout to keep the household running.</p>
+      </div>
+      {% elif stripe_enabled %}
+      <form method="post" action="/app/billing/checkout" class="billing-action-stack">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="plan_key" value="{{ selected_plan_key or 'chat' }}">
+        <button type="submit">Start Secure Checkout</button>
+        <p class="subtle">Checkout reflects the current household profile count, including any additional child-profile add-ons. There is no separate extra-persona fee beyond the child seat.</p>
+      </form>
+      {% else %}
+      <div class="billing-empty-state">
+        <strong>Billing tools are unavailable right now.</strong>
+        <p>Checkout will appear here again once billing is ready for this environment.</p>
+      </div>
+      {% endif %}
+    </article>
+  </div>
+</section>
 {% endblock %}

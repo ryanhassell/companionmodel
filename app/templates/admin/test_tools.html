@@ -54,7 +54,7 @@
       <input type="hidden" name="action" value="creative_audio">
       <label>User<select name="user_id"><option value="">None</option>{% for user in users %}<option value="{{ user.id }}">{{ user.phone_number }}</option>{% endfor %}</select></label>
       <label>Persona<select name="persona_id"><option value="">Active</option>{% for persona in personas %}<option value="{{ persona.id }}">{{ persona.display_name }}</option>{% endfor %}</select></label>
-      <label>Tagged Text<textarea name="creative_text" required>[softly] hii Katie... [giggles] okay wait this is actually so cute.</textarea></label>
+      <label>Tagged Text<textarea name="creative_text" required>[softly] hii there... [giggles] okay wait this is actually so cute.</textarea></label>
       <button type="submit">Generate Creative Clip</button>
     </form>
     {% if creative_audio_asset %}

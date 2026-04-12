@@ -9,12 +9,23 @@ from httpx import ASGITransport
 from sqlalchemy import select
 
 from app.ai.runtime import AIGeneration
-from app.ai.schemas import SpeechDictionaryCandidate, SpeechDictionaryConfirmation, VoiceCallScript, VoiceGreeting, VoiceSummary
+from app.ai.schemas import (
+    MemoryCommitPlan,
+    MemoryPlanAction,
+    MemoryPlanEntityDraft,
+    MemoryPlanMemoryDraft,
+    MemorySemanticPayload,
+    SpeechDictionaryCandidate,
+    SpeechDictionaryConfirmation,
+    VoiceCallScript,
+    VoiceGreeting,
+    VoiceSummary,
+)
 from app.admin.dependencies import get_container, require_admin_context
 from app.db.session import get_db_session
 from app.models.communication import CallRecord
 from app.models.enums import CallDirection, CallStatus, MemoryType
-from app.models.memory import MemoryItem
+from app.models.memory import MemoryItem, MemoryItemEntity
 from app.models.persona import Persona
 from app.models.user import User
 from app.providers.base import OutboundCallResult
@@ -102,6 +113,62 @@ class FakeAiRuntime:
             model="gpt-test",
             usage={"input_tokens": 2, "output_tokens": 2},
         )
+
+    async def plan_memory_commit(self, *, prompt, max_tokens=None, request_limit=None):
+        latest = _voice_latest_content_from_planner_prompt(prompt)
+        actions: list[MemoryPlanAction] = []
+        lowered = latest.lower()
+        if "joe" in lowered:
+            actions.append(
+                MemoryPlanAction(
+                    action="create_memory",
+                    memory=MemoryPlanMemoryDraft(
+                        title="Saw Joe",
+                        content="The user saw Joe today.",
+                        summary="The user saw Joe today.",
+                        memory_type="episode",
+                        tags=["joe", "plans"],
+                        importance_score=0.78,
+                        semantic=MemorySemanticPayload(
+                            world_section="memories",
+                            kind="episode",
+                            group="people",
+                            label="Saw Joe",
+                            path=["People"],
+                            confidence=0.9,
+                        ),
+                    ),
+                    entity=MemoryPlanEntityDraft(
+                        display_name="Joe",
+                        entity_kind_legacy="topic",
+                        semantic=MemorySemanticPayload(
+                            world_section="memories",
+                            kind="person",
+                            group="people",
+                            label="Joe",
+                            path=["People"],
+                            confidence=0.9,
+                        ),
+                    ),
+                )
+            )
+        return AIGeneration(
+            output=MemoryCommitPlan(summary="voice test plan", actions=actions),
+            model="gpt-test",
+            usage={"input_tokens": 10, "output_tokens": 14},
+        )
+
+
+def _voice_latest_content_from_planner_prompt(prompt: str) -> str:
+    marker = "Latest content:\n"
+    if marker not in prompt:
+        return ""
+    trailing = prompt.split(marker, 1)[1]
+    for end_marker in ("\n\nRecent snippets:", "\nRecent snippets:"):
+        if end_marker in trailing:
+            trailing = trailing.split(end_marker, 1)[0]
+            break
+    return " ".join(trailing.split()).strip()
 
 
 def _build_voice_service(settings) -> tuple[VoiceService, OpenAIProvider]:
@@ -358,10 +425,13 @@ async def test_voice_service_stream_and_finalize_realtime_call(sqlite_session, s
     )
 
     memories = list((await sqlite_session.execute(select(MemoryItem))).scalars().all())
+    memory_item_entities = list((await sqlite_session.execute(select(MemoryItemEntity))).scalars().all())
     assert "hey I saw Joe today" in record.transcript
     assert record.status == CallStatus.completed
     assert record.metadata_json["summary"] == "Quick summary about Joe."
     assert any(item.metadata_json.get("source") in {"call_tool", "entity_merge"} for item in memories)
+    assert any(item.metadata_json.get("structured_primary_entity_name") == "Joe" for item in memories)
+    assert any(link.role == "primary" for link in memory_item_entities)
     session_update = fake_ws.sent[0]
     assert session_update["type"] == "session.update"
     assert session_update["session"]["output_modalities"] == ["audio"]

@@ -47,6 +47,55 @@ class MemoryRelationshipType(StrEnum):
     supersedes = "supersedes"
 
 
+class MemoryEntityKind(StrEnum):
+    child = "child"
+    family_member = "family_member"
+    friend = "friend"
+    pet = "pet"
+    artist = "artist"
+    activity = "activity"
+    routine_anchor = "routine_anchor"
+    event = "event"
+    health_context = "health_context"
+    topic = "topic"
+
+
+class MemoryFacet(StrEnum):
+    identity = "identity"
+    family = "family"
+    friends = "friends"
+    pets = "pets"
+    interests = "interests"
+    favorites = "favorites"
+    routines = "routines"
+    milestones = "milestones"
+    health_context = "health_context"
+    preferences = "preferences"
+    events = "events"
+
+
+class EntityRelationKind(StrEnum):
+    child_world = "child_world"
+    family_member = "family_member"
+    friend = "friend"
+    pet = "pet"
+    favorite = "favorite"
+    interest = "interest"
+    routine = "routine"
+    related = "related"
+
+
+class PortalChatRunStatus(StrEnum):
+    running = "running"
+    completed = "completed"
+    failed = "failed"
+
+
+class PortalChatMessageKind(StrEnum):
+    message = "message"
+    activity = "activity"
+
+
 class SafetySeverity(StrEnum):
     low = "low"
     medium = "medium"

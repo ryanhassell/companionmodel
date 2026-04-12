@@ -24,6 +24,16 @@ class ParentChatDeps:
     recent_child_messages: Sequence[Message]
     memory_hits: Sequence[Any]
     save_guidance_memories: SaveGuidanceMemoriesFn
+    persona_name: str = "Resona"
+    persona_description: str | None = None
+    persona_style: str | None = None
+    persona_tone: str | None = None
+    persona_boundaries: str | None = None
+    persona_speech_style: str | None = None
+    persona_disclosure_policy: str | None = None
+    persona_operator_notes: str | None = None
+    persona_topics_of_interest: Sequence[str] = field(default_factory=tuple)
+    persona_favorite_activities: Sequence[str] = field(default_factory=tuple)
     saved_memory_result: ParentGuidanceSaveResult | None = None
 
 

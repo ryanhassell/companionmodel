@@ -211,6 +211,8 @@ async def personas_page(
     if context is None:
         return _redirect_login()
     personas = (await session.execute(select(Persona).order_by(desc(Persona.updated_at)))).scalars().all()
+    admin_personas = [persona for persona in personas if str(persona.source_type or "admin") == "admin"]
+    portal_personas = [persona for persona in personas if str(persona.source_type or "admin") != "admin"]
     reference_assets = await _persona_reference_assets(session, list(personas))
     return templates.TemplateResponse(
         "admin/personas.html",
@@ -219,6 +221,8 @@ async def personas_page(
             context,
             active_nav="personas",
             personas=personas,
+            admin_personas=admin_personas,
+            portal_personas=portal_personas,
             reference_assets=reference_assets,
             realtime_voice_options=REALTIME_VOICE_OPTIONS,
         ),
@@ -260,6 +264,10 @@ async def personas_submit(
     persona = await session.get(Persona, persona_id) if persona_id else Persona(key=str(form.get("key", "")), display_name=str(form.get("display_name", "")))
     if persona_id is None:
         session.add(persona)
+        persona.source_type = "admin"
+        persona.account_id = None
+        persona.owner_user_id = None
+        persona.preset_key = None
     persona.key = str(form.get("key", ""))
     persona.display_name = str(form.get("display_name", ""))
     persona.description = str(form.get("description") or "") or None

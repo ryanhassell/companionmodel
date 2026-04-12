@@ -1,0 +1,67 @@
+{% extends "portal/base.html" %}
+{% set active_nav = 'plans' %}
+{% block content %}
+<section class="page-header guidance-page-header">
+  <div>
+    <p class="eyebrow">Support Plans</p>
+    <h2>Shape how Resona shows up day to day</h2>
+    <p class="subtle">{{ page_summary }}</p>
+  </div>
+</section>
+
+<section class="guidance-shell">
+  {% if child %}
+  <article class="card guidance-intro-card">
+    <div class="guidance-intro-head">
+      <div>
+        <p class="eyebrow">Focused On {{ selected_child_name }}</p>
+        <h3>Plans that keep support steady</h3>
+        <p>Use this page to turn what you already know into something consistent, gentle, and usable in the moment.</p>
+      </div>
+      <div class="hero-actions">
+        <a class="button ghost" href="/app/parent-chat">Parent Chat</a>
+        <a class="button ghost" href="/app/child">Child Profile</a>
+      </div>
+    </div>
+    {% if focus_memory_title %}
+    <div class="guidance-highlight">
+      <span>Current theme in memory</span>
+      <strong>{{ focus_memory_title }}</strong>
+      <p>{{ focus_memory_summary }}</p>
+    </div>
+    {% endif %}
+  </article>
+
+  <div class="guidance-grid">
+    {% for card in plan_cards %}
+    <article class="card guidance-card" data-tone="{{ card.tone }}">
+      <div class="guidance-card-head">
+        <div>
+          <p class="eyebrow">Plan {{ loop.index }}</p>
+          <h3>{{ card.title }}</h3>
+          <p>{{ card.summary }}</p>
+        </div>
+      </div>
+      <ul class="guidance-list">
+        {% for step in card.steps %}
+        <li>{{ step }}</li>
+        {% endfor %}
+      </ul>
+      <div class="hero-actions">
+        <a class="button ghost" href="{{ card.href }}">{{ card.action_label }}</a>
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <article class="card guidance-empty-card">
+    <h3>No child profile is selected yet</h3>
+    <p class="subtle">Add or select a child profile first, and this page will turn into a practical support-planning workspace.</p>
+    <div class="hero-actions">
+      <a class="button ghost" href="/app/child">Open Child Profile</a>
+      <a class="button ghost" href="/app/initialize">Review Setup</a>
+    </div>
+  </article>
+  {% endif %}
+</section>
+{% endblock %}

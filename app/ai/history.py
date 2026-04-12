@@ -36,4 +36,17 @@ def render_portal_chat_history(messages: Sequence[PortalChatMessage], *, limit: 
         if not body:
             continue
         lines.append(f"{sender}: {body}")
+        metadata = dict(message.metadata_json or {})
+        raw_details = metadata.get("memory_saved_details")
+        if not isinstance(raw_details, list):
+            continue
+        for item in raw_details[:3]:
+            if not isinstance(item, dict):
+                continue
+            title = truncate_text(str(item.get("title") or "").strip(), 80)
+            content = truncate_text(str(item.get("content") or "").strip(), 180)
+            if title and content:
+                lines.append(f"  Saved memory: {title} — {content}")
+            elif title:
+                lines.append(f"  Saved memory: {title}")
     return "\n".join(lines)

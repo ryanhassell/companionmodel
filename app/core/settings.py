@@ -90,6 +90,8 @@ class SchedulingConfig(BaseModel):
 
     proactive_scan_seconds: int = 120
     memory_consolidation_minutes: int = 30
+    memory_health_hour: int = 3
+    memory_health_minute: int = 15
     retry_failed_sends_minutes: int = 5
     stale_followup_minutes: int = 15
     cleanup_hours: int = 24
@@ -264,6 +266,9 @@ class StripeConfig(BaseModel):
     default_price_id: str | None = None
     chat_price_id: str | None = None
     voice_price_id: str | None = None
+    additional_child_price_id: str | None = None
+    included_child_profiles: int = 1
+    additional_child_monthly_usd: float = 12.0
     success_path: str = "/app/billing?checkout=success"
     cancel_path: str = "/app/billing?checkout=cancel"
 
@@ -484,6 +489,9 @@ def _apply_flat_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
         ("stripe", "default_price_id"): os.getenv("STRIPE_DEFAULT_PRICE_ID"),
         ("stripe", "chat_price_id"): os.getenv("STRIPE_CHAT_PRICE_ID"),
         ("stripe", "voice_price_id"): os.getenv("STRIPE_VOICE_PRICE_ID"),
+        ("stripe", "additional_child_price_id"): os.getenv("STRIPE_ADDITIONAL_CHILD_PRICE_ID"),
+        ("stripe", "included_child_profiles"): os.getenv("STRIPE_INCLUDED_CHILD_PROFILES"),
+        ("stripe", "additional_child_monthly_usd"): os.getenv("STRIPE_ADDITIONAL_CHILD_MONTHLY_USD"),
         ("email", "enabled"): os.getenv("EMAIL_ENABLED"),
         ("email", "from_address"): os.getenv("EMAIL_FROM_ADDRESS"),
         ("email", "smtp_host"): os.getenv("EMAIL_SMTP_HOST"),

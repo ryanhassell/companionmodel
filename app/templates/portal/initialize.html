@@ -6,7 +6,7 @@
     <p class="eyebrow">Account Setup</p>
     <h2>Let’s finish your parent portal setup.</h2>
     <p class="subtle">
-      This guided setup covers household details, one child profile, communication defaults, and billing
+      This guided setup covers household details, one child profile, one Resona, communication defaults, and billing
       so the full portal is ready the moment you land on the dashboard.
     </p>
     <p class="subtle initialization-required-note"><span class="required-indicator" aria-hidden="true">*</span> Required fields</p>
@@ -83,7 +83,7 @@
             <h4>Welcome to the parent portal</h4>
             <p class="subtle">
               This setup should only take a few minutes. We’ll collect your household details, one child/profile,
-              a few safety and communication defaults, and your plan so Resona is ready to use right away.
+              one Resona, a few safety and communication defaults, and your plan so Resona is ready to use right away.
             </p>
           </div>
         </section>
@@ -136,6 +136,119 @@
             </label>
             <label><span class="field-label-row"><span>Notes</span><span class="field-help" tabindex="0" aria-label="Explain notes"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">Share anything useful for setup, like routines, sensitivities, favorite topics, or context that would help the portal and companion start in a better place.</span></span></span>
               <textarea name="notes" placeholder="Anything helpful for setup, routines, or context.">{{ initialization.snapshot.notes }}</textarea>
+            </label>
+          </div>
+        </section>
+
+        <section class="initialization-step-panel {{ 'is-active' if initialization.current_step == 'resona' else '' }}" data-step-panel="resona" {% if initialization.current_step != 'resona' %}hidden{% endif %}>
+          <div class="initialization-copy initialization-step-note">
+            <p class="subtle">
+              Each child gets one Resona. Choose a preset companion or shape a custom one here, then refine it later inside Child Profile without affecting anyone else in the household.
+            </p>
+          </div>
+          <div class="grid">
+            <div>
+              <label class="initialization-field-label field-label-row"><span>How do you want to start?<span class="required-indicator" aria-hidden="true">*</span></span></label>
+              <div class="initialization-resona-mode-grid">
+                <label class="initialization-plan-card initialization-resona-mode-card">
+                  <input type="radio" name="resona_mode" value="preset" {{ 'checked' if initialization.snapshot.resona_mode != 'custom' else '' }}>
+                  <span class="initialization-plan-card-copy">
+                    <strong>Start with a preset Resona</strong>
+                    <small>Choose from a few polished starting companions and personalize from there.</small>
+                  </span>
+                </label>
+                <label class="initialization-plan-card initialization-resona-mode-card">
+                  <input type="radio" name="resona_mode" value="custom" {{ 'checked' if initialization.snapshot.resona_mode == 'custom' else '' }}>
+                  <span class="initialization-plan-card-copy">
+                    <strong>Create a custom Resona</strong>
+                    <small>Start from a neutral baseline and define the feel yourself.</small>
+                  </span>
+                </label>
+              </div>
+              <small class="field-error" data-error-for="resona_mode"></small>
+            </div>
+
+            <div data-resona-preset-panel>
+              <label class="initialization-field-label field-label-row"><span>Preset Resonas</span></label>
+              <div class="initialization-resona-preset-grid">
+                {% for preset in resona_presets %}
+                <label class="initialization-plan-card initialization-resona-preset-card">
+                  <input type="radio" name="resona_preset_key" value="{{ preset.key }}" {{ 'checked' if initialization.snapshot.resona_preset_key == preset.key else '' }}>
+                  <span class="initialization-plan-card-copy">
+                    <strong>{{ preset.label }}</strong>
+                    <small>{{ preset.summary }}</small>
+                    <small>{{ preset.description }}</small>
+                  </span>
+                </label>
+                {% endfor %}
+              </div>
+              <small class="field-error" data-error-for="resona_preset_key"></small>
+            </div>
+
+            <label>
+              <span class="field-label-row"><span>Companion name</span><span class="field-help" tabindex="0" aria-label="Explain companion name"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">You can keep the preset name, rename it to something that feels right, or leave a custom one blank for now and it will preview as <strong>Resona</strong>.</span></span></span>
+              <input name="resona_display_name" value="{{ initialization.snapshot.resona_display_name or '' }}" maxlength="120" placeholder="Juniper">
+              <small class="field-error" data-error-for="resona_display_name"></small>
+            </label>
+
+            <div>
+              <label class="initialization-field-label field-label-row"><span>Voice profile<span class="required-indicator" aria-hidden="true">*</span></span></label>
+              <div class="initialization-resona-voice-grid">
+                {% for voice in voice_profiles %}
+                <label class="initialization-plan-card initialization-resona-voice-card">
+                  <input type="radio" name="resona_voice_profile_key" value="{{ voice.key }}" {{ 'checked' if initialization.snapshot.resona_voice_profile_key == voice.key else '' }}>
+                  <span class="initialization-plan-card-copy">
+                    <strong>{{ voice.label }}</strong>
+                    <small>{{ voice.summary }}</small>
+                    <small>{{ 'Preview available in this environment.' if voice.preview_available else 'Preview may be unavailable here, but the voice style will still save.' }}</small>
+                  </span>
+                </label>
+                {% endfor %}
+              </div>
+              <small class="field-error" data-error-for="resona_voice_profile_key"></small>
+            </div>
+
+            <div class="field-preview field-preview-emphasis initialization-resona-preview" id="initialization-resona-preview">
+              <div class="field-preview-head">
+                <div>
+                  <strong>Voice sample</strong>
+                  <p class="subtle" id="initialization-resona-preview-caption">Tap preview to hear how this Resona introduction sounds right now.</p>
+                </div>
+                <button type="button" class="button ghost subtle-button" id="initialization-resona-preview-button">Preview Voice</button>
+              </div>
+              <p class="field-preview-message" id="initialization-resona-preview-message">No preview generated yet.</p>
+              <audio id="initialization-resona-preview-audio" controls hidden></audio>
+              <small class="field-error" data-error-for="resona_preview"></small>
+            </div>
+
+            <label>
+              <span class="field-label-row"><span>Overall feel</span><span class="field-help" tabindex="0" aria-label="Explain overall feel"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">Use a few words to describe how this Resona should generally come across: gentle, playful, clear, expressive, calming, steady, and so on.</span></span></span>
+              <textarea name="resona_vibe" maxlength="280" placeholder="ex. gentle, warm, and softly encouraging">{{ initialization.snapshot.resona_vibe or '' }}</textarea>
+              <small class="field-error" data-error-for="resona_vibe"></small>
+            </label>
+
+            <label>
+              <span class="field-label-row"><span>What helps this child feel understood?</span><span class="field-help" tabindex="0" aria-label="Explain what helps"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">Describe the kind of emotional approach that usually lands well, like keeping things simple, naming feelings gently, or bringing a little lightness first.</span></span></span>
+              <textarea name="resona_support_style" maxlength="280" placeholder="ex. slow down first, reassure quickly, and avoid making the moment feel heavy">{{ initialization.snapshot.resona_support_style or '' }}</textarea>
+              <small class="field-error" data-error-for="resona_support_style"></small>
+            </label>
+
+            <label>
+              <span class="field-label-row"><span>What should it avoid?</span><span class="field-help" tabindex="0" aria-label="Explain what to avoid"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">Name tones or habits that backfire, like sounding too pushy, too cheerful, too vague, too clinical, or too intense.</span></span></span>
+              <textarea name="resona_avoid" maxlength="280" placeholder="ex. don't push too fast, don't sound clinical, and don't stack too many questions">{{ initialization.snapshot.resona_avoid or '' }}</textarea>
+              <small class="field-error" data-error-for="resona_avoid"></small>
+            </label>
+
+            <label>
+              <span class="field-label-row"><span>Favorite anchors or topics to lean into</span><span class="field-help" tabindex="0" aria-label="Explain anchors"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">Share the kinds of things this Resona can naturally lean toward: music, birthdays, routines, favorite people, hobbies, pets, or other comforting anchors.</span></span></span>
+              <textarea name="resona_anchors" maxlength="280" placeholder="ex. music, celebrations, favorite people, pets, and little routines">{{ initialization.snapshot.resona_anchors or '' }}</textarea>
+              <small class="field-error" data-error-for="resona_anchors"></small>
+            </label>
+
+            <label>
+              <span class="field-label-row"><span>How should proactive support feel?</span><span class="field-help" tabindex="0" aria-label="Explain proactive support style"><span class="field-help-trigger" aria-hidden="true">?</span><span class="field-help-card" role="tooltip">Describe how gentle or expressive check-ins should feel if Resona reaches out first.</span></span></span>
+              <textarea name="resona_proactive_style" maxlength="280" placeholder="ex. low-pressure, familiar, and never guilt-y">{{ initialization.snapshot.resona_proactive_style or '' }}</textarea>
+              <small class="field-error" data-error-for="resona_proactive_style"></small>
             </label>
           </div>
         </section>
@@ -348,6 +461,14 @@
       <div class="initialization-summary-group">
         <p class="meta-label">Child/Profile</p>
         <p class="meta-value" data-summary-field="child_name">{{ initialization.summary.child_name or 'Not set yet' }}</p>
+      </div>
+      <div class="initialization-summary-group">
+        <p class="meta-label">Resona</p>
+        <p class="meta-value" data-summary-field="resona_name">{{ initialization.summary.resona_name or 'Not set yet' }}</p>
+      </div>
+      <div class="initialization-summary-group">
+        <p class="meta-label">Voice</p>
+        <p class="meta-value" data-summary-field="resona_voice_label">{{ initialization.summary.resona_voice_label or 'Not set yet' }}</p>
       </div>
       <div class="initialization-summary-group">
         <p class="meta-label">Communication defaults</p>

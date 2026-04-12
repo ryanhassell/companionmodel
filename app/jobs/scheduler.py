@@ -51,6 +51,15 @@ class SchedulerService:
             max_instances=1,
         )
         self.scheduler.add_job(
+            self.run_memory_health,
+            "cron",
+            hour=self.settings.scheduling.memory_health_hour,
+            minute=self.settings.scheduling.memory_health_minute,
+            id="memory_health",
+            replace_existing=True,
+            max_instances=1,
+        )
+        self.scheduler.add_job(
             self.run_embed_pending,
             "interval",
             minutes=self.settings.scheduling.embed_pending_minutes,
@@ -101,6 +110,11 @@ class SchedulerService:
         async with self._job_context("memory_consolidation") as (session, run):
             config = self.settings.model_dump(mode="json")
             run.details_json = {"created": await self.container.memory_service.consolidate(session, config=config)}
+
+    async def run_memory_health(self) -> None:
+        async with self._job_context("memory_health") as (session, run):
+            config = self.settings.model_dump(mode="json")
+            run.details_json = await self.container.memory_service.run_memory_health(session, config=config)
 
     async def run_embed_pending(self) -> None:
         async with self._job_context("embed_pending") as (session, run):

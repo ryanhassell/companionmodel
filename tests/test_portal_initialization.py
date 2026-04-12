@@ -9,6 +9,7 @@ from app.ai.runtime import AIGeneration
 from app.ai.schemas import PortalPreferencePreview
 from app.db.session import get_db_session
 from app.models.enums import HouseholdRole, SubscriptionStatus
+from app.models.persona import Persona
 from app.models.portal import ChildProfile, Household, Subscription
 from app.models.user import User
 from app.portal.dependencies import PortalRequestContext, require_portal_context
@@ -90,6 +91,7 @@ async def test_initialize_page_renders_without_missing_greenlet(sqlite_session, 
 
     assert response.status_code == 200
     assert "Let’s finish your parent portal setup." in response.text
+    assert "Choose Resona" in response.text
     assert "portal-initialize-data" in response.text
 
 
@@ -165,6 +167,24 @@ async def test_initialization_persists_child_and_preferences(sqlite_session, set
         validate_required=True,
         advance_step=True,
     )
+    await service.save_step(
+        sqlite_session,
+        customer_user=user,
+        step="resona",
+        data={
+            "resona_mode": "preset",
+            "resona_preset_key": "juniper",
+            "resona_display_name": "Juniper",
+            "resona_voice_profile_key": "harbor",
+            "resona_vibe": "gentle and reassuring",
+            "resona_support_style": "slow down first and keep things easy to join",
+            "resona_avoid": "don't stack too many questions",
+            "resona_anchors": "music, birthdays, favorite people",
+            "resona_proactive_style": "low-pressure and familiar",
+        },
+        validate_required=True,
+        advance_step=True,
+    )
     result = await service.save_step(
         sqlite_session,
         customer_user=user,
@@ -194,11 +214,18 @@ async def test_initialization_persists_child_and_preferences(sqlite_session, set
         select(ChildProfile).where(ChildProfile.account_id == user.account_id)
     )
     linked_user = await sqlite_session.scalar(select(User).where(User.phone_number == "+16105550123"))
+    linked_persona = await sqlite_session.scalar(select(Persona).where(Persona.owner_user_id == linked_user.id))
 
     assert household is not None
     assert household.name == "Cedar Home"
     assert loaded_child is not None
     assert loaded_child.display_name == "Katie"
+    assert linked_persona is not None
+    assert linked_persona.display_name == "Juniper"
+    assert linked_persona.source_type == "portal_preset"
+    assert linked_persona.preset_key == "juniper"
+    assert linked_user.preferred_persona_id == linked_persona.id
+    assert loaded_child.preferences_json["resona_profile"]["voice_profile_key"] == "harbor"
     assert loaded_child.preferences_json["onboarding_mode"] == "for_someone_else"
     assert loaded_child.preferences_json["preferred_pacing"] == ["gentle", "steady"]
     assert loaded_child.preferences_json["preferred_pacing_custom"] == "calm at first, then a little clearer if needed"
@@ -239,7 +266,7 @@ async def test_initialization_hydrates_existing_partial_records(sqlite_session, 
     result = await service.load_context(sqlite_session, customer_user=user)
 
     assert result.context.completed_steps == ["welcome", "household", "child"]
-    assert result.context.current_step == "preferences"
+    assert result.context.current_step == "resona"
     assert result.context.snapshot["household_name"] == "River House"
     assert result.context.snapshot["profile_name"] == "Jordan"
 
@@ -274,6 +301,24 @@ async def test_initialization_hydrates_partial_data_and_requires_allowed_subscri
         customer_user=user,
         step="child",
         data={"profile_name": "Sam", "child_phone_number": "", "birth_year": "", "notes": ""},
+        validate_required=True,
+        advance_step=True,
+    )
+    await service.save_step(
+        sqlite_session,
+        customer_user=user,
+        step="resona",
+        data={
+            "resona_mode": "preset",
+            "resona_preset_key": "sunny",
+            "resona_display_name": "Sunny",
+            "resona_voice_profile_key": "sparrow",
+            "resona_vibe": "",
+            "resona_support_style": "",
+            "resona_avoid": "",
+            "resona_anchors": "",
+            "resona_proactive_style": "",
+        },
         validate_required=True,
         advance_step=True,
     )
@@ -368,6 +413,24 @@ async def test_initialization_accepts_custom_preference_text_without_preset_choi
         customer_user=user,
         step="child",
         data={"profile_name": "Avery", "child_phone_number": "", "birth_year": "", "notes": ""},
+        validate_required=True,
+        advance_step=True,
+    )
+    await service.save_step(
+        sqlite_session,
+        customer_user=user,
+        step="resona",
+        data={
+            "resona_mode": "custom",
+            "resona_preset_key": "",
+            "resona_display_name": "Wren",
+            "resona_voice_profile_key": "meadow",
+            "resona_vibe": "soft and steady",
+            "resona_support_style": "keep things easy to follow",
+            "resona_avoid": "don't overwhelm",
+            "resona_anchors": "music, routines",
+            "resona_proactive_style": "gentle and familiar",
+        },
         validate_required=True,
         advance_step=True,
     )

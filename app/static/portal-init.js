@@ -48,6 +48,11 @@ import {
   const aiPreviewBox = document.getElementById("initialization-ai-preview");
   const aiPreviewMessage = document.getElementById("initialization-ai-preview-message");
   const aiPreviewCaption = document.getElementById("initialization-ai-preview-caption");
+  const resonaPreviewButton = document.getElementById("initialization-resona-preview-button");
+  const resonaPreviewMessage = document.getElementById("initialization-resona-preview-message");
+  const resonaPreviewCaption = document.getElementById("initialization-resona-preview-caption");
+  const resonaPreviewAudio = document.getElementById("initialization-resona-preview-audio");
+  const resonaPresetPanel = root.querySelector("[data-resona-preset-panel]");
 
   const steps = Array.isArray(payload.steps) ? payload.steps : [];
   const visibleSteps = steps.filter((step) => step.key !== "complete");
@@ -56,8 +61,13 @@ import {
   const planMap = new Map(
     (Array.isArray(payload.plan_options) ? payload.plan_options : []).map((plan) => [plan.key, plan])
   );
+  const voiceProfiles = Array.isArray(payload.voice_profiles) ? payload.voice_profiles : [];
+  const voiceMap = new Map(voiceProfiles.map((voice) => [voice.key, voice]));
+  const resonaPresets = Array.isArray(payload.resona_presets) ? payload.resona_presets : [];
+  const resonaPresetMap = new Map(resonaPresets.map((preset) => [preset.key, preset]));
   const previewTimers = new WeakMap();
   const aiPreviewCache = new Map();
+  const resonaPreviewCache = new Map();
   const DRAFT_TTL_MS = 1000 * 60 * 90;
 
   let activeStep = payload.current_step || root.getAttribute("data-current-step") || "welcome";
@@ -78,6 +88,17 @@ import {
   const stepFields = {
     household: ["mode", "relationship", "household_name", "timezone"],
     child: ["profile_name", "child_phone_number", "birth_year", "notes"],
+    resona: [
+      "resona_mode",
+      "resona_preset_key",
+      "resona_display_name",
+      "resona_voice_profile_key",
+      "resona_vibe",
+      "resona_support_style",
+      "resona_avoid",
+      "resona_anchors",
+      "resona_proactive_style",
+    ],
     preferences: [
       "preferred_pacing",
       "preferred_pacing_custom",
@@ -264,6 +285,13 @@ import {
     }
     if (field === "relationship_label") {
       return humanize(value || "Not set yet");
+    }
+    if (field === "resona_voice_label") {
+      if (value) {
+        return value;
+      }
+      const selectedVoice = voiceMap.get(String(snapshot.resona_voice_profile_key || "").trim());
+      return selectedVoice?.label || "Not set yet";
     }
     if (field === "parent_visibility_mode") {
       return visibilityLabel(value);
@@ -750,6 +778,154 @@ import {
     pending: true,
   });
 
+  let lastResonaPresetKey = String(snapshot.resona_preset_key || "");
+
+  const selectedResonaMode = () => String(readFieldValue("resona_mode") || snapshot.resona_mode || "preset").trim();
+  const selectedResonaPresetKey = () => String(readFieldValue("resona_preset_key") || snapshot.resona_preset_key || "").trim();
+
+  const syncResonaModeVisibility = () => {
+    if (!resonaPresetPanel) {
+      return;
+    }
+    resonaPresetPanel.hidden = selectedResonaMode() === "custom";
+  };
+
+  const maybeApplyPresetDefaults = () => {
+    if (selectedResonaMode() === "custom") {
+      syncResonaModeVisibility();
+      return;
+    }
+    const nextPresetKey = selectedResonaPresetKey();
+    const nextPreset = resonaPresetMap.get(nextPresetKey);
+    if (!nextPreset) {
+      syncResonaModeVisibility();
+      return;
+    }
+    const previousPreset = resonaPresetMap.get(lastResonaPresetKey || "");
+    const nameNodes = Array.from(form.querySelectorAll('[name="resona_display_name"]'));
+    const nameNode = nameNodes[0];
+    if (nameNode && (nameNode.value.trim() === "" || nameNode.value.trim() === String(previousPreset?.default_name || "").trim())) {
+      nameNode.value = nextPreset.default_name || "";
+    }
+    const currentVoice = String(readFieldValue("resona_voice_profile_key") || "").trim();
+    if (!currentVoice || currentVoice === String(previousPreset?.voice_profile_key || "").trim()) {
+      syncFormValue("resona_voice_profile_key", nextPreset.voice_profile_key || "");
+    }
+    lastResonaPresetKey = nextPreset.key;
+    syncResonaModeVisibility();
+  };
+
+  const collectResonaPreviewPayload = () => ({
+    profile_name: String(readFieldValue("profile_name") || snapshot.profile_name || "").trim(),
+    child_name: String(readFieldValue("profile_name") || snapshot.profile_name || "").trim(),
+    resona_mode: selectedResonaMode(),
+    resona_preset_key: selectedResonaPresetKey(),
+    resona_display_name: String(readFieldValue("resona_display_name") || snapshot.resona_display_name || "").trim(),
+    resona_voice_profile_key: String(readFieldValue("resona_voice_profile_key") || snapshot.resona_voice_profile_key || "").trim(),
+    resona_vibe: String(readFieldValue("resona_vibe") || snapshot.resona_vibe || "").trim(),
+    resona_support_style: String(readFieldValue("resona_support_style") || snapshot.resona_support_style || "").trim(),
+    resona_avoid: String(readFieldValue("resona_avoid") || snapshot.resona_avoid || "").trim(),
+    resona_anchors: String(readFieldValue("resona_anchors") || snapshot.resona_anchors || "").trim(),
+    resona_proactive_style: String(readFieldValue("resona_proactive_style") || snapshot.resona_proactive_style || "").trim(),
+  });
+
+  const resonaPreviewKey = (previewPayload) => JSON.stringify(previewPayload);
+
+  const setResonaPreviewState = ({ message = "", caption = "", pending = false, audioUrl = "" }) => {
+    if (resonaPreviewButton) {
+      resonaPreviewButton.disabled = pending;
+      resonaPreviewButton.textContent = pending ? "Generating..." : "Preview Voice";
+    }
+    if (resonaPreviewMessage) {
+      animatePreviewText(resonaPreviewMessage, message);
+    }
+    if (resonaPreviewCaption) {
+      resonaPreviewCaption.textContent = caption;
+    }
+    if (resonaPreviewAudio) {
+      if (audioUrl) {
+        resonaPreviewAudio.src = audioUrl;
+        resonaPreviewAudio.hidden = false;
+      } else {
+        resonaPreviewAudio.pause();
+        resonaPreviewAudio.removeAttribute("src");
+        resonaPreviewAudio.hidden = true;
+      }
+    }
+  };
+
+  const requestResonaPreview = async () => {
+    const previewPayload = collectResonaPreviewPayload();
+    const cacheKey = resonaPreviewKey(previewPayload);
+    const cached = resonaPreviewCache.get(cacheKey);
+    if (cached) {
+      setResonaPreviewState(cached);
+      return;
+    }
+    setResonaPreviewState({
+      message: "Generating a short voice introduction...",
+      caption: "Using the current Resona name and voice choice.",
+      pending: true,
+      audioUrl: "",
+    });
+    try {
+      const result = await fetchJson(payload.resona_preview_url, {
+        method: "POST",
+        credentials: "same-origin",
+        timeoutMs: 20000,
+        resumeUrl: payload.resume_url || currentPathWithQuery(),
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          csrf_token: payload.csrf_token,
+          ...previewPayload,
+        }),
+      });
+      if (!result.ok) {
+        if (result.code === RequestFailureCode.authExpired || result.data?.code === "auth_expired") {
+          redirectToLogin(
+            result.data?.login_url,
+            "Your session expired before the voice preview could finish. Your setup draft is still safe in this tab."
+          );
+          return;
+        }
+        if (result.code === RequestFailureCode.offline) {
+          setResonaPreviewState({
+            message: "Preview unavailable while offline.",
+            caption: "Reconnect and try again when you're ready.",
+            pending: false,
+            audioUrl: "",
+          });
+          return;
+        }
+        setResonaPreviewState({
+          message: "Preview unavailable right now.",
+          caption: result.data?.detail || "This environment could not generate a voice sample.",
+          pending: false,
+          audioUrl: "",
+        });
+        return;
+      }
+      const nextState = {
+        message: result.data?.preview_text || "Voice sample ready.",
+        caption: result.data?.voice_label || "Preview ready",
+        pending: false,
+        audioUrl: result.data?.audio_url || "",
+      };
+      resonaPreviewCache.set(cacheKey, nextState);
+      setResonaPreviewState(nextState);
+    } catch (error) {
+      console.error("Resona preview failed", error);
+      setResonaPreviewState({
+        message: "Preview unavailable right now.",
+        caption: "We hit a browser or network problem while generating the voice sample.",
+        pending: false,
+        audioUrl: "",
+      });
+    }
+  };
+
   const schedulePreferencePreview = (previewPayload) => {
     if (previewRequestTimer) {
       window.clearTimeout(previewRequestTimer);
@@ -950,6 +1126,8 @@ import {
     Object.entries(snapshot || {}).forEach(([name, value]) => {
       syncFormValue(name, value);
     });
+    syncResonaModeVisibility();
+    maybeApplyPresetDefaults();
     renderPreviews();
     refreshAiPreviewPrompt();
   };
@@ -1153,7 +1331,7 @@ import {
   };
 
   const scheduleAutosave = () => {
-    if (!["household", "child", "preferences", "plan"].includes(activeStep)) {
+    if (!["household", "child", "resona", "preferences", "plan"].includes(activeStep)) {
       return;
     }
     persistDraft();
@@ -1166,7 +1344,7 @@ import {
   };
 
   const setActiveStep = async (step, persistCurrent) => {
-    if (persistCurrent && ["household", "child", "preferences", "plan"].includes(activeStep)) {
+    if (persistCurrent && ["household", "child", "resona", "preferences", "plan"].includes(activeStep)) {
       await saveStep(activeStep, "autosave");
     }
     activeStep = step;
@@ -1180,6 +1358,9 @@ import {
       return;
     }
     if (target.matches("input, textarea")) {
+      if (target.getAttribute("name") === "resona_display_name") {
+        lastResonaPresetKey = selectedResonaPresetKey();
+      }
       renderPreviews();
       refreshAiPreviewPrompt();
       scheduleAutosave();
@@ -1192,11 +1373,24 @@ import {
       return;
     }
     if (target.matches("select, input[type='checkbox'], input[type='radio']")) {
+      const fieldName = target.getAttribute("name") || "";
+      if (fieldName === "resona_mode") {
+        syncResonaModeVisibility();
+      }
+      if (fieldName === "resona_preset_key" || fieldName === "resona_mode") {
+        maybeApplyPresetDefaults();
+      }
       renderPreviews();
       refreshAiPreviewPrompt();
       scheduleAutosave();
     }
   });
+
+  if (resonaPreviewButton) {
+    resonaPreviewButton.addEventListener("click", () => {
+      requestResonaPreview();
+    });
+  }
 
   indicators.forEach((indicator) => {
     indicator.addEventListener("click", async () => {

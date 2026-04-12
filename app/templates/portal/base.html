@@ -7,7 +7,7 @@
     <script>document.documentElement.classList.add("js");</script>
     <link rel="icon" type="image/svg+xml" href="/static/images/resona-mark.svg">
     <link rel="apple-touch-icon" href="/static/images/resona-mark.svg">
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="{{ static_asset('style.css') }}">
     {% if clerk_enabled and clerk_publishable_key %}
     <script
       async
@@ -42,6 +42,26 @@
           </a>
           <p class="portal-brand-subtitle subtle">Parent Portal</p>
         </div>
+        {% if customer_user and portal_child_options %}
+        <form class="portal-child-switcher" method="get" action="{{ request.url.path }}">
+          {% for key, value in request.query_params.multi_items() %}
+            {% if key != 'child_id' %}
+          <input type="hidden" name="{{ key }}" value="{{ value }}">
+            {% endif %}
+          {% endfor %}
+          <label for="portal-child-select" class="portal-child-switcher-label">Currently viewing</label>
+          <select id="portal-child-select" name="child_id" onchange="this.form.submit()">
+            {% for option in portal_child_options %}
+            <option value="{{ option.id }}" {% if portal_selected_child_id == option.id %}selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+          </select>
+          {% if portal_child_count > 1 %}
+          <p class="subtle portal-child-switcher-detail">{{ portal_child_count }} profiles on this account</p>
+          {% elif portal_selected_child_name %}
+          <p class="subtle portal-child-switcher-detail">{{ portal_selected_child_name }}</p>
+          {% endif %}
+        </form>
+        {% endif %}
         <nav class="nav">
           {% if customer_user and not portal_locked %}
             {% for section in portal_nav_sections %}
@@ -98,7 +118,7 @@
         {% block content %}{% endblock %}
       </main>
     </div>
-    <script type="module" src="/static/portal-shell.js"></script>
+    <script type="module" src="{{ static_asset('portal-shell.js') }}"></script>
     {% block body_scripts %}{% endblock %}
   </body>
 </html>

@@ -31,6 +31,18 @@ class BillingService:
     def available(self) -> bool:
         return self._stripe is not None and self.settings.stripe.enabled
 
+    def included_child_profiles(self) -> int:
+        return max(int(self.settings.stripe.included_child_profiles or 1), 1)
+
+    def additional_child_count(self, child_profile_count: int) -> int:
+        return max(int(child_profile_count or 0) - self.included_child_profiles(), 0)
+
+    def additional_child_monthly_usd(self) -> float:
+        return round(max(float(self.settings.stripe.additional_child_monthly_usd or 0.0), 0.0), 2)
+
+    def additional_child_billing_configured(self) -> bool:
+        return bool((self.settings.stripe.additional_child_price_id or "").strip())
+
     def price_id_for_plan(self, plan_key: str | None) -> str | None:
         normalized = (plan_key or "").strip().lower()
         if normalized == "voice":
@@ -147,6 +159,8 @@ class BillingService:
             "/app/child",
             "/app/timeline",
             "/app/parent-chat",
+            "/app/plans",
+            "/app/questions",
             "/app/memory",
             "/app/safety",
             "/app/team",
@@ -169,6 +183,7 @@ class BillingService:
         customer_email: str | None,
         clerk_org_id: str | None,
         plan_key: str | None,
+        child_profile_count: int = 1,
         success_url: str,
         cancel_url: str,
     ) -> str:
@@ -177,6 +192,9 @@ class BillingService:
         price_id = self.price_id_for_plan(plan_key)
         if not price_id:
             raise RuntimeError("No Stripe price configured for the selected plan")
+        additional_child_quantity = self.additional_child_count(child_profile_count)
+        if additional_child_quantity and not self.additional_child_billing_configured():
+            raise RuntimeError("No Stripe price configured for additional child profiles")
 
         stripe = self._stripe
         assert stripe is not None
@@ -184,12 +202,22 @@ class BillingService:
             "account_id": str(account.id),
             "clerk_org_id": clerk_org_id or "",
             "selected_plan_key": (plan_key or "").strip(),
+            "child_profile_count": str(max(int(child_profile_count or 0), 0)),
+            "additional_child_quantity": str(additional_child_quantity),
         }
+        line_items = [{"price": price_id, "quantity": 1}]
+        if additional_child_quantity:
+            line_items.append(
+                {
+                    "price": self.settings.stripe.additional_child_price_id,
+                    "quantity": additional_child_quantity,
+                }
+            )
         create_kwargs: dict[str, Any] = {
             "mode": "subscription",
             "success_url": success_url,
             "cancel_url": cancel_url,
-            "line_items": [{"price": price_id, "quantity": 1}],
+            "line_items": line_items,
             # Keep onboarding checkout on the most reliable recurring method.
             # Stripe's automatic mix can surface one-time or region-specific
             # methods that fail during subscription confirmation.
@@ -216,6 +244,112 @@ class BillingService:
         )
         await session.flush()
         return str(checkout_data.get("url"))
+
+    async def create_customer_portal_session(
+        self,
+        session: AsyncSession,
+        *,
+        account_id: uuid.UUID,
+        subscription: Subscription,
+        return_url: str,
+    ) -> str:
+        if not self.available:
+            raise RuntimeError("Stripe is not configured")
+        if not subscription.stripe_customer_id:
+            raise RuntimeError("This subscription is not linked to a Stripe customer yet")
+        stripe = self._stripe
+        assert stripe is not None
+        if not hasattr(stripe, "billing_portal") or not hasattr(stripe.billing_portal, "Session"):
+            raise RuntimeError("Stripe customer portal is not available")
+        portal_session = stripe.billing_portal.Session.create(
+            customer=subscription.stripe_customer_id,
+            return_url=return_url,
+        )
+        payload = _stripe_object_to_dict(portal_session)
+        session.add(
+            BillingEvent(
+                account_id=account_id,
+                subscription_id=subscription.id,
+                event_type="billing.portal.session.created",
+                payload_json={"id": payload.get("id"), "url": payload.get("url")},
+                created_at=utc_now(),
+            )
+        )
+        await session.flush()
+        return str(payload.get("url"))
+
+    async def sync_additional_child_quantity(
+        self,
+        session: AsyncSession,
+        *,
+        account_id: uuid.UUID,
+        subscription: Subscription,
+        child_profile_count: int,
+    ) -> bool:
+        if not self.available:
+            raise RuntimeError("Stripe is not configured")
+        if not subscription.stripe_subscription_id:
+            raise RuntimeError("This subscription is not linked to Stripe yet")
+
+        additional_child_quantity = self.additional_child_count(child_profile_count)
+        if additional_child_quantity and not self.additional_child_billing_configured():
+            raise RuntimeError("No Stripe price configured for additional child profiles")
+
+        stripe = self._stripe
+        assert stripe is not None
+        stripe_subscription = stripe.Subscription.retrieve(subscription.stripe_subscription_id)
+        subscription_payload = _stripe_object_to_dict(stripe_subscription)
+        items = subscription_payload.get("items", {}).get("data", [])
+        existing_item = next(
+            (
+                item
+                for item in items
+                if isinstance(item, dict)
+                and isinstance(item.get("price"), dict)
+                and item.get("price", {}).get("id") == self.settings.stripe.additional_child_price_id
+            ),
+            None,
+        )
+        current_quantity = int(existing_item.get("quantity") or 0) if existing_item else 0
+
+        item_updates: list[dict[str, Any]] = []
+        if existing_item and additional_child_quantity <= 0:
+            item_updates.append({"id": existing_item.get("id"), "deleted": True})
+        elif existing_item and current_quantity != additional_child_quantity:
+            item_updates.append({"id": existing_item.get("id"), "quantity": additional_child_quantity})
+        elif not existing_item and additional_child_quantity > 0:
+            item_updates.append(
+                {
+                    "price": self.settings.stripe.additional_child_price_id,
+                    "quantity": additional_child_quantity,
+                }
+            )
+
+        if not item_updates:
+            return False
+
+        updated = stripe.Subscription.modify(
+            subscription.stripe_subscription_id,
+            items=item_updates,
+            proration_behavior="create_prorations",
+        )
+        session.add(
+            BillingEvent(
+                account_id=account_id,
+                subscription_id=subscription.id,
+                event_type="subscription.child_seats.updated",
+                payload_json={
+                    "subscription_id": subscription.stripe_subscription_id,
+                    "child_profile_count": child_profile_count,
+                    "additional_child_quantity": additional_child_quantity,
+                    "items": item_updates,
+                    "object": _stripe_object_to_dict(updated),
+                },
+                created_at=utc_now(),
+            )
+        )
+        await session.flush()
+        return True
 
     async def sync_checkout_session(
         self,
@@ -318,7 +452,18 @@ class BillingService:
 
         existing.stripe_subscription_id = stripe_sub_id
         existing.stripe_customer_id = payload.get("customer")
-        price = payload.get("items", {}).get("data", [{}])[0].get("price", {})
+        items = payload.get("items", {}).get("data", [])
+        primary_item = next(
+            (
+                item
+                for item in items
+                if isinstance(item, dict)
+                and isinstance(item.get("price"), dict)
+                and item.get("price", {}).get("id") != self.settings.stripe.additional_child_price_id
+            ),
+            items[0] if items else {},
+        )
+        price = primary_item.get("price", {}) if isinstance(primary_item, dict) else {}
         existing.stripe_price_id = price.get("id") if isinstance(price, dict) else None
 
         raw_status = str(payload.get("status") or "incomplete")
